@@ -9,15 +9,12 @@ import os
 import torch.optim as optim
 import warnings
 
-torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1415927410125732
-
+torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
 # Warnings
 warnings.filterwarnings("ignore", "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated")
 
-
 ## This file was the Spatial_GP.py file in the original code.
-
 
 TORCH_DTYPE = torch.float64
 # Set the default dtype to float64
@@ -111,6 +108,34 @@ def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernf
 
     return utility( sigma2=sigma2_star, mu=mu_star )
 ##########################################################
+
+def is_posdef(tensor):
+                
+    L_upper, info_upper = torch.linalg.cholesky_ex(tensor, upper=True)
+    L_lower, info_lower = torch.linalg.cholesky_ex(tensor, upper=True)
+
+    # if torch.any(info_upper != 0):
+        # warnings.warn('Not positive definite using UPPER triangular')
+    # if torch.any(info_lower != 0):
+        # warnings.warn('Not positive definite using LOWER triangular')
+
+    if is_simmetric(tensor):
+        if torch.linalg.eigh(tensor)[0].min() <= 0.:
+            warnings.warn('The matrix is simmetric but has an eigenvalue smaller than 0 ')
+            return False
+        if torch.linalg.eigh(tensor)[0].min() <= 1.e-10:
+            warnings.warn('The matrix is simmetric but has an eigenvalue smaller than 1e-10 ')
+            return False
+        else:
+            return True  
+    else:
+        warnings.warn('The matrix is not symmetric, cannot check if it is positive definite')
+        return False
+
+def is_simmetric(tensor):
+    difference = torch.abs(tensor - tensor.T)
+    if torch.any(difference > 1e-11): return False
+    else: return True 
 
 def safe_log(x):
     # Wrapper function to log that checks for negative or zero input
@@ -209,7 +234,7 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         # Amp :     Amplitude of the localker 
        
         # eps_0 = (eps_0x, eps0y) : Center of the receptive field as real numbers from -1 to 1. 
-            # They are obtained from the STA that gives them bas initially as integers (pixel position)
+            # They are obtained from the STA that gives them initially as integers (pixel position)
        
         # logbetaexpr : a logarithmic expression of beta, which is is the scale of local filter of C in the paper.    
         # logrhoexpr  : a logarithmic expression of rho, which is the scale of the smoothness filter part of C.
@@ -218,13 +243,13 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         # C_smooth : (nx, nx) gaussian shaped exponential of distance between x. Can be seen as the covariance of the gaussian for the weights (in weights view)
 
 
-        # Choose how to rescale the receptive field:
+        # Choose how to rescale the stimulus:
         up_lim  =  1
         low_lim = -1
-        # half_n_px_side = n_px_side/(up_lim-low_lim) not used
 
         # _____ Sigma_0 and A _____
         sigma_0 = torch.tensor(0., requires_grad=True) # This makes sigma_0 = 0
+        
         Amp     = torch.tensor(1., requires_grad=True) # Amplitude of the receptive field Amp = 1, NOT PRESENT IN SAMUELE'S CODE
 
         # Center and size of the receptive field RF as sta and its variance (rf_width_pxl2). eps are indeces from 0 to 107
@@ -309,13 +334,20 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
 def localker(nx, theta, theta_higher_lims, theta_lower_lims, n_px_side, grad=False):
     # Compute C, the part of the kernel responsible for implementing the receptive field and smoothness
 
+    # Check that theta is inside the limits
+    for key, value in theta.items():
+        if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
+            raise ValueError(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}")
+
     eps_0 = torch.stack([theta['eps_0x'], theta['eps_0y']]) # Do not create new tensor, just stack the two elements to preserve the gradient graph
-    xcord = torch.linspace(theta_lower_lims['eps_0y'], theta_higher_lims['eps_0x'], n_px_side)
+    # xcord = torch.linspace(theta_lower_lims['eps_0y'], theta_higher_lims['eps_0x'], n_px_side)
 
     # ______ Samuele's code ______
 
-     # spatial localised prior
-    ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='xy') #a grid of 108x108 points between -1 and 1
+    # spatial localised prior
+    # Note: Matlab uses default indexing 'xy' while torch uses 'ij'. They make no difference because the arrays get flattened
+    ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='ij') #a grid of 108x108 points between -1 and 1
+    # ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='xy') #a grid of 108x108 points between -1 and 1
     xcord = xcord.flatten()
     ycord = ycord.flatten()
     logalpha    = -torch.exp(theta['-2log2beta'])*((xcord - eps_0[0])**2+(ycord - eps_0[1])**2)
@@ -376,7 +408,6 @@ def linker(x1, x2, C, theta, xtilde_case, scalar_case=False):
         return  (K + K.T)/2 + 1.e-9*torch.eye(K.shape[0]) # make sure it's simmetric 
     if not xtilde_case:
         return  K 
-
 
 def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
     """
@@ -441,8 +472,11 @@ def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
 
             dJ = -(delta - torch.pi) * dcosdelta / torch.pi           #shapesame as J
             # Add gradient for sigma_0. In Samuele's code what is learned is logsigma_0 so the expression is different
-            dK['sigma_0'] =  (X1X2 * dJ + dX1X2 * J)      #shape same as K
-                                   
+
+            # Test: the following derivative mst be wrt sigma_0 nos log_sigma_0 like in samueles code
+            dK['sigma_0'] =  (X1X2 * dJ + dX1X2 * J) / sigma_0      #shape same as K
+            # dK['sigma_0'] =  (X1X2 * dJ + dX1X2 * J)      #shape same as K
+
             # for j in range(1, dC.shape[2] + 1):
             for key, value in dC.items():
                 if key == 'sigma_0':
@@ -472,7 +506,9 @@ def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
         if dC is not None:
             dK = {}
 
-            dK['sigma_0'] = (2*sigma_0**2*torch.ones((n1, 1))).squeeze()
+            # Test: the following derivative mst be wrt sigma_0 nos log_sigma_0 like in samueles code
+            dK['sigma_0'] = (2*sigma_0**2*torch.ones((n1, 1))).squeeze() / sigma_0
+            # dK['sigma_0'] = (2*sigma_0**2*torch.ones((n1, 1))).squeeze()
             
             for key in dC.keys():
                 if key == 'sigma_0':
@@ -486,7 +522,6 @@ def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
         return K, dK    #shape(n1,n2), shape(n1,n2,6) 
     else: 
         return K    #shape (n1,n2)
-
 
 def acosker(x1, x2, C, theta, xtilde_case, scalar_case=False, dC=None):
     # NB
@@ -698,7 +733,7 @@ def lambda_moments1( x, K, K_tilde, K_tilde_inv, C, m, V, theta, kernfun ):
 
             return lambda_m, lambda_var
 
-def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, C, m, V, theta, kernfun, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None, K=None):
+def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
             # Calculate the mean and variance (diagonal of covariance matrix ) of (vec)lambda(of the training points) over the distribution given by:
             # p_cond(lambda|lambda_tilde,X,theta)*(N/q)_posterior(lambda_tilde|m,V) as ini eq (56)(57) of Notes for Pietro
 
@@ -723,8 +758,10 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, C, m, V, theta, kernfun, dK=N
 
             # vector of variances of the target function for every training point
 
-            lambda_var = Kvec + torch.einsum( 'ij,ji->i', a, torch.matmul(V-K_tilde, a.T) ) # This is the same as doing Diag(a.T @ (V-K_tilde) @ a
+            # wrong formula
+            # lambda_var = Kvec + torch.einsum( 'ij,ji->i', a, torch.matmul(V-K_tilde, a.T) ) # This is the same as doing Diag(a.T @ (V-K_tilde) @ a
             # lambda_var = Kvec + torch.sum( -(K*a).T + a.T*(  torch.linalg.solve(V_inv, a.T)), dim=0)
+            lambda_var = Kvec + torch.sum(-K.T*a.T + a.T*(V@a.T), 0)
 
             # TODO check that this method with einsum is actually faster than torch.sum(a*(V-K_tilde)@a, dim=1)
 
@@ -738,6 +775,7 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, C, m, V, theta, kernfun, dK=N
                 dlambda_var = {}
                 for key in dK.keys():
                     da[key] = (dK[key] - a@dK_tilde[key])@K_tilde_inv # TODO check if it can be made more efficient puling dK out of the parenthesis
+                    # pinv(Sigma)*(dki(:, :, i) - dSigma(:, :, i)*a );
                     # Derivative of the mean of lambda with respect to the hyperparameters
                     dlambda_m[key] = da[key]@m
                     # Derivative of the variance of lambda with respect to the hyperparameters
@@ -752,10 +790,11 @@ def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var):
         # The expectation value of the vector of firing rates for every training point: 
         # <f> = exp(A*<lambda> + 0.5*A^2*Var(lambda) + lambda0)
         # as shown (between other things) in (34)-(37) of Notes for Pietro
-        return torch.exp(f_params['A']*lambda_m + 0.5*f_params['A']*f_params['A']*lambda_var + f_params['lambda0'] )
+        A = torch.exp(f_params['logA'])
+        return torch.exp(A*lambda_m + 0.5*A*A*lambda_var + f_params['lambda0'] )
         
 def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None, K_tilde=None, KKtilde_inv=None, 
-           Kvec=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None, K=None):
+           Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None):
         
         # Compute the mean of the firing rate f for every training point (a vector) as in (52) Notes for Pietro, 
         # It calls lambda_moments to calculate mean and variance of lambda [ eq (56)(57) of Notes for Pietro ] if they are not known.
@@ -791,13 +830,13 @@ def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None
 
             # Do we need the gradients of the moments with respect to the hyperparameters?
             if dK is not None and dK_tilde is not None and dK_vec is not None and K_tilde_inv is not None:
-                lambda_m, lambda_var, dlambda_m, dlambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, C, m, V, theta, kernfun=kernfun, dK=dK, dK_tilde=dK_tilde, dK_vec=dK_vec, K_tilde_inv=K_tilde_inv, K=K)
+                lambda_m, lambda_var, dlambda_m, dlambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=kernfun, dK=dK, dK_tilde=dK_tilde, dK_vec=dK_vec, K_tilde_inv=K_tilde_inv)
                 # Calculate the actual mean of the firing rate
                 f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
                 return f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var
             
             else:
-                lambda_m, lambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, C, m, V, theta, kernfun=kernfun)
+                lambda_m, lambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=kernfun)
                 # Calculate the actual mean of the firing rate
                 f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
                 return f_mean, lambda_m, lambda_var
@@ -807,97 +846,85 @@ def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None
             f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
             return f_mean
 
-def compute_g( f_params, K, r, f_mean):
-    g = f_params[0] * torch.einsum('ji,j->i', K, (r - f_mean)) 
-    return g
-
-def compute_g_assamu( f_params, KKtilde_inv, r, f_mean):
-    # KKtilde_inv is calculated outside as:
-    # KKtilde_inv = torch.linalg.solve(K_tilde, K.T) # shape (ntilde, nt) 
-    a = KKtilde_inv
-    g = f_params['A'] * a.T @ (r - f_mean)
-    return g
-
-def compute_G_assamu( f_params, KKtilde_inv, f_mean):
-    # Compute G_samu as K_tilde_inv @ G @ K_tilde_inv , where the G on the rhs is the one in the paper and notes
-    # KKtilde_inv is calculated outside as:
-    # KKtilde_inv = torch.linalg.solve(K_tilde, K.T) # shape (ntilde, nt) 
-    a = KKtilde_inv
-    G = f_params['A']*f_params['A'] * torch.einsum('ij,jk->ikj', a.T, a) @ f_mean # Shape (ntilde, ntilde)
-    # G = f_params[0]*f_params[0]*a@(a.T*f_mean)
-    return G
-
 def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False, dlambda_m=None, dlambda_var=None):
     # Returns the Sum of <loglikelihood> terms of the logmarginal likelihood loss as in (51) Notes for Pietro   
     # TODO handle the thwo cases better (with and without gradients). Its returning a tuple in one case and and not int he other
 
-
     # NB: A here is the firing rate parameter, not the receptive field Amplitude one
-    A = f_params['A']
+    A = torch.exp(f_params['logA'])
     lambda0 = f_params['lambda0']
     rlambda_m = r@lambda_m  
     sum_r     = torch.sum(r)
 
-    logLK     = A*rlambda_m + lambda0*sum_r - torch.sum(f_mean)
+    loglikelihood     = A*rlambda_m + lambda0*sum_r - torch.sum(f_mean)
+
+    # It looks like its not lambda_m that is causing a diverging gradent
+    # print(f'computing likelihood with lambda_m.mean = {lambda_m.mean()} and lambda_var.mean = {lambda_var.mean()}')
 
     if compute_grad_for_f_params:
         # This is used when -loglikelihood is used loss for optimizer of f_params
         # Derivative of the loglikelihood with respect to the parameters of the firing rate
-        dlogLK = {}
-        dlogLK['A'] = rlambda_m - torch.dot(lambda_m + A*lambda_var, f_mean)
-        dlogLK['lambda0'] = sum_r - sum(f_mean)
+        dloglikelihood = {}
+        # dloglikelihood['A'] = rlambda_m - torch.dot(lambda_m + A*lambda_var, f_mean) # Derivative of the loglikelihood with respect to A
+        dloglikelihood['logA'] = A*(rlambda_m - torch.dot(lambda_m + A*lambda_var, f_mean))
+        dloglikelihood['lambda0'] = sum_r - sum(f_mean)
 
-        return logLK , dlogLK
+        return loglikelihood , dloglikelihood
 
     if dlambda_m is not None and dlambda_var is not None:
-        dlogLK = {}
+        dloglikelihood = {}
         for key in dlambda_m.keys():
-            dlogLK[key] = r@dlambda_m[key] - A*torch.dot(f_mean, dlambda_m[key]) - 0.5*A*A*torch.dot(f_mean, dlambda_var[key]) 
-        return logLK , dlogLK    
+            # dloglikelihood[key] = r@dlambda_m[key] - A*f_mean@dlambda_m[key] - 0.5*A*A*f_mean@dlambda_var[key] 
+            # In Matthews code:
+            dloglikelihood[key] = A*r@dlambda_m[key] - A*f_mean@dlambda_m[key] - 0.5*A*A*f_mean@dlambda_var[key] 
+        return loglikelihood , dloglikelihood    
     else:
-        return logLK, rlambda_m, sum_r # Only here i return these two values cause i need them in updateA
+        return loglikelihood, rlambda_m, sum_r # Only here i return these two values cause i need them in updateA
 
 def log_det(M):
 
-    try:
+    if is_posdef(M):
         # Try a Cholesky decomposition, L is the matrix that multiplitd by its (cunjugate) transpose gives M
         L=torch.linalg.cholesky(M, upper=True)
         # The determinant of M is then the product (the * 2 ) of the product of the diagonal elements of L and L.T (the same if real) 
         # Its log is 2*torch.log(torch.product(torch.diag(L))) which corresponds to
         return 2*torch.sum(safe_log(torch.diag(L))) 
-    except:
-        warnings.warn("The matrix is not positive definite, using eigendecomposition to calculate the log determinant")
-        eigenvalues, eigenvectors = torch.linalg.eig(M) # Need to use .eig() cause .eigh() is only for simmetrix matrices
-        # Matrix M should always be positive semidefinite
-        # count how many eigenvalues are negative, complex or zero
-        #print(f'n eigvals<0: {torch.sum(torch.real(eigenvalues)<0)}', f'n eigvals imag>1.e-6: {torch.sum(torch.abs(eigenvalues.imag) > 1e-6)}', 
-        #      f'n small eigvals ( < 1.e-6 ): {torch.sum(torch.real(eigenvalues)<1e-6)}')
+    else:
+        # warnings.warn("The matrix is not positive definite, using eigendecomposition to calculate the log determinant")
+        if is_simmetric(M):
+            # If the matrix is simmetric we can use eigh
+            eigenvalues, eigenvectors = torch.linalg.eigh(M) # Need to use .eig() cause .eigh() is only for simmetrix matrices
 
-        # eigenvectors = eigenvectors[ :,  torch.real(eigenvalues)>1e-6  ]
-        large_real_eigenvals = torch.real(eigenvalues[torch.real(eigenvalues)>1.e-6])
-        
-        return torch.sum(safe_log( large_real_eigenvals )) 
+            # eigenvalues, eigenvectors = torch.linalg.eig(M) # Need to use .eig() cause .eigh() is only for simmetrix matrices
 
-def compute_KL_div( m, V_inv, K_tilde, K_tilde_inv, dK_tilde=None):
+            # eigenvectors = eigenvectors[ :,  torch.real(eigenvalues)>1e-6  ]
+            large_real_eigenvals = torch.real(eigenvalues[torch.real(eigenvalues)>1.e-6])
+            
+            return torch.sum(safe_log( large_real_eigenvals )) 
+        else:
+            warnings.warn("The matrix is not simmetric in log_det used in KL_divergence")
+            return 0
+
+def compute_KL_div( m, V, K_tilde, K_tilde_inv, dK_tilde=None):
     
     # Computes the Kullback Leiber divergence term of the complete loss function (marginal likelihoo)
     # D_KL( q(lambda_tilde) || p(lambda_tilde) 
-    # c = K_tilde_inv @ V
-    c_inv = V_inv @ K_tilde
+    c = V @ K_tilde_inv
+    # c_inv = V_inv @ K_tilde
     b = K_tilde_inv @ m
     
     # c = torch.linalg.solve(K_tilde, V)       # Shape (ntilde, ntilde)# This is " C " in samuele code written as V @ K_tilde_inv
     # b = torch.linalg.solve(K_tilde, m)       # Shape (ntilde, 1)
     # derivative with respect to theta
     
-    KL = -0.5*(1/log_det(V_inv) - log_det(K_tilde)) + 0.5*torch.matmul(m.T, b) + 0.5*torch.sum(1./torch.linalg.eig(c_inv)[0])      #0.5*torch.trace(c)
+    KL = -0.5*log_det(V) + 0.5*log_det(K_tilde) + 0.5*torch.matmul(m.T, b) + 0.5*torch.trace(c) #0.5*torch.sum(1./torch.linalg.eig(c_inv)[0])
 
     if dK_tilde is not None:
         dKL = {}
         for key in dK_tilde.keys():
             B = dK_tilde[key]@K_tilde_inv # Shape (ntilde, ntilde
 
-            dKL[key] = 0.5*torch.trace(B) - 0.5*torch.trace(torch.linalg.pinv(c_inv)@B) - 0.5*b.T@(B@m)
+            dKL[key] = 0.5*torch.trace(B) - 0.5*torch.trace(c@B) - 0.5*b.T@(B@m)
 
         return KL, dKL
     else:
@@ -913,20 +940,20 @@ def updateA(f_params, r, lambda_m, lambda_var, nit=1000, eta=0.25, tol=1e-6, Pri
 
             # RETURNS
             # f_par: updated f_par
-            # likelihood[-1]: likelihood reached by the last iteration
+            # loglikelihood[-1]: loglikelihood reached by the last iteration
 
             count = 0 
             flag = True
 
             #L = np.zeros((int(nit), 1))
             # L = torch.tensor.zeros((nit, 1))
-            likelihood = torch.zeros((nit, 1))
+            loglikelihood = torch.zeros((nit, 1))
 
             while flag:
                 f_mean    =  mean_f( f_params=f_params, calculate_moments=False, lambda_m=lambda_m, lambda_var=lambda_var )
 
                 # f_mean    = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
-                likelihood[count], rlambda_m, sum_r  = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)
+                loglikelihood[count], rlambda_m, sum_r  = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)
                 
                 # Derivarive of the exponential of f_mean
                 d_exp = (lambda_m + f_params[0]*lambda_var)
@@ -941,7 +968,7 @@ def updateA(f_params, r, lambda_m, lambda_var, nit=1000, eta=0.25, tol=1e-6, Pri
                 eigvals  = torch.linalg.eigh(H)[0]
                 they_negative = torch.all(eigvals < 0)
                 if not they_negative:
-                    print(f'All eigenval of hessian are nonpositive? {they_negative}, the likelihood is not concave in this point. Iteration: {count}')
+                    print(f'All eigenval of hessian are nonpositive? {they_negative}, the loglikelihood is not concave in this point. Iteration: {count}')
 
                 #  ____ TEMP ___
                 # Gradient descent update:
@@ -964,70 +991,77 @@ def updateA(f_params, r, lambda_m, lambda_var, nit=1000, eta=0.25, tol=1e-6, Pri
                         flag = False
                         continue
                 
-            return f_params, likelihood[count-1], mean_f_given_lambda_moments( f_params, lambda_m, lambda_var )
+            return f_params, loglikelihood[count-1], mean_f_given_lambda_moments( f_params, lambda_m, lambda_var )
 
-def Estep( r, K_tilde, K_tilde_inv, KKtilde_inv, m, f_params, f_mean):
+def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, V=None, update_V_inv=False, alpha=1):
 
-    # Does not use kernfun
+    # Updates the value of the mean vector and covariance matrix of the variational distribution q(lambda_tilde) = N(m, V)
+    # m and V should be of shape (ntilde, 1) and (ntilde, ntilde) respectively but for staility reasons quantities are projected onto a subspace
+    # of the eigenspace of K_tilde. This means that the m and V that are passed are really m_b and V_b.
+    # Updates can be made on V (update_V_inv=False) and this allows also smalles step sizes for the Newton update, regulated by alpha.
+    # or on V_inv (update_V_inv=True). This latter case does not need V or V_inv to be passed as an input, K_tilde and m are enough.
 
+    # Note that for updating V , a projection on the eigenspace of K_tilde has been assumed (Kb_diag must be the diagonal of a diagonal matrix )
 
-    # print(f' \n **In Estep:')
-    # print(f' m.mean() before E step inside function: {m.mean()}')
-    # print(f' V.mean() before E step: {V.mean()}')
+    # TODO: To make the update on V work also for a generic K_tilde (not projected, non diagonal), the following update should be implemented:
+    # Note that the operator .* in matlab has the same effect of * here
 
-    # TODO find a better way to preserve the value KKtilde_inv, aka 'a' in the notes for Pietro and samuele's code
-
-    # g = f_params[0] * torch.sum( K.T * (r - f_mean), dim=1) # Shape (n_tilde)
-    # g = compute_g( f_params, K, r, f_mean)
-    
-    # Add a small perturbation to the diagonal of K_tilde
-    # epsilon = 1e-9
-    # K_tilde_perturbed = K_tilde + epsilon * torch.eye(K_tilde.shape[0])
-    # KtildeG_inv        = torch.inverse(K_tilde_perturbed + G)
-    # Ktilde_KtildeG_inv = torch.matmul(K_tilde, KtildeG_inv)
-
-    # I redid the calculations for the update on m  and V on the 31 01 24, these should be correct but they 
-    # are very different from Samuele's
-    # if needed you have to passs V_inv as well
-    # m     = m + K_tilde @ torch.inverse( K_tilde_perturbed - G ) @ (g-m)
-    # V_inv = 2*V_inv - K_tilde_inv @ (K_tilde_perturbed + G) @ K_tilde_inv        
-    # V     = torch.inverse(V_inv)
-
-    #_____ TEMP - SAMUELE ____
-    # No need for the above
-    g = compute_g_assamu(f_params=f_params, KKtilde_inv=KKtilde_inv, r=r, f_mean=f_mean)
-    G = compute_G_assamu(f_params=f_params, KKtilde_inv=KKtilde_inv, f_mean=f_mean)
-    V_new = torch.linalg.solve(torch.eye(K_tilde.shape[0])+K_tilde @ G, K_tilde)
-    V_new = (V_new + V_new.T) / 2 + 1e-5 * torch.eye(K_tilde.shape[0]) # make sure positive definite!
-    m_new = V_new @ (G @ m + g)  #shape(250,1)
-
+    # Kb_diag = torch.diag(K_tilde)
+    # V_new  = ( torch.linalg.solve(V, (1-alpha)*torch.diag_embed(Kb_diag) + alpha*V + alpha*( Kb_diag*G )@V ) ) * Kb_diag 
+    # m_new = m + alpha*( torch.linalg.solve( torch.eye(m.shape[0])+Kb_diag*G , (m-Kb_diag*g))  )
+    # (Matlab code from Matthew VarGP3.m)
 
     # Matthew's update
     # In the Matlab code a = K_tilde_inv @ K which means a = KKtilde_inv.T for this code. 
     # Since I use instead a = KKtilde_inv in other parts of the code Im using KKtilde_inv diretly here.
 
-    # g = f_params['A'] * KKtilde_inv.T @ (r - f_mean)
-    # G1 = f_params['A']*f_params['A'] * KKtilde_inv.T@(KKtilde_inv*f_mean[:,None]) # f_mean is a vector
+    A = torch.exp(f_params['logA'])
+    g = A * KKtilde_inv.T @ (r - f_mean)
+    G = A*A * KKtilde_inv.T@(KKtilde_inv*f_mean[:,None]) # f_mean is a vector
+    # G = f_params['A']*f_params['A'] * torch.einsum('ij,jk->ikj', KKtilde_inv.T, KKtilde_inv) @ f_mean # Shape (ntilde, ntilde) #same as this, above is like Matthew did. TODO: Check what is faster
+    # Checked that g and G give the same as Samuele    
 
-    # V_inv_new = ( K_tilde_inv + G ) # shape (ntilde, ntilde)
-    # V_inv_new = (V_inv_new + V_inv_new.T) / 2  # making sure it is symmetric
-    # V_new     = torch.linalg.inv(V_inv_new) # shape (ntilde, ntilde)
+    # Updating V does not work for now
+    if update_V_inv == False and K_tilde is not None and V is not None:
+        if alpha==1:
+            V_new = K_tilde @ torch.linalg.solve(K_tilde+G, K_tilde)
+            m_new = V @ (G @ m + g)  #shape(250,1)
+        else:
+            V_new = torch.linalg.solve( V, (1-alpha)*K_tilde + alpha*V + alpha*(K_tilde@G)@V ) @ K_tilde
+            m_new = m - alpha*(  torch.linalg.solve( ( torch.eye(m.shape[0]) + K_tilde@G ) , ( m-K_tilde@g ) ) )
+    
+        # How I updated V before Matthew's code.
+        # V_new = torch.linalg.solve(torch.eye(K_tilde.shape[0])+K_tilde @ G, K_tilde)
+        # V_new = (V_new + V_new.T) / 2 + 1e-5 * torch.eye(K_tilde.shape[0]) # make sure positive definite!
+        # m_new = V_new @ (G @ m + g)  #shape(250,1)
 
-    # m_new = torch.linalg.solve(V_inv_new , (G @ m + g))  #shape(ntilde)
+    elif update_V_inv == True and K_tilde_inv is not None and alpha==1:
+        
+        V_inv_new = ( K_tilde_inv + G ) # shape (ntilde, ntilde)
+        
+        V_inv_new = (V_inv_new + V_inv_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*torch.eye(V_inv_new.shape[0]) # making sure it is symmetric
+        try:
+            V_new     = torch.linalg.inv(V_inv_new) # shape (ntilde, ntilde)
+        except:
+            warnings.warn('V_inv_new is not invertible in Estep')
 
-    return m_new, V_new
+        # m_new = torch.linalg.solve(V_inv_new , (G @ m + g))  #shape(ntilde)
+        m_new = V_new @ (G @ m + g)  #shape(ntilde)
+
+        V_new = (V_new + V_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*torch.eye(V_new.shape[0]) # making sure it is symmetric
+        return m_new, V_new
 
 def print_hyp( theta ):
         for key in theta.keys():
 
-            if key == '-2log2beta':
-                print(f' beta: {logbeta_to_beta(theta):.8f}')
-                continue
-            if key == '-log2rho2':
-                print(f' rho: {logrho_to_rho(theta):.8f}')
-                continue
+            # if key == '-2log2beta':
+            #     print(f' beta: {logbeta_to_beta(theta):.8f}')
+            #     continue
+            # if key == '-log2rho2':
+            #     print(f' rho: {logrho_to_rho(theta):.8f}')
+            #     continue
 
-            print(f' {key}: {theta[ key ]:.8f}')       
+            print(f' {key}: {theta[ key ]:.6f}')       
 
 
 ##################   Inference   ########################
@@ -1160,7 +1194,6 @@ def plot_fit(R_predicted, rtst, r2, sigma_r2, cellid):
     # plt.close()
     return fig
 
-
 def compute_loglikelihood_(f_params, lambda_m, lambda_var, r):
 
     A       = f_params['A']
@@ -1181,7 +1214,7 @@ def compute_loglikelihood_(f_params, lambda_m, lambda_var, r):
 ##########################################################
 
 def varGP(x, r, **kwargs):
-    #region
+    #region _______ infos __________
     # Learn the hyperparameters of the GP model
 
     # INPUTS:
@@ -1207,349 +1240,419 @@ def varGP(x, r, **kwargs):
     # RETURNS
     
     # theta,
-    # f_par, 2 Parameters of the firing rate (A and lambda_0) in the paper
+    # f_par, 2 Parameters of the firing rate (logA and lambda_0) in the paper, we update logA cause udpading A is not stable, since its in the exponent of the firing rate f_mean
     # m, V (tensors tracking the values of all of the above)
     # xtilde: set of inducing datapoints
     # L, loss function during learning
-
     #endregion
 
-    #region
-    # number of pixels, number of training points 
-    nt, nx = x.shape 
+    with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.
+        #region ________ Initialization __________
+        # number of pixels, number of training points 
+        nt, nx = x.shape 
 
-    ntilde  = kwargs.get('ntilde', 100 if nt>100 else nt) # if no ntilde is provided try with 100, otherwise inducing points=x   
-    xtilde  = kwargs.get('xtilde', generate_xtilde(ntilde, x)) 
-    if ntilde != xtilde.shape[0]: raise Exception('Number of inducing points does not match ntilde')
-    
-    Maxiter       = kwargs.get('Maxiter', 200)
-    Nestep        = kwargs.get('Nestep',  50) 
-    Nmstep        = kwargs.get('Nmstep',  20)
-    display_hyper = kwargs.get('display_hyper', True)
-    display_prog  = kwargs.get('display_prog', True)
-
-    kernfun = kwargs.get('kernfun', acosker_samu)
-
-    n_px_side = kwargs.get('n_px_side', torch.tensor(np.sqrt(nx), dtype=torch.int))
-    
-    # Initialize hyperparameters of Kernel and parameters of the firing rate
-    if 'hyperparams_tuple' not in kwargs: hyperparams_tuple = generate_theta(x, r, n_px_side=n_px_side, display=display_hyper)
-    else: hyperparams_tuple = kwargs.get('hyperparams_tuple')
-
-    theta             = kwargs.get( 'theta', hyperparams_tuple[0]) 
-    theta_lower_lims  = kwargs.get('theta_lower_lims', hyperparams_tuple[1] )
-    theta_higher_lims = kwargs.get('theta_higher_lims', hyperparams_tuple[2] )
-    f_params          = kwargs.get( 'f_params', {'A': torch.tensor(0.0001), 'lambda0':torch.tensor(-1)} ) # Parameters of the firing rate (A and lambda_0) in the paper
-    # f_params[0]       = f_params[0].clone().detach().requires_grad_(True)
-    # f_params[1]       = f_params[1].clone().detach().requires_grad_(True)
-
-    # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
-
-    # calculating dC in debug but its not necessary
-    C, mask = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
-    #TODO Calculate it only close to the RF (for now it's every pixel)
-
-    m = kwargs.get('m', torch.zeros( (ntilde) )).detach()
-    V = kwargs.get('V', kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) ).detach()
-    V_inv = torch.linalg.inv(V)
-    # Pietro's implementation of acoskern, faster but not stable.
-    # V = kwargs.get('V', kernfun( xtilde[:,mask], xtilde[:,mask], C, theta, xtilde_case=True, dC=None )).detach()  # shape (ntilde, ntilde)
-    
-    # Track 
-    loss            = {'marginal'  : torch.zeros((Maxiter)),
-                       'likelihood': torch.zeros((Maxiter)),
-                       'KL'        : torch.zeros((Maxiter)),
-                       } # Loss to  maximise: Log Likelihood - KL
-    theta_track     = {key : torch.zeros((Maxiter)) for key in theta.keys()}
-    f_par_track     = {'A': torch.zeros((Maxiter)), 'lambda0': torch.zeros((Maxiter))} # track hyperparamers
-    values_track    = {'loss': loss, 'theta_track': theta_track, 'f_par_track': f_par_track}
-    #endregion
-
-
-    #_________ Main Loop ___________
-    # progbar = tqdm( range(Maxiter), disable = not display_prog, desc=f"GP step loss", position=0 )   
-    for iteration in range(Maxiter):
-
-        #________________ Compute the KERNELS after M-Step and the inverse of V _____________
-        # calculating dC in debug but its not necessary
-        C, mask    = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
-
-        K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False) # shape (ntilde, ntilde)
-        # K_tilde and dK_tilde checked. They return the same as Samuele up to the 1e-5/6
-        K                = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
-        # K checked, returns the same as Samuele up to the 1e-5/6
-        Kvec             = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)              # shape (nt)
-
-        try:
-            L=torch.linalg.cholesky(K_tilde, upper=True)
-        except:
-            warnings.warn('   K_tilde not positive definite') 
-
-        #  Stabilization
-        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')#calculates the eigenvalues for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
-        ikeep = eigvals > max(eigvals.max() / 1e4, 1e-4)       # Keep only the largest eigenvectors
-        B = eigvecs[:, ikeep]                                  # shape (ntilde, n_eigen)            
-
-
-        # Vlambda, Vvec = torch.linalg.eigh(V) 
-        # # find the eigenvalues of V hthat are 0 or less:
-        # Vkeep = Vlambda < 1e-5
-        # print(f'\n Iteration {iteration} Number of  small or negative eigvals of V: {torch.sum(Vkeep)}, for the V used in previous iteration')
-        # print(' Projecting onto updated eigenspace' )
-
-        K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
-        K_b = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
-        m_b = B.T @ m                            # Project m into eigenspace, shape (n_eigen, 1) 
-        V_b = (B.T@V)@B                          # shape (n_eigen, n_eigen). There is no guarantee that V is positive definite. It has been obtained by expanding the V_b updated in the previous iteration 
-                                                 # back to the original space. We are now projecting in to the new eigenspace of the updated K_tilde.
-
-        # V_blambda, V_bvec = torch.linalg.eigh(V_b) 
-        # # find the eigenvalues of V hthat are 0 or less:
-        # V_bkeep = V_blambda < 1e-5
-        # print(f'  Iteration {iteration} Number of small or negative eigvals of V_b: {torch.sum(V_bkeep)}. V_b will be used in the this iteration')
-
-        K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen)
-        KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen)
-
-        #region  _______________ Control over possible Nans ______
-        for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['A'], f_params['lambda0']]:
-            if torch.any(torch.isnan(tensor)):
-                variable_name = [k for k, v in locals().items() if v is tensor][0]
-                raise ValueError(f'NaN in {variable_name}')
-            if torch.any(torch.isinf(tensor)):
-                variable_name = [k for k, v in locals().items() if v is tensor][0]
-                raise ValueError(f'Inf in {variable_name}')
-        #endregion
+        ntilde  = kwargs.get('ntilde', 100 if nt>100 else nt) # if no ntilde is provided try with 100, otherwise inducing points=x   
+        xtilde  = kwargs.get('xtilde', generate_xtilde(ntilde, x)) 
+        if ntilde != xtilde.shape[0]: raise Exception('Number of inducing points does not match ntilde')
         
-        f_mean, lambda_m, lambda_var  = mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
-                                                theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None )# calling  the function without dK and Ktilde_inv cause i dont need the gradients of lambda from this call 
-           
-        #region Paused _______________ Update the trakinf dictionaries _______________   
-        # Computing the KL divergence here might give problems with the V_b not being positive definite. 
-        # Even though it should if the matrices V_b and K_tilde_b live in the same space
-        values_track['loss']['likelihood'][iteration] = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
-        values_track['loss']['KL'][iteration]         = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
-        values_track['loss']['marginal'][iteration]   = values_track['loss']['likelihood'][iteration] - values_track['loss']['KL'][iteration]
+        Maxiter       = kwargs.get('Maxiter', 200)
+        Nestep        = kwargs.get('Nestep',  50) 
+        Nmstep        = kwargs.get('Nmstep',  20)
+        display_hyper = kwargs.get('display_hyper', True)
+        display_prog  = kwargs.get('display_prog', True)
+
+        kernfun = kwargs.get('kernfun', acosker_samu)
+
+        n_px_side = kwargs.get('n_px_side', torch.tensor(np.sqrt(nx), dtype=torch.int))
         
-        for key in theta.keys():
-            values_track['theta_track'][key][iteration] = theta[key]
+        # Initialize hyperparameters of Kernel and parameters of the firing rate
+        if 'hyperparams_tuple' not in kwargs: hyperparams_tuple = generate_theta(x, r, n_px_side=n_px_side, display=display_hyper)
+        else: hyperparams_tuple = kwargs.get('hyperparams_tuple')
 
-        values_track['f_par_track']['A'][iteration]       = f_params['A']
-        values_track['f_par_track']['lambda0'][iteration] = f_params['lambda0']
-        #endregion
+        theta             = kwargs.get( 'theta', hyperparams_tuple[0]) 
+        theta_lower_lims  = kwargs.get('theta_lower_lims', hyperparams_tuple[1] )
+        theta_higher_lims = kwargs.get('theta_higher_lims', hyperparams_tuple[2] )
+        f_params          = kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(-1)} ) # Parameters of the firing rate (A and lambda_0) in the paper
 
-        #region _______________ Display _______________
-        # if iteration == 0:
-        #     print(f' Starting    : Likelihood : {likelihood.item():.4f}, -KL: {-KL.item():.4f}, Marginal: {marginal_likelihood.item():.8f}' )        
-        # else:
-        #     print(f' After M-step: Likelihood : {likelihood.item():.4f}, -KL: {-KL.item():.4f}, Marginal: {marginal_likelihood.item():.8f}' )
-        # # print(f' Iteration: {iteration}:  A: {f_params[0]:.4f}, lambda0: {f_params[1]:.4f}')
-        # # print_hyp( theta, iteration)  
+        # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
+        C, mask = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
+        #TODO Calculate it only close to the RF (for now it's every pixel)
 
-        print(f'\n**Iteration: {iteration}**')
-        #endregion
+        m = kwargs.get('m', torch.zeros( (ntilde) )).detach()
+        V = kwargs.get('V', kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) ).detach()
+        # Pietro's implementation of acoskern, faster but not stable.
+        # V = kwargs.get('V', kernfun( xtilde[:,mask], xtilde[:,mask], C, theta, xtilde_case=True, dC=None )).detach()  # shape (ntilde, ntilde)
+        
+        # Track 
+        loss            = {'logmarginal'  : torch.zeros((Maxiter)),
+                        'loglikelihood': torch.zeros((Maxiter)),
+                        'KL'           : torch.zeros((Maxiter)),
+                        } # Loss to  maximise: Log Likelihood - KL
+        theta_track     = {key : torch.zeros((Maxiter)) for key in theta.keys()}
+        f_par_track     = {'logA': torch.zeros((Maxiter)), 'lambda0': torch.zeros((Maxiter))} # track hyperparamers
+        values_track    = {'loss': loss, 'theta_track': theta_track, 'f_par_track': f_par_track}
 
-        #region _____________ _ E-Step : Update on m & V and f(lambda) parameters  ________________
-        with torch.no_grad():  # Temporarily set all requires_grad flag to false          
-            # progbar2 = tqdm( range(Nestep), disable=not display_prog, position=1, leave=True )
-            for i_estep in range(Nestep):
+        #endregion : initialization   
+
+        #_________ Main Loop ___________
+        # progbar = tqdm( range(Maxiter), disable = not display_prog, desc=f"GP step loss", position=0 )   
+        for iteration in range(Maxiter):
+
+            #region ___________________Computing Kernel____________________
+            # Compute starting Kernel, if no M-step -> only compute it once cause it's not changing
+            if iteration == 0 or Nmstep > 0:
+                #________________ Compute the KERNELS after M-Step and the inverse of V _____________
+
+                C, mask    = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
+                K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False) # shape (ntilde, ntilde)
+                K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
+                Kvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)              # shape (nt)
+            #endregion
+
+            #region ________________ Stabilization ________________
+                eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')#calculates the eigenvalues for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
+                ikeep = eigvals > max(eigvals.max() / 1e6, 1e-6)       # Keep only the largest eigenvectors
                 
-                if i_estep == 0:
-                    lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, C, m_b, V_b, theta, kernfun=kernfun)
+                if iteration>0: B_old = B # Save the old eigenvectors for the reprojection of V_b and m_b on the updated eigenspace
 
-                #region ____________ Update f_params ______________
-                print(f"  Before closure2:                      f_params['A'] = {f_params['A'].item():.3f}, f_params['lambda0'] = {f_params['lambda0'].item():.3f}, firing rate Nan or inf: { torch.any( torch.isnan(f_mean) | torch.isinf(f_mean)  ) }")
-                learning_rate2 = 0.1
-                optimizer2 = torch.optim.LBFGS(f_params.values(), lr=learning_rate2, max_iter=10)
-                def closure2( ):
-                    optimizer2.zero_grad()
-                    f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
-                    logLK, dlogLK = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )
+                B = eigvecs[:, ikeep]                                  # shape (ntilde, n_eigen)            
+                # Cleaning up the out of diagonal elements of K_tilde_b, they should be zero but they are not due to numerical errors
+                # make K_tilde-b a projection of K_tilde into the eigenspace of the largest eigenvectors
+                K_tilde_b = torch.diag(eigvals[ikeep])          # shape (n_eigen, n_eigen)
+                K_b = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
+
+                if iteration == 0:
+                    # In the first iteration we get the projetion V_b from the complete V
+                    V_b = K_tilde_b
+                    m_b = B.T @ m                            # Project m into eigenspace, shape (n_eigen, 1) 
+        
+                elif Nmstep > 0:
+                    # If we already have V_b (maybe updated in an E-step) and we changed the eigenspace (in the Mstep) its time to get V_b_new referring to this new eigenspace
+                    # V_b_new = (B_new.T@V)@B_new and V = B_old@V_b_old@B_old.T so 
+                    # with B = B_new and V_b = V_b_old
+                    V_b_new = B.T@(B_old@V_b@B_old.T)@B
+                    V_b = V_b_new
+
+                    m_b_new = B.T @ B_old @ m_b
+                    m_b = m_b_new
+
+            #endregion 
+            
+                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen)
+                KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen) # this is a in matthews code
+
+            #region  _______________ Control over possible Nans ______
+            for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['lambda0']]:
+                if torch.any(torch.isnan(tensor)):
+                    variable_name = [k for k, v in locals().items() if v is tensor][0]
+                    raise ValueError(f'NaN in {variable_name}')
+                if torch.any(torch.isinf(tensor)):
+                    variable_name = [k for k, v in locals().items() if v is tensor][0]
+                    raise ValueError(f'Inf in {variable_name}')
+            #endregion
+            
+            f_mean, lambda_m, lambda_var  = mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
+                                                    theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None )# calling  the function without dK and Ktilde_inv cause i dont need the gradients of lambda from this call 
+            
+            #region _______________ Update the tracking dictionaries _______________   
+            values_track['loss']['loglikelihood'][iteration] = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
+            values_track['loss']['KL'][iteration]            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+            values_track['loss']['logmarginal'][iteration]   = values_track['loss']['loglikelihood'][iteration] - values_track['loss']['KL'][iteration]        
+            for key in theta.keys():
+                values_track['theta_track'][key][iteration] = theta[key]
+            values_track['f_par_track']['logA'][iteration]    = f_params['logA']
+            values_track['f_par_track']['lambda0'][iteration] = f_params['lambda0']
+            #endregion
+
+            #region _______________ Display _______________
+            loglikelihood = values_track['loss']['loglikelihood'][iteration]
+            KL            = values_track['loss']['KL'][iteration]
+            logmarginal   = values_track['loss']['logmarginal'][iteration]
+            print(f'Before E-step L: {-logmarginal.item():.4f}' ) 
+            #endregion
+
+            #region _______________ E-Step : Update on m & V and f(lambda) parameters  ###########
+            if Nestep > 0:
+                progbar2 = tqdm( range(Nestep), disable=not display_prog, position=1, leave=True )
+                for i_estep in range(Nestep):
+                    if i_estep == 0 and iteration == 0:
+                        lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
+                        f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+                    
+                    # region ____________ Update m and V ______________
+                    m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, V=V_b, 
+                                        update_V_inv=True, alpha=1  )
+
+                    f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
+                                                    theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None  )
+            
+                    loglikelihood       = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]                
+                    KL                  = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+                    logmarginal         = loglikelihood - KL            
+                    # endregion
+
+                    # region ____________ Update f_params ______________ 
+                    learning_rate2 = 1
+                    optimizer2 = torch.optim.LBFGS(f_params.values(), lr=learning_rate2, max_iter=10, tolerance_change=1.e-3)
+                    
+                    def closure2( ):
+                        optimizer2.zero_grad()
+                        f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
+                        loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )
+                        
+                        # Update gradients of the loss with respect to the firing rate parameters
+                        f_params['logA'].grad    = -dloglikelihood['logA']
+                        f_params['lambda0'].grad = -dloglikelihood['lambda0']
+                        # print(f' Grad logA: {f_params["logA"].grad.item():.8f}, Grad lambda0: {f_params["lambda0"].grad.item():.4f}')
+
+                        # the closure has to return the loss,
+                        # the loss is the negative loglikelihood
+                        # NOTE: don't use this return value, its just the first iteration of the optimizer, however many iterations are done in the optimizer
+                        return -loglikelihood
+                    
+                    optimizer2.step(closure2) 
+                    #region ____________ Update using Adam ______________
+                    # learning_rate3 = 0.01
+                    # optimizer3 = torch.optim.Adam(f_params.values(), lr=learning_rate3)
+                    # optimizer3.zero_grad()  # Zero the gradients
+                    # f_mean = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+                    # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True)
                     
                     # Update gradients of the loss with respect to the firing rate parameters
-                    f_params['A'].grad       = -dlogLK['A']
-                    f_params['lambda0'].grad = -dlogLK['lambda0']
-                    # lossA.backward(retain_graph=True)
-                    return -logLK
-                # the closure has to return the loss, that's why the minus sign after the return in closure2.
-                # since what we are interested in is the likelihood we take the minus.
-                logLK = -optimizer2.step(closure2) 
-                print(f"  After closure2: loglikelihood = {logLK:.3}, f_params['A'] = {f_params['A'].item():.3f}, f_params['lambda0'] = {f_params['lambda0'].item():.3f}, firing rate Nan or inf: { torch.any( torch.isnan(f_mean) | torch.isinf(f_mean)  ) }")
-            #endregion
-                
-                f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+                    # f_params['A'].grad = -dloglikelihood['A']
+                    # f_params['lambda0'].grad = -dloglikelihood['lambda0']
+                    # print(f'f-update:\n Grad A: {f_params["A"].grad.item():.8f}, Grad lambda0: {f_params["lambda0"].grad.item():.4f}')
+                    # optimizer3.step()  # Update parameters
+                    #endregion
 
-                # print( f' A = {f_params["A"].item():.4f}, lambda0 = {f_params["lambda0"].item():.4f} f_mean_mean: {f_mean.mean():.4f} \n lambda_m_mean: {lambda_m.mean():.4f} lambda_var_mean: {lambda_var.mean():.4f}')
-
-                m_b, V_b = Estep( r=r, K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean )
-                
-                # V_blambda, V_bvec = torch.linalg.eigh(V_b) 
-                # # find the eigenvalues of V hthat are 0 or less:     
-                # V_bkeep = V_blambda < 1e-5
-                # print(f'   Iteration {iteration} Number of small or negative eigvals of V_b: {torch.sum(V_bkeep)}. Just after E-step')
-                try:
-                    L=torch.linalg.cholesky(V_b, upper=True)
-                except:
-                    warnings.warn('   V_b not positive definite')
-                try:
-                    L=torch.linalg.cholesky(K_tilde_b, upper=True)
-                except:
-                    warnings.warn('   K_tilde_b not positive definite')                    
-
-                f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
-                                                 theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None  )
-                
-                likelihood          = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
-                # Computing this KL divergence might give problems in the LogDet if V_b is not positive definite
-                KL                  = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
-                marginal_likelihood = likelihood - KL            
-                # print(f' After E-Step: Likelihood : {likelihood.item():.4f}, -KL: {-KL.item():.4f}, Marginal: {marginal_likelihood.item():.8f}' )
+                    # endregion                       
+            else: print('No E-step')
         
-                #region _______________ Display ____________________
-        #         if display_prog:
-        #             likelihood          = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
-        #             # Computing this KL divergence might give problems in the LogDet if V_b is not positive definite
-        #             KL                  = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
-        #             marginal_likelihood = likelihood - KL
-        #             print(f' After E-Step: Likelihood : {likelihood.item():.4f}, -KL: {-KL.item():.4f}, Marginal: {marginal_likelihood.item():.8f}' )
-        #             # progbar2.set_description(f"EE step loss: {-marginal_likelihood.item():.4f}")
-        #             progbar2.update(1)
-        #         #endregion   
-        # progbar2.close()
-        #endregion            
+            f_mean        = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+            loglikelihood = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
+            KL            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+            logmarginal   = loglikelihood - KL 
+            #region _______________ Display ____________________
+            print(f'After E-Step L : {-logmarginal.item():.4f}' )
+            if display_prog:
+                # print(f'\n**Iteration: {iteration}**')
+                loglikelihood = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
+                KL            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+                logmarginal   = loglikelihood - KL
+                # print(f' After E-Step Loss: {-logmarginal.item():.8f}' )
+                progbar2.set_description(f"E-step loss: {-logmarginal.item():.4f}")
+                progbar2.update(1)
+            progbar2.close()
+            #endregion   
+            #endregion            
 
-        #region _______________ Restoring m and V to the original space ________________
+            #region _______________ M-Step : Update on hyperparameters theta  ________________
 
-        # Look at eigenvalues of V_b are they positive definite? 
-        # I have to reproject before the m step is I change and eigenbasis
-        # m = B@m_b
-        # V = (B@V_b)@B.T 
-        
-        #endregion
+            if Nmstep > 0:        
+                #test with Adam
+                #region _____________Update Kernels and stabilise
+                # print(f'   -logLikelihood : {-loglikelihood.item():.4f}, +KL Div: {KL.item():.4f},  = -logMarginal = LOSS: {-logmarginal.item():.8f}' )
+                # for i_mstep in range(Nmstep):
 
-            #region _______________ M-Step : Update on theta  ________________
-            if Nmstep > 0:
+                #     C, mask, dC       = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
+                #     K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                #     K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                #     Kvec, dKvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
 
-                learning_rate = 0.1
-                # optimizer = torch.optim.Adam(theta.values(), lr=learning_rate)
-                optimizer = torch.optim.LBFGS(theta.values(), lr=learning_rate, max_iter=Nmstep)
-
-                def closure( ):
-            
-                    optimizer.zero_grad()
-                    C, mask, dC     = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
-                    K_tilde, dK_tilde     = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                    K, dK                 = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                    Kvec, dKvec           = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
-
-                    #region ____________Stabilization____________________
+                
                     # In the first version of Samuele's code with stabilization, the eigenvector matrix is not recalculated during the M-step. 
                     # This is not entirely precise because a change in hyperparameters could change the eigenvalues  over the threshold (and therefore change the dimension of the subspace I'm projecting onto)
                     # But this most likely has a minimal effect. And it saves Nmstep eigenvalue decompositions per iteration.
 
-                    try:
-                        L=torch.linalg.cholesky(K_tilde, upper=True)
-                    except:
-                        warnings.warn('   K_tilde not positive definite') 
-                    try:
-                        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')  # calculates the eigenvalues for a symmetric matrix
-                    except:
-                        warnings.warn('   Problem with K tilde')
-        
                     # ikeep = eigvals > max(eigvals.max() / 1e4, 1e-4)         # Keep only the largest eigenvectors
                     # B = eigvecs[:, ikeep]                                    # shape (ntilde, n_eigen)            
 
-                    # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters)
-                    K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
-                    K_b  = K @ B                             # Project K into eigenspace, shape (3190, n_eigen)
+                    # # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters)
+                    # K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
+                    # K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5       # make sure it is symmetric
+                    # K_b  = K @ B                             # Project K into eigenspace, shape (3190, n_eigen)
 
-                    # m_b = B.T @ m                            # Project m into eigenspace, shape (n_eigen, 1) 
-                    # V_b = (B.T@V)@B                          # shape (n_eigen, n_eigen) 
+                    # # If eigenspace B has been recalculated, one has to reproject m and V into the new eigenspace
+                    # # m_b = B.T @ m                            # Project m into eigenspace, shape (n_eigen, 1) 
+                    # # V_b = (B.T@V)@B                          # shape (n_eigen, n_eigen) 
 
-                    dK_tilde_b = {}
-                    dK_b = {}
-                    for key in dK_tilde.keys():
-                        dK_tilde_b[key] = B.T@dK_tilde[key]@B
-                        dK_b[key]       = dK[key] @ B                            # Project dK into eigenspace, shape (3190, n_eigen)
-                    #endregion
+                    # dK_tilde_b = {}
+                    # dK_b = {}
+                    # for key in dK_tilde.keys():
+                    #     dK_tilde_b[key] = B.T@dK_tilde[key]@B
+                    #     dK_b[key]       = dK[key] @ B                            # Project dK into eigenspace, shape (3190, n_eigen)
+                    # #endregion
 
-                    # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
-                    K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
-                    KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen)                
+                    # # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
+                    # # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
+                    # K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
+                    # KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen) 
+                    # #endregion  
+                    # #region ____________ Update using Adam ______________
+                    # print_hyp(theta)
+                    # learning_rate_adam = 0.01
+                    # optimizer = torch.optim.Adam(theta.values(), lr=learning_rate_adam)
+                    # optimizer.zero_grad()  # Zero the gradients
+                    # f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
+                    #                                                                 C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
+                    # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
+                    # KL, dKL       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
+                    # loss          = -loglikelihood + KL
+                    # print(f'   -logLikelihood : {-loglikelihood.item():.4f}, +KL Div: {KL.item():.4f},  = -logMarginal = LOSS: {loss.item():.8f}' )
+                    # # Update gradients of the loss with respect to the firing rate parameters
+                    # for key in theta:
+                    #     if theta[key].requires_grad:
+                    #         theta[key].grad = -dloglikelihood[key] + dKL[key]
+                    # optimizer.step()  # Update parameters
+                #endregion
+                #end test
+                # progbar = tqdm( range(Nmstep), disable=not display_prog, position=2, leave=True )
 
-                    f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, 
-                                                                                    Kvec=Kvec, C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b,
-                                                                                    dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b, K=K_b ) # Shape (nt
-                    
-                    loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
-                    # Computing this KL divergence might give problems in the LogDet if V_b is not positive definite. If it hasnt given problems in the E step, it shouldnt here
-                    # try:
-                    #     L=torch.linalg.cholesky(V_b, upper=True)
-                    # except:
-                    #     warnings.warn('   V_b not positive definite in m step')
-                    # try:
-                    #     L=torch.linalg.cholesky(K_tilde_b, upper=True)
-                    # except:
-                    #     warnings.warn('   K_tilde_b not positive definite in m step')                     
+                if Nmstep == 1: nbfgsteps = 1
+                else:           nbfgsteps = int(Nmstep/2)
+                for i in range(nbfgsteps):
+                    # from a preliminary qualitative analysis it looks like doing only max_iter iterations in the optimiser
+                    # as good as doing the same number of iterations but split into steps of max_iter/nsteps iterations
+                    # I will try to do 2 steps of max_iter/2 iterations but its probably even better with 3 etc.
+                    # going below max_iter = 2 it not suggested cause int the first step lbgs could increase the loss
+                    # its supposed to handle but....
+                    # print(f' m-step {i}')
+                    learning_rate = 0.01
+                    optimizer = torch.optim.LBFGS(theta.values(), lr=learning_rate, max_iter=max([nbfgsteps, 2]) )
+                    def closure( ):
 
-                    KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
-                    logmarginal                   = loglikelihood - KL
-                    loss                          = -logmarginal
+                        optimizer.zero_grad()
+                        C, mask, dC       = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
+                        K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                        K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                        Kvec, dKvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
 
-                    # print(f' After E-Step: Likelihood : {likelihood.item():.4f}, -KL: {-KL.item():.4f}, Marginal: {marginal_likelihood.item():.8f}' )
+                        #region ____________Stabilization____________________
+                        # The eigenvectors are not recalculated during the M-step.
+                        # This is not entirely precise because a change in hyperparameters/Kernel changes the eigenvalues
+                        # and could alsochange the dimension of the subspace I'm projecting onto.
+                        # But this most likely has a minimal effect. And it saves Nmstep eigenvalue decompositions per iteration.
+                        # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
 
-                    # Dictionary of gradients of the -loss with respect to the hyperparameters, to be assigned to the gradients of the parameters
-                    dlogmarginal = {}
-                    for key in dK_tilde.keys():
-                        dlogmarginal[key] = dloglikelihood[key] - dKL[key]
+                        # In case of numerical errors, the eigenvectors are recalculated in the E-step with:
+                        # ikeep = eigvals > max(eigvals.max() / 1e6, 1e-6)         # Keep only the largest eigenvectors
+                        # B = eigvecs[:, ikeep]                                    # shape (ntilde, n_eigen)            
 
-                    # loss.backward(retain_graph=True)
-                    # Update the gradients of the loss with respect to the hyperparameters ( its minus the gradeints of the logmarginal)
-                    for key in theta.keys():
-                        if theta[key].requires_grad:
-                            theta[key].grad = -dlogmarginal[key]
+                        # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters/Kernel)
+                        K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
+                        K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5       # make sure it is symmetric
+                        K_b  = K @ B                             # Project K into eigenspace, shape (3190, n_eigen)
 
-                    return loss
+                        # If eigenspace B has been recalculated, one has to reproject m and V into the new eigenspace
+                        # V_b_new = B.T@(B_old@V_b@B_old.T)@B
+                        # V_b     = V_b_new
+                        # m_b_new = B.T @ B_old @ m_b
+                        # m_b = m_b_new
+
+                        # Projection of the gradients of the Kernel into the eigenspace
+                        dK_tilde_b = {}
+                        dK_b = {}
+                        for key in dK_tilde.keys():
+                            dK_tilde_b[key] = B.T@dK_tilde[key]@B
+                            dK_b[key]       = dK[key] @ B                            # Project dK into eigenspace, shape (3190, n_eigen)
+                        #endregion
+
+                        # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
+                        # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
+                        K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
+                        KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen)                
+
+                        f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
+                                                                                    C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
+                        
+                        loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
+                        KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
+                        logmarginal                   = loglikelihood - KL
+                        
+                        loss = -logmarginal
+
+                        # Dictionary of gradients of the -loss with respect to the hyperparameters, to be assigned to the gradients of the parameters
+                        # Update the gradients of the loss with respect to the hyperparameters ( its minus the gradeints of the logmarginal)
+                        dlogmarginal = {}
+                        for key in theta.keys():
+                            dlogmarginal[key] = dloglikelihood[key] - dKL[key]
+                            if theta[key].requires_grad:
+                                theta[key].grad = -dlogmarginal[key]
+
+                        # print_hyp(theta)
+                   
+                        # In case you want to implement the simplest gradient descent, you can use this and call closure() directly   
+                        # for key in theta.keys():
+                        #     if theta[key].requires_grad:
+                        #         theta[key] = theta[key] - 0.0001*theta[key].grad
+                        # print(f'   m-step loss: {-logmarginal.item():.4f}')
+                        return loss
                 
-                loss = optimizer.step(closure) 
-            
-                # progbar.set_description(f"GP step loss: {loss.item():.4f}")
-            # progbar.update(1)
-            #endregion
+                    optimizer.step(closure)
 
-            #region _______________ Restoring m and V to the original space ________________
-            # After having updated m and V in the E-step in their projected version m_b and V_b, we restore them to the original space.
-            # These updated & restored m and V are not used in the M-step ( there, we still use the projected version), but will be used in the next E-step after being projected in the
-            # NEW eigenspace, which depends on the updated hyperparameters coming from the M-step.
-            # If K_tilde is positive definite than B is orthogonal and B.T = B^-1, therefore
 
-            m = B@m_b
-            V = (B@V_b)@B.T 
-            
+                    # If you wan to test updating using simple gradient descent use
+                    # for i in range(Nmstep):
+                    #     loss = closure() # this closure() call will act as a step of the optimizer
+                    #     print(f'Loss: {loss.item()}')
+
+                    # progbar.set_description(f"GP step loss: {-logmarginal.item():.4f}")
+                    # progbar.update(1)
+
+
+            else: print('No M-step')
+
+            #endregion : M-step
+
+        #region ___________ print final loss ___________
+
+        C, mask    = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
+        K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False) # shape (ntilde, ntilde)
+        K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
+        Kvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)              # shape (nt)]
+
+        B_old = B
+        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')#calculates the eigenvalues for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
+        ikeep = eigvals > max(eigvals.max() / 1e6, 1e-6)       # Keep only the largest eigenvectors
+        B = eigvecs[:, ikeep]                                  # shape (ntilde, n_eigen)            
+        # Cleaning up the out of diagonal elements of K_tilde_b, they should be zero but they are not due to numerical errors
+        K_tilde_b = torch.diag(eigvals[ikeep])          # shape (n_eigen, n_eigen)
+        K_b = K @ B   
+        K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen)
+        KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen) # this is a in matthews code
+
+        V_b = B.T@(B_old@V_b@B_old.T)@B
+        V_b = V_b_new
+
+        m_b = B.T @ B_old @ m_b
+
+
+        f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
+                                        theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None  )
+
+        loglikelihood       = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]                
+        KL                  = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+        logmarginal         = loglikelihood - KL 
+        print(f'final Loss: {-logmarginal.item():.4f}' ) 
+ 
+       #region Utility function
+        # Test on utility function #
+        # avoid keeping track of the gradeints
+        # with torch.no_grad():  # Temporarily set all requires_grad flag to false
+        #     # take the last x as test to avoid taking an xtilde
+        #     xstar    = x[-3:-1,:] # shape (1, nx)
+        #     #K_for_u    = kernfun(x_for_u, xtilde[:,mask], C, theta, xtilde_case=False, scalar_case=False) #set of row vectors K_i for every input # shape (nt, ntilde)
+        #     # Take the prior moments estimated for this new x
+
+        #     # Inference on new input
+        #     mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
+
+        #     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
+        #     u = utility( sigma2=sigma2_star, mu=mu_star )
+        #     print(u)
         #endregion
 
 
-    #region Utility function
-    # Test on utility function #
-    # avoid keeping track of the gradeints
-    # with torch.no_grad():  # Temporarily set all requires_grad flag to false
-    #     # take the last x as test to avoid taking an xtilde
-    #     xstar    = x[-3:-1,:] # shape (1, nx)
-    #     #K_for_u    = kernfun(x_for_u, xtilde[:,mask], C, theta, xtilde_case=False, scalar_case=False) #set of row vectors K_i for every input # shape (nt, ntilde)
-    #     # Take the prior moments estimated for this new x
+        
 
-    #     # Inference on new input
-    #     mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
-
-    #     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
-    #     u = utility( sigma2=sigma2_star, mu=mu_star )
-    #     print(u)
-    #endregion
-
-    # C, mask     = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
-    # K_tilde     = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
-    # K_tilde_inv = torch.inverse(K_tilde)
-    
-
-    # return theta, f_params, m, V, C, mask, K_tilde_inv, K_tilde, values_track
-
+    return theta, f_params, m, V, C, mask, K_tilde, values_track
