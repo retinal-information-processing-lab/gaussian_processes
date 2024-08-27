@@ -1062,19 +1062,23 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
     
 
 def print_hyp( theta ):
+        key_width = 12
+        number_width = 8
         for key in theta.keys():
+            if key == '-2log2beta':
+                print(f' {key:<{key_width}}: {theta[ key ]:>{number_width}.4f} --> beta: {logbetaexpr_to_beta(theta):>{number_width}.4f}')  
+                continue
+            if key == '-log2rho2':
+                print(f' {key:<{key_width}}: {theta[ key ]:>{number_width}.4f} --> rho : {logrhoexpr_to_rho(theta):>{number_width}.4f}')  
+                continue
 
-            # if key == '-2log2beta':
-            #     print(f' beta: {logbeta_to_beta(theta):.8f}')
-            #     continue
-            # if key == '-log2rho2':
-            #     print(f' rho: {logrho_to_rho(theta):.8f}')
-            #     continue
-
-            print(f' {key}: {theta[ key ]:.6f}')       
+            print(f' {key:<{key_width}}: {theta[ key ]:>{number_width}.4f}')       
 
 ##################   Inference   ########################
+
 def test(X_test, R_test, xtilde, **kwargs):
+
+    # X_test # shape (30,108,108,1) # nimages, npx, npx
 
     maxiter = kwargs.get('Maxiter', 0)
     nestep  = kwargs.get('Nestep', 0)
@@ -1083,27 +1087,29 @@ def test(X_test, R_test, xtilde, **kwargs):
     cellid  = kwargs.get('cellid')
     theta   = kwargs.get('theta')
     C       = kwargs.get('C')
-    m       = kwargs.get('m')
-    V       = kwargs.get('V')
-    K_tilde = kwargs.get('K_tilde')
-    K_tilde_inv = kwargs.get('K_tilde_inv')
+    m       = kwargs.get('m_b')
+    V       = kwargs.get('V_b')
+    B       = kwargs.get('B')
+    K_tilde = kwargs.get('K_tilde_b')
+    K_tilde_inv = kwargs.get('K_tilde_inv_b')
     f_params = kwargs.get('f_params')
     kernfun = kwargs.get('kernfun')
 
     R_predicted = torch.zeros(X_test.shape[0])
 
+    A        = torch.exp(f_params['logA'])
+    lambda0 = f_params['lambda0']
+
     for i in range(X_test.shape[0]):
         xstar = X_test[i,:,:,:]
         xstar = torch.reshape(xstar, (1, xstar.shape[0]*xstar.shape[1]))
 
-        mu_star, sigma_star2 = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde_inv, m, V, kernfun)
+        mu_star, sigma_star2 = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun)
 
-        # Compute rate
-        rate_star = torch.exp( f_params[0]*mu_star + 0.5*f_params[0]*f_params[0]*sigma_star2 + f_params[1] )
+        rate_star = torch.exp( A*mu_star + 0.5*A*A*sigma_star2 + lambda0 )
 
         R_predicted[i] = rate_star #ends up being of shape 30
         # print(f'rate_star: {rate_star.item():.4f}')
-
 
     r2, sigma_r2 = explained_variance( R_test[:,:,cellid], R_predicted, sigma=True)
 
@@ -1112,31 +1118,30 @@ def test(X_test, R_test, xtilde, **kwargs):
 
     # Print the results
 
-    rtst = R_test[:,:,cellid].to('cpu').numpy()
-    R_predicted = R_predicted.to('cpu').numpy()
+    R_test_cell = R_test[:,:,cellid]
+    R_pred_cell = R_predicted
 
-    
     print(f"\n\n Pietro's model: R2 = {r2:.2f} ± {sigma_r2:.2f} Cell: {cellid} Maxiter = {maxiter}, Nestep = {nestep}, nMstep = {nmstep} \n")
 
-    return rtst, R_predicted, r2, sigma_r2
+    return R_test_cell, R_pred_cell, r2, sigma_r2
 
-def mu_sigma2_xstar( xstar, xtilde, C, theta, K_tilde_inv, m, V, kernfun):
-    # Computes the mean of the gaussian posterior distribution over lambda(x^*)
+def mu_sigma2_xstar( xstar, xtilde, C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun):
+    # Computes lambda_mean and lambda_var for a single test point xstar
 
-    k_vec = kernfun(xstar, xtilde, C, theta, xtilde_case=False, scalar_case=False)
+    # B : is the matrix of eigenvectors of K_tilde corresponding to big eigenvelues
+    #     all the kernelrs, m and V here are projected onto this subspace. The onnly one missing is the newly created Kstar (below)
 
-    KKtilde_inv = k_vec @ K_tilde_inv
-    # Lambda(x^*) medio.
+    Kstar = kernfun(theta, xstar, xtilde, C=C, dC=None, diag=False) # shape (nt, ntilde) in this case nt=1 (xstar is a single point)
+    Kstar = Kstar @ B # All of the quantities in mu sig
+
+    KKtilde_inv = Kstar @ K_tilde_inv
+
     mu_star =  KKtilde_inv @ m #
- 
-    # Scalar covariance between input xstar and itself
-    kstarstar = kernfun(xstar, xstar, C, theta, xtilde_case=False, scalar_case=True)
 
-    A = - KKtilde_inv @ k_vec.T
-    
-    B =  KKtilde_inv @ V @ K_tilde_inv @ k_vec.T 
+    # Scalar covariance between input xstar and itself. In VarGP it's a vector because it's calculated for all the training points. Here its only one point so its a scalar
+    K_vecstarstar = kernfun(theta, xstar, x2=None, C=C, dC=None, diag=True)              # shape (nt)]    
 
-    sigma_star2 = kstarstar + A + B
+    sigma_star2 = K_vecstarstar + KKtilde_inv@(V-K_tilde)@KKtilde_inv.T
 
     return mu_star, torch.reshape(sigma_star2, (1,))
 
@@ -1153,8 +1158,8 @@ def explained_variance(rtst, f_pred, sigma=True):
     # stacked_R = torch.stack( (r, f ) )
    
     reliability = torch.abs(torch.corrcoef( torch.stack((reven,rodd))))[0,1]
-    accuracy_o = torch.corrcoef(torch.stack((f_pred, rodd)))[0,1]
-    accuracy_e = torch.corrcoef(torch.stack((f_pred, reven)))[0,1]
+    accuracy_o  = torch.corrcoef(torch.stack((f_pred, rodd)))[0,1]
+    accuracy_e  = torch.corrcoef(torch.stack((f_pred, reven)))[0,1]
     r2 = 0.5 * (accuracy_o + accuracy_e) / reliability
 
     if sigma:
@@ -1255,7 +1260,7 @@ def varGP(x, r, **kwargs):
     # L, loss function during learning
     #endregion
 
-    with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.
+    with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.TODO: is this the best way to avoid gradient traking?
         #region ________ Initialization __________
         # number of pixels, number of training points 
         nt, nx = x.shape 
@@ -1349,10 +1354,9 @@ def varGP(x, r, **kwargs):
                     m_b_new = B.T @ B_old @ m_b
                     m_b = m_b_new
 
-            #endregion 
-            
                 K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen)
                 KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen) # this is a in matthews code
+            #endregion 
 
             #region  _______________ Control over possible Nans ______
             for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['lambda0']]:
@@ -1372,7 +1376,7 @@ def varGP(x, r, **kwargs):
             # values_track['loss']['KL'][iteration]            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
             # values_track['loss']['logmarginal'][iteration]   = values_track['loss']['loglikelihood'][iteration] - values_track['loss']['KL'][iteration]        
             for key in theta.keys():
-                values_track['theta_track'][key][iteration] = theta[key]
+                values_track['theta_track'][key][iteration]   = theta[key]
             values_track['f_par_track']['logA'][iteration]    = f_params['logA']
             values_track['f_par_track']['lambda0'][iteration] = f_params['lambda0']
             #endregion
@@ -1383,7 +1387,7 @@ def varGP(x, r, **kwargs):
             # logmarginal   = values_track['loss']['logmarginal'][iteration] 
             #endregion
 
-            #region _______________ E-Step : Update on m & V and f(lambda) parameters  ###########
+            #region _______________ E-Step : Update on m & V and f(lambda) parameters ________
             if Nestep > 0:
                 progbar2 = tqdm( range(Nestep), disable=not display_prog, position=1, leave=True )
                 for i_estep in range(Nestep):
@@ -1416,23 +1420,24 @@ def varGP(x, r, **kwargs):
                         # NOTE: don't use this return value, its just the first iteration of the optimizer, however many iterations are done in the optimizer
                         return -loglikelihood
                      
-                    # optimizer2.step(closure2) 
-                    #region ____________ Update using Adam ______________
-                    # learning_rate3 = 0.01
-                    # optimizer3 = torch.optim.Adam(f_params.values(), lr=learning_rate3)
-                    # optimizer3.zero_grad()  # Zero the gradients
-                    # f_mean = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
-                    # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True)
-                    
-                    # Update gradients of the loss with respect to the firing rate parameters
-                    # f_params['A'].grad = -dloglikelihood['A']
-                    # f_params['lambda0'].grad = -dloglikelihood['lambda0']
-                    # print(f'f-update:\n Grad A: {f_params["A"].grad.item():.8f}, Grad lambda0: {f_params["lambda0"].grad.item():.4f}')
-                    # optimizer3.step()  # Update parameters
+                    optimizer2.step(closure2) 
+                        #region ____________ Update using Adam ____
+                        # learning_rate3 = 0.01
+                        # optimizer3 = torch.optim.Adam(f_params.values(), lr=learning_rate3)
+                        # optimizer3.zero_grad()  # Zero the gradients
+                        # f_mean = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+                        # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True)
+                        
+                        # Update gradients of the loss with respect to the firing rate parameters
+                        # f_params['A'].grad = -dloglikelihood['A']
+                        # f_params['lambda0'].grad = -dloglikelihood['lambda0']
+                        # print(f'f-update:\n Grad A: {f_params["A"].grad.item():.8f}, Grad lambda0: {f_params["lambda0"].grad.item():.4f}')
+                        # optimizer3.step()  # Update parameters
+                        #endregion
                     #endregion
 
-                    # endregion                       
             else: print('No E-step')
+            #endregion                       
         
             #region _______________ Display ____________________
             if display_prog:
@@ -1445,8 +1450,7 @@ def varGP(x, r, **kwargs):
                 progbar2.update(1)
             progbar2.close()
             #endregion   
-            #endregion            
-
+           
             #region _______________ M-Step : Update on hyperparameters theta  ________________
 
             if Nmstep > 0:        
@@ -1606,7 +1610,6 @@ def varGP(x, r, **kwargs):
             #endregion : M-step
 
         #region ___________ print final loss ___________
-
         C, mask    = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
         K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False) # shape (ntilde, ntilde)
         K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
@@ -1614,7 +1617,7 @@ def varGP(x, r, **kwargs):
 
         B_old = B
         eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')#calculates the eigenvalues for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
-        ikeep = eigvals > max(eigvals.max() / 1e4, 1e-4)       # Keep only the largest eigenvectors
+        ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)       # Keep only the largest eigenvectors
         B = eigvecs[:, ikeep]                                  # shape (ntilde, n_eigen)            
         # Cleaning up the out of diagonal elements of K_tilde_b, they should be zero but they are not due to numerical errors
         K_tilde_b = torch.diag(eigvals[ikeep])          # shape (n_eigen, n_eigen)
@@ -1633,25 +1636,23 @@ def varGP(x, r, **kwargs):
         KL                  = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
         logmarginal         = loglikelihood - KL 
         print(f'final Loss: {-logmarginal.item():.4f}' ) 
- 
-       #region Utility function
-        # Test on utility function #
-        # avoid keeping track of the gradeints
-        # with torch.no_grad():  # Temporarily set all requires_grad flag to false
-        #     # take the last x as test to avoid taking an xtilde
-        #     xstar    = x[-3:-1,:] # shape (1, nx)
-        #     #K_for_u    = kernfun(x_for_u, xtilde[:,mask], C, theta, xtilde_case=False, scalar_case=False) #set of row vectors K_i for every input # shape (nt, ntilde)
-        #     # Take the prior moments estimated for this new x
-
-        #     # Inference on new input
-        #     mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
-
-        #     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
-        #     u = utility( sigma2=sigma2_star, mu=mu_star )
-        #     print(u)
         #endregion
 
+    #region Utility function
+    # Test on utility function #
+    # avoid keeping track of the gradeints
+    # with torch.no_grad():  # Temporarily set all requires_grad flag to false
+    #     # take the last x as test to avoid taking an xtilde
+    #     xstar    = x[-3:-1,:] # shape (1, nx)
+    #     #K_for_u    = kernfun(x_for_u, xtilde[:,mask], C, theta, xtilde_case=False, scalar_case=False) #set of row vectors K_i for every input # shape (nt, ntilde)
+    #     # Take the prior moments estimated for this new x
 
-        
+    #     # Inference on new input
+    #     mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
 
-    return theta, f_params, m, V, C, mask, K_tilde, values_track
+    #     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
+    #     u = utility( sigma2=sigma2_star, mu=mu_star )
+    #     print(u)
+    #endregion
+
+    return theta, f_params, m_b, V_b, C, mask, K_tilde_b, K_tilde_inv_b, B, values_track
