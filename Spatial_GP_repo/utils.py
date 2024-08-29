@@ -282,10 +282,7 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         rf_width_pxl = torch.sqrt(rf_width_pxl2)
         
         beta         = (rf_width_pxl / n_px_side) * (up_lim-low_lim) #sqrt of variance of sta brought to [0,2]
-        # _____ Temp ___
-        # beta         = rf_width_pxl 
-        # beta = torch.tensor(0.0580, dtype=TORCH_DTYPE)
-        # ______________
+
 
         logbetaexpr      = -2*safe_log(2*beta) # we call it logbetaexpr cause of the factors in the expression (see hyperparameters_conversion.txt)
         logbetaexpr.requires_grad = True
@@ -311,6 +308,7 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
             print(f' Hyperparameters have been SET as  : beta = {beta:.8f}, rho = {rho:.8f}')
             print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
             
+            kwargs.get
             print('\n After overloading')
             print(f' Dict of learnable hyperparameters : {", ".join(f"{key} = {value.item():.8f}" for key, value in theta.items())}')
             print(f' Hyperparameters from the logexpr  : beta = {logbetaexpr_to_beta(theta):.8f}, rho = {logrhoexpr_to_rho(theta):.8f}')
@@ -410,7 +408,7 @@ def linker(x1, x2, C, theta, xtilde_case, scalar_case=False):
     if not xtilde_case:
         return  K 
 
-def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
+def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
     """
     arc cosine covariance function
 
@@ -524,188 +522,6 @@ def acosker_samu(theta, x1, x2=None, C=None, dC=None, diag=False):
     else: 
         return K    #shape (n1,n2)
 
-def acosker(x1, x2, C, theta, xtilde_case, scalar_case=False, dC=None):
-    # NB
-    #####################################################
-    # Removed the 1/2 from the formula cause its like that in samueles code
-    #####################################################
-
-    # Compute and return the kernel function k(x1, x2) using the formula in the paper
-    # note that it is reported or x and xprime as vectors, so the result there is a scalar, and all operations
-    # must be considered element wise for their matrix equivalent
-
-    # In case inputs are input matrices -> return matrix. scalar_case must be False
-    # In case of two vectors            -> return scalar. scalar_case must be True
-
-    # INPUTS before transposition
-    # xtilde_case = True switch to choose to calculate K(Xtilde, Xtilde). where Xtilde is the MATRIX of xtildes.
-    # The input shapes will be:
-    # x1: shape ( ntilde, nx )
-    # x2: shape ( ntilde, nx ) 
-
-    # xtilde_case = False. Switch to choose to calculare K(x_i, Xtilde) for every x_i of the dataset. This means K(X. Xtilde) where X is the complete dataset.
-    # Will return a matrix of shape (nt, ntilde) where every row is the vector K(x_i, Xtilde)
-    # x1: shape ( nt, nx)
-    # x2: shape ( ntilde, nx )
-
-    # scalar_case = True -> return a vector Kvec of shape (nt)
-    # Before any transposition:
-    # x1: shape (nt, nx)
-    # x2: shape (nt, nx) they are the same
-
-    # C part of the kernel encoding locality and smoothnes of the Receptive Field (Hyperparameter dependence)
-    # C: shape (nx, nx)
-
-    # theta: dict of hyperparameters of the kernel
-
-    # RETURNS
-    # K: shape (1) if scalar_case = True
-    # else
-    # K: shape (ntilde, ntilde) if xtilde_case = True
-    # K: shape (n, ntilde) if xtilde_case = False. Matrix whose rows are vectors K(x_i, Xtilde)
-    
-    sigma_sq = torch.square(theta['sigma_0'])
-
-    if scalar_case:
-        # We only transpose x2 case otherwise Id have to traspose x1 again in the einsum
-        x2 = x2.T #(nx, nt)
-        Cx2 = torch.matmul(C, x2) 
-        diagx1Cx2 = torch.einsum('ij,ji->i', x1, Cx2)
-
-        # Kvec = (diagx1Cx2 + sigma_sq)
-
-        
-        # Removed the 1/2 from the formula cause its like that in samueles code
-        #####################################################
-        Kvec = (diagx1Cx2 + sigma_sq)
-        #####################################################
-        return Kvec
-    
-    elif xtilde_case:
-        
-        x2  = x2.T  #(nx, ntilde) 
-        Cx2 = torch.matmul(C, x2) #(nx, ntilde)
-
-        x1Cx2 = (torch.matmul( x1, Cx2 ) + sigma_sq) #+ 1e-9*torch.eye(Cx2.shape[1])# (ntilde, ntilde)
-        # compute the diagonal
-        diagx1Cx2 = torch.diag(x1Cx2) #(ntilde)
-
-        # Create matrix in which each i-th column is the same i-th element of diagx1Cx2 repeated ntilde times
-        # all elements of a coumn are the same
-        B = diagx1Cx2.repeat(x1Cx2.shape[0], 1) # (ntilde, ntilde)
-
-        # Create the first two factors of the formula K
-        product = torch.sqrt(B.T * B) # (ntilde, ntilde)
-
-        cosdelta = torch.div( x1Cx2, product ) # (ntilde, ntilde)
-        delta    = safe_acos( cosdelta ) # (ntilde, ntilde
-        sindelta = torch.sin( delta )   # (ntilde, ntilde
-        angle = sindelta + (-delta+torch.pi)*cosdelta # shape (ntilde, ntilde)
-
-        # the following multiplies every column of angle by the same element of sqrt_diag
-        # K = (product * angle) / (2*torch.pi) # shape (ntilde, ntilde)
-
-        # Removing the 1/2 from the formula cause its like that in samueles code
-        #######################################################
-        K = (product * angle) / (torch.pi) # shape (ntilde, ntilde)
-        #######################################################
-        K = (K+K.T)/2 + 1.e-6*torch.eye(K.shape[0])    
-        
-
-        if dC is not None:
-            
-            dC = torch.stack(list(dC.values()), dim=2)
-
-            # remember that in the xtilde case    # x1: shape ( ntilde, nx )    # x2: shape ( ntilde, nx )
-            # dC is a dictionary of the derivatives of C with respect to the hyperparameters
-            n_theta = dC.shape[2]
-            dK = torch.zeros((x1.shape[0], x2.shape[0], n_theta + 1)) # ( ntilde, ntilde, n_theta + 1)  derivative of kernel with respect to theta
-#     dK : array-like
-
-            # in samueles code 
-            # X1 = torch.sqrt(torch.sum(x1*(C @ x1), axis=0) + sigmab ** 2) # np.sum(x1*(C@x1), axis=0) is the same as x1.T @ C @ x1 #shape(n1)
-            # X2 = torch.sqrt(torch.sum(x2*(C @ x2), axis=0) + sigmab ** 2) # shape(n2,)
-
-            # if i trust that sum(x1.T*(C@x1.T), axis=0) is the same as x1 @ C @ x1.T #shape(n1)
-            # than X1 of samu is is sqrt( x1Cx2 ) of Pietro
-
-            # np.sum(x1*(C@x1), axis=0) is the same as x1.T @ C @ x1 #shape(n1)
-            X1 = torch.sqrt(x1Cx2) #shape(ntilde,)
-            X2 = X1 # shape(ntilde,)
-            X1X2 = torch.outer(X1, X2) #shape(ntilde, ntilde)
-
-            # Samueles arg is my cosdelta
-
-            dX1X2 = sigma_sq * (X2 / X1[:, None] + X1[:, None] / X2)
-
-            darg = (2 * sigma_sq - cosdelta * dX1X2) / X1X2    
-
-            dJ = - (delta - torch.pi) * darg / torch.pi # adding a factor 0.5 that is apparently missing in samuele's code         
-
-            dK[:, :, 0] =  (X1X2 * dJ + dX1X2 * J)      # shape same as K
-                                   
-            for j in range(1, n_theta + 1):
-
-                dX1 = 0.5*torch.sum(x1.T*(dC[:, :, j-1]@x1.T), axis=0)/X1  #shape(n1,)
-                dX2 = dX1
-                
-                dX1X2 = dX1[:, None]*X2 + X1[:, None]*dX2
-
-                darg = (x1@(dC[:, :, j-1]@x2.T) - cosdelta*dX1X2)/X1X2
-
-                # In samuele's code J    
-                J = angle / (2*torch.pi)
-
-                dJ =  -(delta-torch.pi)*darg/torch.pi 
-
-                dK[:, :, j] = X1X2*dJ + dX1X2*J
-            
-            #print('dX1X2:{}, darg:{}, dJ:{}, dK[:,:,1]:{}'.format(dX1X2.shape,darg.shape, dJ.shape, (A * (X1X2 * dJ + dX1X2 * J)).shape))
-            # make sure that K is positive definite    
-
-            return K, dK
-        
-    elif not xtilde_case: 
-        #This is the case there i creating a matrix o vectors K(x_i, Xtilde), so xtilde is actually here
-        # Will return a matrix of shape (nt, ntilde) where every row is the vector K(x_i, Xtilde)
-
-        # x1  ( nt, nx)
-        X      = x1
-        Xtilde = x2 # (ntilde, nx)
-
-        #_______ First two factors
-        CX = torch.matmul(C, X.T) # (nx, nt)
-        diagXCX = torch.einsum('ij,ji->i', X, CX) + sigma_sq # (nt)
-
-        CXtilde = torch.matmul(C, Xtilde.T) # (nx, nt)
-        diagXtildeCXtilde = torch.einsum('ij,ji->i', Xtilde, CXtilde) + sigma_sq # (ntilde)    
-        
-        # Create matrix in which each i-th column is the same i-th element of diagXCX repeated ntilde times
-        # all elements of a coumn are the same        
-        BX      = diagXCX.repeat(Xtilde.shape[0], 1) # (ntilde, nt)
-        # Create matrix in which each i-th column is the same i-th element of diagXtildeCXtilde repeated nt times
-        # all elements of a coumn are the same        
-        BXtilde = diagXtildeCXtilde.repeat(X.shape[0], 1) # (nt, ntilde )
-        
-        product = torch.sqrt(BX.T * BXtilde) # ( ntilde, nx )
-        
-        #________ Angular factor
-        XCXtilde = torch.matmul(X, CXtilde) # (nt, ntilde)
-        cosdelta = torch.div(  XCXtilde, product ) # (nt, ntilde)
-        delta    = safe_acos( cosdelta )           # (nt, ntilde
-        sindelta = torch.sin(  delta )             # (nt, ntilde
-
-        angle = sindelta + (-delta+torch.pi)*cosdelta # shape (nt, ntilde)
-
-        # the following multiplies every column of angle by the same element of sqrt_diag
-        # K = (product * angle) / (2*torch.pi) # shape (n, ntilde)
-
-        #######################################################
-        K = (product * angle) / (torch.pi) # shape (ntilde, ntilde)
-        #######################################################
-
-
-    return K
 
 ##################   Other functions   ####################
 
@@ -1275,7 +1091,7 @@ def varGP(x, r, **kwargs):
         display_hyper = kwargs.get('display_hyper', True)
         display_prog  = kwargs.get('display_prog', True)
 
-        kernfun = kwargs.get('kernfun', acosker_samu)
+        kernfun = kwargs.get('kernfun', acosker)
 
         n_px_side = kwargs.get('n_px_side', torch.tensor(np.sqrt(nx), dtype=torch.int))
         
@@ -1368,8 +1184,8 @@ def varGP(x, r, **kwargs):
                     raise ValueError(f'Inf in {variable_name}')
             #endregion
             
-            f_mean, lambda_m, lambda_var  = mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
-                                                    theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None )# calling  the function without dK and Ktilde_inv cause i dont need the gradients of lambda from this call 
+            # f_mean, lambda_m, lambda_var  = mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
+                                                    # theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None )# calling  the function without dK and Ktilde_inv cause i dont need the gradients of lambda from this call 
             
             #region _______________ Update the tracking dictionaries _______________   
             # values_track['loss']['loglikelihood'][iteration] = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
@@ -1407,11 +1223,13 @@ def varGP(x, r, **kwargs):
                     learning_rate2 = 1
                     optimizer2 = torch.optim.LBFGS(f_params.values(), lr=learning_rate2, max_iter=10, tolerance_change=1.e-3)
                     
+                    # KL = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
                     def closure2( ):
                         optimizer2.zero_grad()
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
-                        loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )
-                        
+                        loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )                       
+                        # print(f' -logmarginal = {(-loglikelihood.item() + KL.item()):.4f} -loglikelihood = {-loglikelihood.item():.4f}  KL = {KL.item():.4f}')
+
                         # Update gradients of the loss with respect to the firing rate parameters
                         f_params['logA'].grad    = -dloglikelihood['logA']
                         f_params['lambda0'].grad = -dloglikelihood['lambda0']
