@@ -24,21 +24,16 @@ DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f'Using device: {DEVICE} (from utils.py)')
 ##################   Utility functions  ##################
 
-def h_r_given_xD ( p_response_tensor):
-    # Computes the first term of the utility function [eq 28 Paper PNAS]
 
-    sum    = torch.sum( p_response_tensor*safe_log(p_response_tensor) )
-    return -sum
-
-def mean_noise_entropy(p_response_tensor, r, sigma2, mu):
+def mean_noise_entropy(p_response, r, sigma2, mu):
     # Computes the conditional noise entropy < H( r|f,x ) >_p(f|D) [eq 33 Paper PNAS]
     # INPUTS:
-    # p_response_tensor: set of probabilities p(r|x,D) for r that goes from 0 to a low number, set in utility(). Should go to infninty but the mean responses are lwo
+    # p_response: set of probabilities p(r|x,D) for r that goes from 0 to a low number, set in utility(). Should go to infninty but the mean responses are low
     
     # argument of the sum, remember gamma(r+1) = r!
-    argument = p_response_tensor*torch.lgamma(r+1)
-    #argument = p_response_tensor*safe_log( math.factorial(p_response_tensor))
-    H_mean = torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + torch.sum( argument )
+    sum_argument = p_response*torch.lgamma(r+1)
+
+    H_mean = torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + torch.sum( sum_argument )
     return H_mean
 
 def lambda_r_mean(r, sigma2, mu):
@@ -46,15 +41,16 @@ def lambda_r_mean(r, sigma2, mu):
 
     # r is a tensor of values from 0 to r_cutoff, its the max numver for the sum in eq 29 Paper PNAS
 
-    prod = r*sigma2
-    z    = sigma2 * torch.exp( prod + mu)
+    rsigma2 = r*sigma2
+    z    = sigma2 * torch.exp( rsigma2 + mu)
 
+    # Avoid overflowing in the exponential
     sum_mask = z != torch.inf
-    z    = z[sum_mask] # Avoids overflow in the exponential
-    prod = prod[sum_mask]
+    z    = z[sum_mask]
+    rsigma2 = rsigma2[sum_mask]
 
-
-    lamb    = prod + mu - torch.real(scipy.special.lambertw( z=z.cpu(), k=0, tol=1.e-8).to(DEVICE)) # Take only the real part
+    # TODO: I think its pretty important to avoid this copying to cpu and back to gpu. LambertW on the GPU would be great
+    lamb    = rsigma2 + mu - torch.real(scipy.special.lambertw( z=z.cpu(), k=0, tol=1.e-8).to(DEVICE)) # Take only the real part
 
     # print(f' Kept {z.shape[0]} values for the summation in the Utility function')
     return lamb, sum_mask 
@@ -62,7 +58,9 @@ def lambda_r_mean(r, sigma2, mu):
 def p_r_given_xD(r, sigma2, mu):
     # Computes p( r|x,D ) [eq 31 Paper PNAS]. It's the first term of I(r;f|x,D) [eq:27] 
 
-    # Callculating lambda mean for different values of r, keeping only the ones for which an exponential is not infinite
+    # Calculating lambda mean for different values of r
+    # Note that the sum over r was already reduced by a r_cutoff set in the utility function
+    # If despite this cutoff, the exponential still goes to infinity for certain r values, they are removed from the sum
     lambda_mean, sum_mask = lambda_r_mean(r, sigma2, mu)
     ex_lambda_mean = torch.exp(lambda_mean)
 
@@ -73,7 +71,7 @@ def p_r_given_xD(r, sigma2, mu):
     # torch.lgamma(r+1) = log( G(r+1) ) = log( r! )
     log_p = lambda_mean*r - ex_lambda_mean - ((lambda_mean-mu)**2)/(2*sigma2) - 0.5*safe_log( sigma2*ex_lambda_mean + 1) - torch.lgamma(r+1) # TODO: is this factorial too slow?
 
-    return torch.exp(log_p), r
+    return torch.exp(log_p), log_p, r
 
 def utility( sigma2, mu ):
     # Computes the utility function [eq 27 Paper PNAS]
@@ -84,14 +82,14 @@ def utility( sigma2, mu ):
 
     # sigma2 and mu are the mean and variance over lambda 
     r_cutoff = 100 
-    r_tensor = torch.arange(0, r_cutoff, dtype=TORCH_DTYPE)
+    r_masked = torch.arange(0, r_cutoff, dtype=TORCH_DTYPE)
 
-    # Returns the p(r|x,D) and the masked r tensor to use in the sum in mean_noise entropy
-    p_response_tensor, r_tensor_masked = p_r_given_xD( r=r_tensor, sigma2=sigma2, mu=mu) 
+    # Returns the p(r|x,D) and the masked r tensor to use in the sum in mean_noise entropy. 
+    p_response, log_p_response, r_masked2 = p_r_given_xD( r=r_masked, sigma2=sigma2, mu=mu) 
 
-    a = h_r_given_xD( p_response_tensor )
-    b = mean_noise_entropy( p_response_tensor, r_tensor_masked, sigma2, mu )
-    U = a - b
+    H_r_xD = -torch.sum( p_response*log_p_response ) # Response entropy H(r|x,D) [eq 28 Paper PNAS]
+    b = mean_noise_entropy( p_response, r_masked2, sigma2, mu )
+    U = H_r_xD - b
 
     # print(f'Sigma2 = {sigma2.item():.4f}, H(r|x,D) = {a.item():.4f}, <H(r|f,x)> = {b.item():.4f}, U = {U.item():.4f}')
     return U
@@ -104,7 +102,7 @@ def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernf
     xstar = xstar.unsqueeze(0)
 
     # Inference on new input(s)
-    mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde_inv , m, V, kernfun=kernfun)
+    mu_star, sigma2_star = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde_inv , m, V, kernfun=kernfun)
 
     return utility( sigma2=sigma2_star, mu=mu_star )
 ##########################################################
@@ -439,7 +437,7 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
 
     x1 = x1.T
     if x2 is not None : x2 = x2.T
-    n1 = x1.shape[1]
+    n1 = x1.shape[-1]  # Take the shape given by the mask
     sigma_0 = theta['sigma_0']
 
     if C is None: C = torch.eye(n1)
@@ -876,7 +874,6 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
         warnings.warn('The update of V is not implemented for the inverse of V with alpha != 0 now in Estep')
         raise NotImplementedError
     
-
 def print_hyp( theta ):
         key_width = 12
         number_width = 8
@@ -920,7 +917,7 @@ def test(X_test, R_test, xtilde, **kwargs):
         xstar = X_test[i,:,:,:]
         xstar = torch.reshape(xstar, (1, xstar.shape[0]*xstar.shape[1]))
 
-        mu_star, sigma_star2 = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun)
+        mu_star, sigma_star2 = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun)
 
         rate_star = torch.exp( A*mu_star + 0.5*A*A*sigma_star2 + lambda0 )
 
@@ -941,11 +938,11 @@ def test(X_test, R_test, xtilde, **kwargs):
 
     return R_test_cell, R_pred_cell, r2, sigma_r2
 
-def mu_sigma2_xstar( xstar, xtilde, C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun):
+def lambda_moments_star( xstar, xtilde, C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun):
     # Computes lambda_mean and lambda_var for a single test point xstar
 
     # B : is the matrix of eigenvectors of K_tilde corresponding to big eigenvelues
-    #     all the kernelrs, m and V here are projected onto this subspace. The onnly one missing is the newly created Kstar (below)
+    #     all the kernelrs, m and V here are projected onto this subspace. The only one missing is the newly created Kstar (below)
 
     Kstar = kernfun(theta, xstar, xtilde, C=C, dC=None, diag=False) # shape (nt, ntilde) in this case nt=1 (xstar is a single point)
     Kstar = Kstar @ B # All of the quantities in mu sig
@@ -1466,7 +1463,7 @@ def varGP(x, r, **kwargs):
     #     # Take the prior moments estimated for this new x
 
     #     # Inference on new input
-    #     mu_star, sigma2_star = mu_sigma2_xstar(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
+    #     mu_star, sigma2_star = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
 
     #     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
     #     u = utility( sigma2=sigma2_star, mu=mu_star )
