@@ -4,6 +4,7 @@
 Spatial_GP_repo/data/*
 Spatial_GP_repo/figures/*
 Spatial_GP_repo/outputs/*
+Spatial_GP_repo/models/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
