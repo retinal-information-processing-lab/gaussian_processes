@@ -8,7 +8,9 @@ import math
 import os
 import torch.optim as optim
 import warnings
+import time 
 
+import logging
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
 # Warnings
@@ -25,32 +27,48 @@ print(f'Using device: {DEVICE} (from utils.py)')
 ##################   Utility functions  ##################
 
 
-def mean_noise_entropy(p_response, r, sigma2, mu):
+def mean_noise_entropy(p_response, r, sigma2, mu ):
     # Computes the conditional noise entropy < H( r|f,x ) >_p(f|D) [eq 33 Paper PNAS]
     # INPUTS:
     # p_response: set of probabilities p(r|x,D) for r that goes from 0 to a low number, set in utility(). Should go to infninty but the mean responses are low
-    
+ 
     # argument of the sum, remember gamma(r+1) = r!
-    sum_argument = p_response*torch.lgamma(r+1)
+    p_times_logr_sum = p_response@torch.lgamma(r+1)
 
-    H_mean = torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + torch.sum( sum_argument )
+    # TODO: check this formula. In the paper
+    H_mean = -torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + p_times_logr_sum
+
     return H_mean
 
 def lambda_r_mean(r, sigma2, mu):
     # Computes the  argmax of the first row of the laplace approxmated logp(r|x,D) [eq 32 Paper PNAS] . Eq 33,34
-
+    # Its called lambda but its really representing log(f)
+    # this is NOT the lambda that we learn with the GP.
+    
     # r is a tensor of values from 0 to r_cutoff, its the max numver for the sum in eq 29 Paper PNAS
 
     rsigma2 = r*sigma2
     z    = sigma2 * torch.exp( rsigma2 + mu)
 
     # Avoid overflowing in the exponential
+    # sum_mask = z != torch.inf
     sum_mask = z != torch.inf
     z    = z[sum_mask]
     rsigma2 = rsigma2[sum_mask]
 
     # TODO: I think its pretty important to avoid this copying to cpu and back to gpu. LambertW on the GPU would be great
-    lamb    = rsigma2 + mu - torch.real(scipy.special.lambertw( z=z.cpu(), k=0, tol=1.e-8).to(DEVICE)) # Take only the real part
+    '''
+    A little test gave
+    Elapsed time for the CPU copy: 0.000021
+    Elapsed time for the lambertw: 0.000082
+    Elapsed time for the GPU copy: 0.000041 
+    (results of this order)
+    So its not a bottleneck but it still doubles the time of the function
+    '''
+
+    z_cpu = z.cpu()
+    lambertWcpu = scipy.special.lambertw( z=z_cpu, k=0, tol=1.e-8)
+    lamb    = rsigma2 + mu - torch.real(lambertWcpu.to(DEVICE)) # Take only the real part
 
     # print(f' Kept {z.shape[0]} values for the summation in the Utility function')
     return lamb, sum_mask 
@@ -73,23 +91,21 @@ def p_r_given_xD(r, sigma2, mu):
 
     return torch.exp(log_p), log_p, r
 
-def utility( sigma2, mu ):
+def utility( sigma2, mu, r_masked):
     # Computes the utility function [eq 27 Paper PNAS]
+
+    # mu, sigma2 are mean and variance of log(f) with f the firing rate. They are not the mean and variance of the lambda that we learn with the GP.
 
     # Generates the tensor of the probability of the responses p(r|x,D)
     # r_cutoff: for r that goes from 0 to a low number set by r_cutoff, 
     # r_tensor_masked: this will as well be reduced if the exponential in the lambda_r_mean function goes to infinity
 
-    # sigma2 and mu are the mean and variance over lambda 
-    r_cutoff = 100 
-    r_masked = torch.arange(0, r_cutoff, dtype=TORCH_DTYPE)
-
-    # Returns the p(r|x,D) and the masked r tensor to use in the sum in mean_noise entropy. 
-    p_response, log_p_response, r_masked2 = p_r_given_xD( r=r_masked, sigma2=sigma2, mu=mu) 
+    # Returns the the Laplace approximation of p(r|x,D) and the masked r tensor to use in the sum in mean_noise entropy. 
+    p_response, log_p_response, r_masked2 = p_r_given_xD( r=r_masked, sigma2=sigma2, mu=mu, ) 
 
     H_r_xD = -torch.sum( p_response*log_p_response ) # Response entropy H(r|x,D) [eq 28 Paper PNAS]
-    b = mean_noise_entropy( p_response, r_masked2, sigma2, mu )
-    U = H_r_xD - b
+    E_H_r_f = mean_noise_entropy( p_response, r_masked2, sigma2, mu,  )
+    U = H_r_xD - E_H_r_f
 
     # print(f'Sigma2 = {sigma2.item():.4f}, H(r|x,D) = {a.item():.4f}, <H(r|f,x)> = {b.item():.4f}, U = {U.item():.4f}')
     return U
@@ -1073,7 +1089,7 @@ def varGP(x, r, **kwargs):
     # L, loss function during learning
     #endregion
 
-    with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.TODO: is this the best way to avoid gradient traking?
+    with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.TODO: is this the best way to avoid gradient tracking?
         #region ________ Initialization __________
         # number of pixels, number of training points 
         nt, nx = x.shape 
