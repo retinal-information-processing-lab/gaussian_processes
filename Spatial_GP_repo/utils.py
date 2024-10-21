@@ -9,6 +9,9 @@ import os
 import torch.optim as optim
 import warnings
 import time 
+from datetime import datetime
+import json
+
 
 import logging
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
@@ -24,8 +27,71 @@ torch.set_default_dtype(TORCH_DTYPE)
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 
 print(f'Using device: {DEVICE} (from utils.py)')
-##################   Utility functions  ##################
 
+def save_model(model_b, directory, additional_description=None):
+    """
+    Save the model parameters  and metadata to a specified directory.
+
+    Args:
+        model_b: Dictionary containing all the models results and parameters. As well and the projected matrices ( on B )
+        directory (str): The directory to save the model and parameters.
+    """
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    else:
+        raise ValueError(f"Directory {directory} already exists")
+
+
+    description = f"""
+        Model Description:
+        Cell ID: {model_b['cellid']:>8}
+        ntilde: {model_b['ntilde']:>8}
+        Maxiter: {model_b['Maxiter']:>8}
+        Nmstep: {model_b['Nmstep']:>8}
+        Nestep: {model_b['Nestep']:>8}
+
+        Hyperparameters results:
+        Start                 -> End
+        sigma_0: {model_b['values_track']['theta_track']['sigma_0'][0]:>8.4f} -> {model_b['values_track']['theta_track']['sigma_0'][-1]:>8.4f}
+        eps_0x: {model_b['values_track']['theta_track']['eps_0x'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0x'][-1]:>8.4f}
+        eps_0y: {model_b['values_track']['theta_track']['eps_0y'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0y'][-1]:>8.4f}
+        Amp: {model_b['values_track']['theta_track']['Amp'][0]:>8.4f} -> {model_b['values_track']['theta_track']['Amp'][-1]:>8.4f}
+        -2log2beta: {model_b['values_track']['theta_track']['-2log2beta'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-2log2beta'][-1]:>8.4f}
+        -log2rho2: {model_b['values_track']['theta_track']['-log2rho2'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-log2rho2'][-1]:>8.4f}
+
+        beta: {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[-1]:>8.4f}
+        rho: {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[-1]:>8.4f}
+
+        Link function results [f_params]:
+
+        logA: {model_b['values_track']['f_par_track']['logA'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['logA'][-1]:>8.4f}
+        lambda0: {model_b['values_track']['f_par_track']['lambda0'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['lambda0'][-1]:>8.4f}
+
+        A: {torch.exp(model_b['values_track']['f_par_track']['logA'][0]):>8.4f} -> {torch.exp(model_b['values_track']['f_par_track']['logA'][-1]):>8.4f}
+        """
+
+    if additional_description is not None:
+        description += f"\n\n{additional_description}"
+    
+    model_b['description'] = description
+
+    if model_b.get('kernfun') is not None:
+        model_b.pop('kernfun')
+
+    # Save the file
+    with open(os.path.join(directory, 'model'), 'wb') as f:
+        pickle.dump(model_b, f)
+
+    # Save metadata
+    metadata = {
+        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'description': description
+    }
+    with open(os.path.join(directory, 'metadata'), 'w') as f:
+        f.write(description)
+
+
+##################   Utility functions  ##################
 
 def mean_noise_entropy(p_response, r, sigma2, mu ):
     # Computes the conditional noise entropy < H( r|f,x ) >_p(f|D) [eq 33 Paper PNAS]
@@ -263,7 +329,8 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         low_lim = -1
 
         # _____ Sigma_0 and A _____
-        sigma_0 = torch.tensor(0., requires_grad=True) # This makes sigma_0 = 0
+        # logsigma_0 = 0 # Samuele's code set the log of sigma
+        sigma_0 = torch.tensor(1.0,requires_grad=True) # This makes sigma_0 = 1
         
         Amp     = torch.tensor(1., requires_grad=True) # Amplitude of the receptive field Amp = 1, NOT PRESENT IN SAMUELE'S CODE
 
@@ -319,13 +386,13 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         # Print the learnable hyperparameters
         if display:
             print(' Before overloading')
-            print(f' Hyperparameters have been SET as  : beta = {beta:.8f}, rho = {rho:.8f}')
+            print(f' Hyperparameters have been SET as  : beta = {beta:.4f}, rho = {rho:.4f}')
             print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
             
             kwargs.get
             print('\n After overloading')
-            print(f' Dict of learnable hyperparameters : {", ".join(f"{key} = {value.item():.8f}" for key, value in theta.items())}')
-            print(f' Hyperparameters from the logexpr  : beta = {logbetaexpr_to_beta(theta):.8f}, rho = {logrhoexpr_to_rho(theta):.8f}')
+            print(f' Dict of learnable hyperparameters : {", ".join(f"{key} = {value.item():.4f}" for key, value in theta.items())}')
+            print(f' Hyperparameters from the logexpr  : beta = {logbetaexpr_to_beta(theta):.4f}, rho = {logrhoexpr_to_rho(theta):.4f}')
             beta = logbetaexpr_to_beta(theta)
             rho  = logrhoexpr_to_rho(theta)
             print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
@@ -337,8 +404,8 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
         # rho > 0 -> log(rho) > -inf
         # sigma_b > 0 -> log(sigma_b) > -inf
         # beta > e^4 (??) -> log(beta) > 4
-        theta_lower_lims  = {'sigma_0': 0           , 'eps_0x':low_lim, 'eps_0y':low_lim, '-log2rho2':-float('inf'), '-2log2beta': -float('inf'), 'Amp': 0. }
-        theta_higher_lims = {'sigma_0': float('inf'), 'eps_0x':up_lim,  'eps_0y':up_lim,  '-log2rho2': float('inf'), '-2log2beta':  float('inf'), 'Amp': float('inf') }
+        theta_lower_lims  = {'sigma_0': 0           , 'eps_0x':low_lim, 'eps_0y':low_lim, '-2log2beta': -float('inf'), '-log2rho2':-float('inf'), 'Amp': 0. }
+        theta_higher_lims = {'sigma_0': float('inf'), 'eps_0x':up_lim,  'eps_0y':up_lim,  '-2log2beta':  float('inf'), '-log2rho2': float('inf'), 'Amp': float('inf') }
         
         return ( theta, theta_lower_lims, theta_higher_lims )
 
@@ -1087,6 +1154,25 @@ def varGP(x, r, **kwargs):
     # m, V (tensors tracking the values of all of the above)
     # xtilde: set of inducing datapoints
     # L, loss function during learning
+
+    # values_track:
+    #     - ['loss']
+    #         - ['logmarginal']
+    #         - ['loglikelihood']
+    #         - ['KL']
+    #     - ['theta_track']
+    #        - ['sigma_0']
+    #        - ['eps_0x']
+    #        - ['eps_0y']
+    #        - ['-2log2beta']
+    #        - ['-log2rho2']
+    #        - ['Amp']
+    #     - ['f_par_track'] 
+    #        - ['logA']
+    #        - ['lambda0']   
+
+
+
     #endregion
 
     with torch.no_grad(): # All of the gradient traking are disabled in this scope. We are calculating gradients manually.TODO: is this the best way to avoid gradient tracking?
@@ -1200,10 +1286,21 @@ def varGP(x, r, **kwargs):
             # f_mean, lambda_m, lambda_var  = mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, m=m_b, V=V_b, 
                                                     # theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None )# calling  the function without dK and Ktilde_inv cause i dont need the gradients of lambda from this call 
             
-            #region _______________ Update the tracking dictionaries _______________   
-            # values_track['loss']['loglikelihood'][iteration] = compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params)[0]
-            # values_track['loss']['KL'][iteration]            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
-            # values_track['loss']['logmarginal'][iteration]   = values_track['loss']['loglikelihood'][iteration] - values_track['loss']['KL'][iteration]        
+            #region _______________ Update the tracking dictionaries _______________  
+            # Update the value every 5 iterations
+            if iteration % 1 == 0:
+                if iteration == 0:
+                    start_time = time.time()
+                lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
+                f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+
+                loglikelihood, _, __ = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False)
+                KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+
+                print(f" Loss computation TOT time: {time.time()-start_time:.6f} s")
+            values_track['loss']['loglikelihood'][iteration] = loglikelihood
+            values_track['loss']['KL'][iteration]            = KL_div
+            values_track['loss']['logmarginal'][iteration]   = values_track['loss']['loglikelihood'][iteration] - values_track['loss']['KL'][iteration]        
             for key in theta.keys():
                 values_track['theta_track'][key][iteration]   = theta[key]
             values_track['f_par_track']['logA'][iteration]    = f_params['logA']
@@ -1277,9 +1374,11 @@ def varGP(x, r, **kwargs):
                 KL            = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
                 logmarginal   = loglikelihood - KL
                 # print(f' After E-Step Loss: {-logmarginal.item():.8f}' )
-                progbar2.set_description(f"E-step loss: {-logmarginal.item():.4f}")
-                progbar2.update(1)
-            progbar2.close()
+                if Nmstep > 0:
+                    progbar2.set_description(f"E-step loss: {-logmarginal.item():.4f}")
+                    progbar2.update(1)
+                if Nmstep > 0:
+                    progbar2.close()
             #endregion   
            
             #region _______________ M-Step : Update on hyperparameters theta  ________________
@@ -1351,7 +1450,7 @@ def varGP(x, r, **kwargs):
                     # as good as doing the same number of iterations but split into steps of max_iter/nsteps iterations
                     # I will try to do 2 steps of max_iter/2 iterations but its probably even better with 3 etc.
                     # going below max_iter = 2 it not suggested cause int the first step lbgs could increase the loss
-                    # its supposed to handle but....
+                    # its supposed to handle that but....
                     # print(f' m-step {i}')
                     learning_rate = 0.01
                     optimizer = torch.optim.LBFGS(theta.values(), lr=learning_rate, max_iter=max([nbfgsteps, 2]) )
@@ -1434,7 +1533,6 @@ def varGP(x, r, **kwargs):
 
                     # progbar.set_description(f"GP step loss: {-logmarginal.item():.4f}")
                     # progbar.update(1)
-
 
             else: print('No M-step')
 
