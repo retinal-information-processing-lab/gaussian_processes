@@ -44,30 +44,30 @@ def save_model(model_b, directory, additional_description=None):
 
     description = f"""
         Model Description:
-        Cell ID: {model_b['cellid']:>8}
-        ntilde: {model_b['ntilde']:>8}
-        Maxiter: {model_b['Maxiter']:>8}
-        Nmstep: {model_b['Nmstep']:>8}
-        Nestep: {model_b['Nestep']:>8}
+        Cell ID:   {model_b['cellid']:>8}
+        ntilde:    {model_b['ntilde']:>8}
+        Maxiter:   {model_b['Maxiter']:>8}
+        Nmstep:    {model_b['Nmstep']:>8}
+        Nestep:    {model_b['Nestep']:>8}
 
         Hyperparameters results:
-        Start                 -> End
-        sigma_0: {model_b['values_track']['theta_track']['sigma_0'][0]:>8.4f} -> {model_b['values_track']['theta_track']['sigma_0'][-1]:>8.4f}
-        eps_0x: {model_b['values_track']['theta_track']['eps_0x'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0x'][-1]:>8.4f}
-        eps_0y: {model_b['values_track']['theta_track']['eps_0y'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0y'][-1]:>8.4f}
-        Amp: {model_b['values_track']['theta_track']['Amp'][0]:>8.4f} -> {model_b['values_track']['theta_track']['Amp'][-1]:>8.4f}
-        -2log2beta: {model_b['values_track']['theta_track']['-2log2beta'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-2log2beta'][-1]:>8.4f}
-        -log2rho2: {model_b['values_track']['theta_track']['-log2rho2'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-log2rho2'][-1]:>8.4f}
+        Start                 ->   End
+        sigma_0:     {model_b['values_track']['theta_track']['sigma_0'][0]:>8.4f} -> {model_b['values_track']['theta_track']['sigma_0'][-1]:>8.4f}
+        eps_0x:      {model_b['values_track']['theta_track']['eps_0x'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0x'][-1]:>8.4f}
+        eps_0y:      {model_b['values_track']['theta_track']['eps_0y'][0]:>8.4f} -> {model_b['values_track']['theta_track']['eps_0y'][-1]:>8.4f}
+        Amp:         {model_b['values_track']['theta_track']['Amp'][0]:>8.4f} -> {model_b['values_track']['theta_track']['Amp'][-1]:>8.4f}
+        -2log2beta:  {model_b['values_track']['theta_track']['-2log2beta'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-2log2beta'][-1]:>8.4f}
+        -log2rho2:   {model_b['values_track']['theta_track']['-log2rho2'][0]:>8.4f} -> {model_b['values_track']['theta_track']['-log2rho2'][-1]:>8.4f}
 
-        beta: {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[-1]:>8.4f}
-        rho: {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[-1]:>8.4f}
+        beta:        {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logbetaexpr_to_beta(model_b['values_track']['theta_track'])[-1]:>8.4f}
+        rho:         {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[0]:>8.4f} -> {logrhoexpr_to_rho(model_b['values_track']['theta_track'])[-1]:>8.4f}
 
         Link function results [f_params]:
 
-        logA: {model_b['values_track']['f_par_track']['logA'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['logA'][-1]:>8.4f}
-        lambda0: {model_b['values_track']['f_par_track']['lambda0'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['lambda0'][-1]:>8.4f}
+        logA:        {model_b['values_track']['f_par_track']['logA'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['logA'][-1]:>8.4f}
+        lambda0:     {model_b['values_track']['f_par_track']['lambda0'][0]:>8.4f} -> {model_b['values_track']['f_par_track']['lambda0'][-1]:>8.4f}
 
-        A: {torch.exp(model_b['values_track']['f_par_track']['logA'][0]):>8.4f} -> {torch.exp(model_b['values_track']['f_par_track']['logA'][-1]):>8.4f}
+        A:           {torch.exp(model_b['values_track']['f_par_track']['logA'][0]):>8.4f} -> {torch.exp(model_b['values_track']['f_par_track']['logA'][-1]):>8.4f}
         """
 
     if additional_description is not None:
@@ -384,7 +384,7 @@ def generate_theta(x, r, n_px_side, display=False, **kwargs):
 
 
         # Print the learnable hyperparameters
-        if display:
+        if display_hyper:
             print(' Before overloading')
             print(f' Hyperparameters have been SET as  : beta = {beta:.4f}, rho = {rho:.4f}')
             print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
@@ -516,7 +516,7 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
         [n1, n2, ntheta], derivative of kernel with respect to theta
     """
 
-    # I am using a direct translation of Samuele's code so I need to transpose the inputs. 
+    # Inputs are transposed because this function came from a translation of Samuele's code 
 
     x1 = x1.T
     if x2 is not None : x2 = x2.T
@@ -530,7 +530,7 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
         
         X1 = torch.sqrt(torch.sum(x1*(C @ x1), dim=0) + sigma_0 ** 2) # torch.sum(x1*(C@x1), dim=0) is the same as Diag(x1.T @ C @ x1) #shape(n1)
         X2 = torch.sqrt(torch.sum(x2*(C @ x2), dim=0) + sigma_0 ** 2) # shape(n2,)
-        #print((C @ x2)[19,0])
+
         X1X2 = torch.outer(X1,X2)               #shape(n1,n2)
         x1x2 = x1.T @ C @ x2 + sigma_0 ** 2   
         
@@ -573,12 +573,11 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
 
                 dK[key] = X1X2*dJ + dX1X2*J
 
-        # make sure that K is positive definite
+        # make sure that K is simetric
         if n1==n2:
             K = (K+K.T)/2 #+ 1e-7*torch.eye(n1)
 
-
-    else: # In the diagonal case onle the complete dataset passed as x1 is considered
+    else: # In the diagonal case only the complete dataset passed as x1 is considered
         # return just diagonal of kernel
         K = torch.sum(x1*torch.matmul(C, x1), dim=0)[:, None]+sigma_0**2
         K = K.squeeze() # To return a vector of shape (n1,)
@@ -779,8 +778,7 @@ def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_g
     else:
         return loglikelihood, rlambda_m, sum_r # Only here i return these two values cause i need them in updateA
 
-def log_det(M):
-
+def log_det(M, name='M'):
 
     try:
         # Try a Cholesky decomposition, L is the matrix that multiplitd by its (cunjugate) transpose gives M
@@ -790,7 +788,7 @@ def log_det(M):
         return 2*torch.sum(safe_log(torch.diag(L))) 
     except:
         if is_simmetric(M):
-            warnings.warn("The matrix in logdet is simmetric but not posdef, using eigendecomposition to calculate the log determinant")
+            warnings.warn(f"Matrix {name} in logdet is simmetric but not posdef, using eigendecomposition to calculate the log determinant")
             # If the matrix is simmetric we can use eigh
             eigenvalues, eigenvectors = torch.linalg.eigh(M) # Need to use .eig() cause .eigh() is only for simmetrix matrices
 
@@ -798,10 +796,10 @@ def log_det(M):
             # this is basicallya copu of the function 'is_posdef'
             smallest_eig = eigenvalues.min()
             if smallest_eig <= 0.:
-                warnings.warn('The matrix is simmetric but has an eigenvalue smaller than 0 ')
+                warnings.warn(f'Matrix {name} is simmetric but has an eigenvalue smaller than 0 ')
 
             if smallest_eig <= 1.e-10:
-                warnings.warn('The matrix is simmetric but has an eigenvalue smaller than 1e-10 ')
+                warnings.warn(f'Matrix {name} is simmetric but has an eigenvalue smaller than 1e-10 ')
 
             # eigenvalues, eigenvectors = torch.linalg.eig(M) # Need to use .eig() cause .eigh() is only for simmetrix matrices
 
@@ -812,7 +810,7 @@ def log_det(M):
             
             return torch.sum(safe_log( large_real_eigenvals )) 
         else:
-            warnings.warn("The matrix is not simmetric in log_det used in KL_divergence")
+            warnings.warn(f"Matrix {name} is not simmetric in log_det used in KL_divergence")
             return 0
 
 def compute_KL_div( m, V, K_tilde, K_tilde_inv, dK_tilde=None):
@@ -1194,8 +1192,9 @@ def varGP(x, r, **kwargs):
 
         n_px_side = kwargs.get('n_px_side', torch.tensor(np.sqrt(nx), dtype=torch.int))
         
+
         # Initialize hyperparameters of Kernel and parameters of the firing rate
-        if 'hyperparams_tuple' not in kwargs: hyperparams_tuple = generate_theta(x, r, n_px_side=n_px_side, display=display_hyper)
+        if 'hyperparams_tuple' not in kwargs: hyperparams_tuple = generate_theta(x, r, n_px_side=n_px_side, display_hyper=display_hyper)
         else: hyperparams_tuple = kwargs.get('hyperparams_tuple')
 
         theta             = kwargs.get( 'theta', hyperparams_tuple[0]) 
@@ -1204,12 +1203,12 @@ def varGP(x, r, **kwargs):
         f_params          = kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(-1)} ) # Parameters of the firing rate (A and lambda_0) in the paper
 
         # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
-        C, mask = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
+        # C, mask = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
         #TODO Calculate it only close to the RF (for now it's every pixel)
 
         m = kwargs.get('m', torch.zeros( (ntilde) )).detach()
         V = kwargs.get('V', kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) ).detach()
-        # Pietro's implementation of acoskern, faster but not stable.
+
         # V = kwargs.get('V', kernfun( xtilde[:,mask], xtilde[:,mask], C, theta, xtilde_case=True, dC=None )).detach()  # shape (ntilde, ntilde)
         
         # Track 
@@ -1221,43 +1220,44 @@ def varGP(x, r, **kwargs):
         f_par_track     = {'logA': torch.zeros((Maxiter)), 'lambda0': torch.zeros((Maxiter))} # track hyperparamers
         values_track    = {'loss': loss, 'theta_track': theta_track, 'f_par_track': f_par_track}
 
-        #endregion : initialization   
+        #endregion _________ Initialization _________
 
         #_________ Main Loop ___________
-        # progbar = tqdm( range(Maxiter), disable = not display_prog, desc=f"GP step loss", position=0 )   
+        progbar = tqdm( range(Maxiter), disable = not display_prog, desc=f"GP step loss", position=0 )   
         for iteration in range(Maxiter):
-            print(f'*Iteration*: {iteration}')
-            #region ___________________Computing Kernel____________________
+            # print(f'*Iteration*: {iteration}')
+            #region ________________ Computing Kernel____________________
             # Compute starting Kernel, if no M-step -> only compute it once cause it's not changing
             if iteration == 0 or Nmstep > 0:
                 #________________ Compute the KERNELS after M-Step and the inverse of V _____________
-
                 C, mask    = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
-                K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False) # shape (ntilde, ntilde)
+                K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False)          # shape (ntilde, ntilde)
                 K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
                 Kvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)              # shape (nt)
             #endregion
 
             #region ________________ Stabilization ________________
-                eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')#calculates the eigenvalues for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
-                ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)       # Keep only the largest eigenvectors
-                
-                if iteration>0: 
+                if iteration > 0: 
                     B_old = B # Save the old eigenvectors for the reprojection of V_b and m_b on the updated eigenspace
 
-                B = eigvecs[:, ikeep]                                  # shape (ntilde, n_eigen)            
-                # Cleaning up the out of diagonal elements of K_tilde_b, they should be zero but they are not due to numerical errors
-                # make K_tilde-b a projection of K_tilde into the eigenspace of the largest eigenvectors
-                K_tilde_b = torch.diag(eigvals[ikeep])          # shape (n_eigen, n_eigen)
-                K_b = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
+                eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')         # calculates the eigenvals for an assumed symmetric matrix, eigenvalues are returned in ascending order. Uplo=L uses the lower triangular part of the matrix
+                ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)   # Keep only the largest eigenvectors
+                
+                B = eigvecs[:, ikeep]                                           # shape (ntilde, n_eigen)            
+                # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
+                K_tilde_b = torch.diag(eigvals[ikeep])                          # shape (n_eigen, n_eigen)
+                K_b = K @ B                                                     # shape (3190, n_eigen)
 
                 if iteration == 0:
                     # In the first iteration we get the projetion V_b from the complete V
-                    V_b = K_tilde_b
+                    if 'V' in kwargs:
+                        V_b = B.T @ V @ B                                        # shape (n_eigen, n_eigen)
+                    else:
+                        V_b = K_tilde_b    
                     m_b = B.T @ m                           
         
                 elif Nmstep > 0:
-                    # If we already have V_b (maybe updated in an E-step) and we changed the eigenspace (in the Mstep) its time to get V_b_new referring to this new eigenspace
+                    # If we already have V_b (maybe updated in an E-step) and we changed the eigenspace (in the Mstep) get V_b_new referring to this new eigenspace
                     # V_b_new = (B_new.T@V)@B_new and V = B_old@V_b_old@B_old.T so 
                     # with B = B_new and V_b = V_b_old
 
@@ -1315,8 +1315,10 @@ def varGP(x, r, **kwargs):
 
             #region _______________ E-Step : Update on m & V and f(lambda) parameters ________
             if Nestep > 0:
+                print(f'Estep in iteration {iteration}')
                 progbar2 = tqdm( range(Nestep), disable=not display_prog, position=1, leave=True )
                 for i_estep in range(Nestep):
+                    print(f'   Estep n {i_estep}')
                     if i_estep == 0 and iteration == 0:
                         lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
@@ -1334,7 +1336,10 @@ def varGP(x, r, **kwargs):
                     optimizer2 = torch.optim.LBFGS(f_params.values(), lr=learning_rate2, max_iter=10, tolerance_change=1.e-3)
                     
                     # KL = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None )
+                    print(f'   Estep n {i_estep}: updating f_params')
+                    CLOSURE2_COUNTER = [0]
                     def closure2( ):
+                        CLOSURE2_COUNTER[0] += 1
                         optimizer2.zero_grad()
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
                         loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )                       
@@ -1346,6 +1351,7 @@ def varGP(x, r, **kwargs):
                         # the closure has to return the loss,
                         # the loss is the negative loglikelihood
                         # NOTE: don't use this return value, its just the first iteration of the optimizer, however many iterations are done in the optimizer
+                        print(f'      Update f_params n {CLOSURE2_COUNTER[0]}')
                         return -loglikelihood
                      
                     optimizer2.step(closure2) 
@@ -1457,7 +1463,8 @@ def varGP(x, r, **kwargs):
                     def closure( ):
 
                         optimizer.zero_grad()
-                        C, mask, dC       = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
+                        C, mask, dC       = localker(nx=x.shape[1], theta=theta, theta_higher_lims=theta_higher_lims,
+                                                     theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
                         K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
                         K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
                         Kvec, dKvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
