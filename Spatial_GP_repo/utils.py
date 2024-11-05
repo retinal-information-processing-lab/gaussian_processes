@@ -407,6 +407,7 @@ def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernf
     mu_star, sigma2_star = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde_inv , m, V, kernfun=kernfun)
 
     return utility( sigma2=sigma2_star, mu=mu_star )
+
 ##########################################################
 
 def is_posdef(tensor, name='M'):
@@ -500,7 +501,6 @@ def logrhoexpr_to_rho(logrhoexpr):
 
     rho_paper = torch.exp(-0.5*logrhoexpr) /  torch.sqrt( torch.tensor(2)) 
     return rho_paper
-
 
 def fromlogbetasam_to_logbetaexpr( logbetasam ):
     # Go from the value of logbeta_sam used in his code to the logbetaexpr used in this code
@@ -856,6 +856,7 @@ def lambda_moments1( x, K, K_tilde, K_tilde_inv, C, m, V, theta, kernfun ):
 
             return lambda_m, lambda_var
 
+@torch.no_grad()
 def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
             # Calculate the mean and variance (diagonal of covariance matrix ) of (vec)lambda(of the training points) over the distribution given by:
             # p_cond(lambda|lambda_tilde,X,theta)*(N/q)_posterior(lambda_tilde|m,V) as ini eq (56)(57) of Notes for Pietro
@@ -1221,21 +1222,27 @@ def lambda_moments_star( xstar, xtilde, C, theta, K_tilde, K_tilde_inv, m, V, B,
     # Computes lambda_mean and lambda_var for a single test point xstar
 
     # B : is the matrix of eigenvectors of K_tilde corresponding to big eigenvelues
-    #     all the kernelrs, m and V here are projected onto this subspace. The only one missing is the newly created Kstar (below)
+    #     all the kernels, m and V here are projected onto this subspace. The only one missing is the newly created Kvec_star (below)
 
-    Kstar = kernfun(theta, xstar, xtilde, C=C, dC=None, diag=False) # shape (nt, ntilde) in this case nt=1 (xstar is a single point)
-    Kstar = Kstar @ B # All of the quantities in mu sig
+    if kernfun == 'acosker': kernfun = acosker
+    else: raise Exception('Kernel function not recognized')
 
-    KKtilde_inv = Kstar @ K_tilde_inv
+    # Kvec_star is the covariance of the prior of the testing points
+    Kvec_star = kernfun(theta, xstar, xtilde, C=C, dC=None, diag=False) # shape (nt, ntilde) in this case nt=1 (xstar is a single point)
+    Kvec_star = Kvec_star @ B # All of the quantities in mu sig
+
+    KKtilde_inv = Kvec_star @ K_tilde_inv
 
     mu_star =  KKtilde_inv @ m #
 
     # Scalar covariance between input xstar and itself. In VarGP it's a vector because it's calculated for all the training points. Here its only one point so its a scalar
-    K_vecstarstar = kernfun(theta, xstar, x2=None, C=C, dC=None, diag=True)              # shape (nt)]    
+    K_star = kernfun(theta, xstar, x2=None, C=C, dC=None, diag=True)              # shape (nt)]    
 
-    sigma_star2 = K_vecstarstar + KKtilde_inv@(V-K_tilde)@KKtilde_inv.T
 
-    return mu_star, torch.reshape(sigma_star2, (1,))
+    # lambda_var = Kvec + torch.sum(-K.T*KKtilde_inv.T + KKtilde_inv.T*(V@KKtilde_inv.T), 0)
+    sigma_star2 = K_star + torch.diag(KKtilde_inv@(V-K_tilde)@KKtilde_inv.T)
+
+    return mu_star, torch.reshape(sigma_star2, (xstar.shape[0],))
 
 def explained_variance(rtst, f_pred, sigma=True):
 
@@ -1510,8 +1517,6 @@ def varGP(x, r, **kwargs):
 
                         m_b_new = B.T @ B_old @ m_b
                         m_b     = m_b_new
-
-                
                 #endregion 
 
                 #region  _______________ Control over possible Nans ______
@@ -1555,8 +1560,7 @@ def varGP(x, r, **kwargs):
                         # Update lambda moments only if the kernel has changed or if it's the first iteration
                         # They are update again after the Estep
                         if i_estep == 0 and ( iteration == 0 or nMstep > 0):
-                            lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, 
-                                                                  Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)        
+                            lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)               
                         
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)                          # Since f_params influece f_mean, we need to update it at each estep
                         
@@ -1951,25 +1955,8 @@ def varGP(x, r, **kwargs):
                     for subkey in values_track[key].keys():
                         values_track[key][subkey] = values_track[key][subkey][:fit_parameters['maxiter']] # Last index not be included 
 
-                return theta, f_params, m_b, V_b, C, mask, K_tilde_b, K_tilde_inv_b, B, fit_parameters, values_track, err_dict
+                return theta, f_params, m_b, V_b, C, mask, K_tilde_b, K_tilde_inv_b, K_b, Kvec, B, fit_parameters, values_track, err_dict
         
             # else:
                 # raise Exception('Error')
 
-
-#region Utility function
-# Test on utility function #
-# avoid keeping track of the gradeints
-# with torch.no_grad():  # Temporarily set all requires_grad flag to false
-#     # take the last x as test to avoid taking an xtilde
-#     xstar    = x[-3:-1,:] # shape (1, nx)
-#     #K_for_u    = kernfun(x_for_u, xtilde[:,mask], C, theta, xtilde_case=False, scalar_case=False) #set of row vectors K_i for every input # shape (nt, ntilde)
-#     # Take the prior moments estimated for this new x
-
-#     # Inference on new input
-#     mu_star, sigma2_star = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, torch.inverse(K_tilde), m, V, kernfun=kernfun)
-
-#     #mu, sigma2 = lambda_moments( mu_star, sigma_star, K_tilde, C, m, V, theta, kernfun=kernfun )
-#     u = utility( sigma2=sigma2_star, mu=mu_star )
-#     print(u)
-#endregion
