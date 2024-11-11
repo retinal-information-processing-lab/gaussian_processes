@@ -591,6 +591,7 @@ def p_r_given_xD(r, sigma2, mu):
 
     return torch.exp(log_p), log_p, r
 
+@torch.no_grad()
 def utility( sigma2, mu, r_masked):
     # Computes the utility function [eq 27 Paper PNAS]
 
@@ -1577,9 +1578,7 @@ def varGP(x, r, **kwargs):
     #     - ['variation_par_track']
     #        - ['V_b']
     #        - ['m_b']
-    #     - ['subspace_track']         # Eigenvectors and eigenvalues of the kernel at each iteration ()
-    #        - ['eigvals']
-    #        - ['eigvecs']
+
 
 
 
@@ -1609,18 +1608,6 @@ def varGP(x, r, **kwargs):
     if kernfun == 'acosker': kernfun = acosker
     else: raise Exception('Kernel function not recognized')
 
-    # ntilde     = kwargs.get('ntilde', 100 if nt>100 else nt) # if no ntilde is provided try with 100, otherwise inducing points=x   
-    # xtilde     = kwargs.get('xtilde', generate_xtilde(ntilde, x)) 
-    # if ntilde != xtilde.shape[0]: raise Exception('Number of inducing points does not match ntilde')
-    # maxiter       = kwargs.get('maxiter', 50)
-    # nEstep        = kwargs.get('nEstep',  50) 
-    # nMstep        = kwargs.get('nMstep',  20)
-    # nFparamstep   = kwargs.get('nFparamstep', 10)
-    # display_hyper = kwargs.get('display_hyper', True)
-    # n_px_side     = kwargs.get('n_px_side', math.sqrt(nx))
-    # kernfun = kwargs.get('kernfun', 'acosker')
-    # if kernfun == 'acosker': kernfun = acosker
-    # else: raise Exception('Kernel function not recognized')
 
     # Initialize hyperparameters of Kernel and parameters of the firing rate
     # Mutable objects are copied otherwise their values would be updated in the original args dictionary sent as argument
@@ -1645,16 +1632,6 @@ def varGP(x, r, **kwargs):
     K       = kernfun(theta, x[:,mask],      xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
     Kvec    = kernfun(theta, x[:,mask],      x2=None,        C=C, dC=None, diag=True)       # shape (nt)
     
-    # Allocated memory
-    allocated_bytes = torch.cuda.memory_allocated()
-    allocated_MB = allocated_bytes / (1024 ** 2)
-    print(f"\After Kernel Allocated memory: {allocated_MB:.2f} MB")
-
-    # Reserved (cached) memory
-    reserved_bytes = torch.cuda.memory_reserved()
-    reserved_MB = reserved_bytes / (1024 ** 2)
-    print(f"\After Kernel Reserved (cached) memory: {reserved_MB:.2f} MB")
-
     eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
     ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
 
@@ -1679,16 +1656,6 @@ def varGP(x, r, **kwargs):
     KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None, ignore_warning=True )
     logmarginal          = loglikelihood - KL_div   
 
-        # Allocated memory
-    allocated_bytes = torch.cuda.memory_allocated()
-    allocated_MB = allocated_bytes / (1024 ** 2)
-    print(f"After projection Allocated memory: {allocated_MB:.2f} MB")
-
-    # Reserved (cached) memory
-    reserved_bytes = torch.cuda.memory_reserved()
-    reserved_MB = reserved_bytes / (1024 ** 2)
-    print(f"After projection (cached) memory: {reserved_MB:.2f} MB")
-
     # Tracking dictionary
     loss_track          = {'logmarginal'  : torch.zeros((maxiter)),                          # Loss to  maximise: Log Likelihood - KL
                             'loglikelihood': torch.zeros((maxiter)),
@@ -1707,26 +1674,21 @@ def varGP(x, r, **kwargs):
     
     print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
 
-    # Calculate memory usage for each tensor
+    #region _________ Memory usage___________
     memory = 0
     for dict in values_track.values():
         for key in dict.keys():
             if isinstance(dict[key], tuple):
                 for i in range(len(dict[key])):
                     memory += dict[key][i].element_size() * dict[key][i].nelement()
-                print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-
+                # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
             else:
                 memory += dict[key].element_size() * dict[key].nelement()
-                print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+                # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
     # Convert bytes to megabytes (MB)
     total_memory_MB = memory / (1024 ** 2)
-
     print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-
-    #endregion _________ Initialization _________
-    
     # Allocated memory
     allocated_bytes = torch.cuda.memory_allocated()
     allocated_MB = allocated_bytes / (1024 ** 2)
@@ -1736,7 +1698,9 @@ def varGP(x, r, **kwargs):
     reserved_bytes = torch.cuda.memory_reserved()
     reserved_MB = reserved_bytes / (1024 ** 2)
     print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
+    #endregion _________ Memory usage___________
 
+    #endregion _________ Initialization _________
     try:
         #region _________ Main Loop ___________
         # Loop variables
@@ -2272,6 +2236,32 @@ def varGP(x, r, **kwargs):
                 'values_track':      values_track,
             }
 
+
+                #region _________ Memory usage___________
+            memory = 0
+            for dict in values_track.values():
+                for key in dict.keys():
+                    if isinstance(dict[key], tuple):
+                        for i in range(len(dict[key])):
+                            memory += dict[key][i].element_size() * dict[key][i].nelement()
+                        # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+                    else:
+                        memory += dict[key].element_size() * dict[key].nelement()
+                        # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+
+            # Convert bytes to megabytes (MB)
+            total_memory_MB = memory / (1024 ** 2)
+            print(f'\nFinal Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+            # Allocated memory
+            allocated_bytes = torch.cuda.memory_allocated()
+            allocated_MB = allocated_bytes / (1024 ** 2)
+            print(f"Final Allocated memory: {allocated_MB:.2f} MB")
+
+            # Reserved (cached) memory
+            reserved_bytes = torch.cuda.memory_reserved()
+            reserved_MB = reserved_bytes / (1024 ** 2)
+            print(f"Final Reserved (cached) memory: {reserved_MB:.2f} MB")
+            #endregion _________ Memory usage___________
             return fit_model, err_dict
     
         # else:
