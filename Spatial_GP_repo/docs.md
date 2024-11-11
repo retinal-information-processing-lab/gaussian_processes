@@ -1,5 +1,4 @@
 
-
 ### When are matrices positive definite in the code and when are they not
 
 Matrix K_tilde and V in the code should always be positive definite ( simmetric, with eigenvalues greater than zero )
@@ -25,6 +24,10 @@ From Estep:
 Values of alpha!=1 could be useful if the model is not converging cause the newton update actually relies on a quadratic approximation of the loss ( the -logmarginal ), which could be wrong. The problem is that they dont ensure positive definiteness of the output V_b.
 
 Because of the positive definiteness assumption , in the case update_V_inv = False and alpha = 1 , V_b will be positive definite in the whole code, except when being reprojected to the eighenspace from V_b_old when the hyperparameters have changed ( and hence the supbspace ). For this reason the **warning in the log_det function is disabled for the V function**. The only place in which it could execute is inded in the case of reprojection onto an eigenspace of higher dimension, but **for alpha=1 and updata V_b = True this does not present a problem cause V_b is not being used**.
+
+The only time the V_b projected onto the new eigenspace (so not necessarely posdef) is used, is when calculating the lambda moments in the first E-step after the M-step.
+There are indeed cases ( like iteration 3 of /models/cell8_Problem_adjusted_iterations_ntilde:300_ntot:300_lrfparams:0.1) in which  the used matrix is indeed not posedf. 
+This does not generate errors but surely is bad for precision.
 
 ### When are matrices non simmetric?
 
