@@ -81,7 +81,8 @@ def save_model(model, directory, additional_description=None):
         logA:        {model['values_track']['f_par_track']['logA'][0]:>8.4f} -> {model['values_track']['f_par_track']['logA'][-1]:>8.4f}
 
         A:           {torch.exp(model['values_track']['f_par_track']['logA'][0]):>8.4f} -> {torch.exp(model['values_track']['f_par_track']['logA'][-1]):>8.4f}
-        lambda0:     {model['values_track']['f_par_track']['lambda0'][0]:>8.4f} -> {model['values_track']['f_par_track']['lambda0'][-1]:>8.4f}
+        lambda0:     {model['values_track']['f_par_track']['lambda0'][0] if 'lambda0' in model['values_track']['f_par_track'].keys() else torch.exp(model['values_track']['f_par_track']['lambda0'][0]):>8.4f} ->...
+          {model['values_track']['f_par_track']['lambda0'][-1] if 'lambda0' in model['values_track']['f_par_track'].keys() else torch.exp(model['values_track']['f_par_track']['lambda0'][-1]):>8.4f}
         We are optimising a negative lambda0
         """
         # lambda0: {torch.exp(model['values_track']['f_par_track']['loglambda0'][0]):>8.4f} -> {torch.exp(model['values_track']['f_par_track']['loglambda0'][-1]):>8.4f}
@@ -104,7 +105,7 @@ def save_model(model, directory, additional_description=None):
     with open(os.path.join(directory, 'metadata'), 'w') as f:
         f.write(description)
 
-def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 10), xlim=None, ylim_logmarg=None, ylim_lambda0=None):
+def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 10), xlim=None, ylim_logmarg=None, ylim_lambda0=None, ylim_eigvals=None):
 
     #region Extract the data
     values_track = model['values_track']
@@ -205,7 +206,7 @@ def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 
     # ax10.spines['right'].set_position(('outward', 120))  # Move the third y-axis outward
 
     ax11 = ax10.twinx()
-    ax11.plot(iterations, lambda0, label='lambda0', color='orange', linestyle=linestyle, marker=marker)
+    ax11.plot(iterations, lambda0, label='lambda0', color='orange', linestyle=linestyle, marker=marker, )
     ax11.set_ylabel('lambda0', color='orange')
     ax11.tick_params(axis='y', labelcolor='orange')
     ax11.yaxis.set_major_formatter(formatter)
@@ -214,14 +215,15 @@ def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 
     # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
     #endregion
     
-    #region
-    # Plot the variational parameters
+    #region # Plot the variational parameters
     ax22.plot(iterations, n_eigvals, label='n_eigvals', color='blue', linestyle='', marker='o')
     ax22.set_xlabel('Iteration')
     ax22.set_ylabel('n_eigvals', color='blue')
     ax22.tick_params(axis='y', labelcolor='blue')
     ax22.yaxis.set_major_formatter(formatter)
-    ax22.set_ylim(0, ntilde)
+    if ylim_eigvals is not None: ax22.set_ylim( ylim_eigvals )
+    else:                        ax22.set_ylim(0, ntilde)
+
 
     ax23 = ax22.twinx()
     ax23.plot(iterations, m_b_mean, label='m_b mean', color='green', linestyle=linestyle, marker=marker)
@@ -345,10 +347,8 @@ def test(X_test, R_test, xtilde, X_train=None, at_iteration=None, **kwargs):
     R_predicted = torch.zeros(X_test.shape[0])
 
     A        = torch.exp(f_params['logA'])
-    if 'lambda0' in f_params.keys():
-        lambda0  = f_params['lambda0']
-    if 'loglambda0' in f_params.keys():
-        lambda0  = torch.exp(f_params['loglambda0'])
+    if 'lambda0' in f_params.keys():    lambda0  = f_params['lambda0']
+    if 'loglambda0' in f_params.keys(): lambda0  = torch.exp(f_params['loglambda0'])
     # loglambda0 = f_params['loglambda0']
     # lambda0    = torch.exp(loglambda0)
 
@@ -363,10 +363,8 @@ def test(X_test, R_test, xtilde, X_train=None, at_iteration=None, **kwargs):
         f_params    = kwargs['values_track']['f_par_track']
         logA        = f_params['logA'][at_iteration]
         A           = torch.exp(logA)
-        if 'lambda0' in f_params.keys():
-            lambda0 = f_params['lambda0'][at_iteration]
-        if 'loglambda0' in f_params.keys():
-            lambda0 = torch.exp(f_params['loglambda0'][at_iteration])
+        if 'lambda0' in f_params.keys():    lambda0 = f_params['lambda0'][at_iteration]
+        if 'loglambda0' in f_params.keys(): lambda0 = torch.exp(f_params['loglambda0'][at_iteration])
 
         if kernfun == 'acosker':
             kernfun = acosker
@@ -1130,14 +1128,23 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, d
                 return lambda_m, lambda_var
 
 def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var):
-        # The expectation value of the vector of firing rates for every training point: 
-        # <f> = exp(A*<lambda> + 0.5*A^2*Var(lambda) + lambda0)
-        # as shown (between other things) in (34)-(37) of Notes for Pietro
+        '''Compute the expectation value of the vector of firing rates for every training point: 
+                        <f> = exp(A*<lambda> + 0.5*A^2*Var(lambda) + lambda0)
+        as shown (between other things) in (34)-(37) of Notes for Pietro
+        
+        Note: we cap the maximum firing rate to 1000 to avoid
+        '''
         A       = torch.exp(f_params['logA'])
-        lambda0 = f_params['lambda0']
-        # lambda0 = torch.exp(f_params['loglambda0'])
+        # lambda0 = f_params['lambda0']
+        lambda0 = torch.exp(f_params['loglambda0']) if 'loglambda0' in f_params else f_params['lambda0']
         # return torch.exp(A*lambda_m + 0.5*A*A*lambda_var + f_params['lambda0'] )
-        return torch.exp(A*lambda_m + 0.5*A*A*lambda_var + lambda0 )
+        f_mean = torch.exp(A*lambda_m + 0.5*A*A*lambda_var + lambda0 )
+        n_f_mean_big = torch.sum(f_mean>1000)
+        
+        # if n_f_mean_big>0:
+            # print(f'\nNumber of f_mean bigger than 100: {n_f_mean_big}\n')
+        return torch.min( f_mean, torch.tensor(1000.))
+        # return f_mean
         
 def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None, K_tilde=None, KKtilde_inv=None, 
            Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None):
@@ -1198,8 +1205,8 @@ def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_g
 
     # NB: A here is the firing rate parameter, not the receptive field Amplitude one
     A         = torch.exp(f_params['logA'])
-    lambda0   = f_params['lambda0']
-    # lambda0   = torch.exp(f_params['loglambda0'])
+    # lambda0   = f_params['lambda0']
+    lambda0   = torch.exp(f_params['loglambda0']) if 'loglambda0' in f_params else f_params['lambda0']
 
     rlambda_m = r@lambda_m  
     sum_r     = torch.sum(r)
@@ -1215,8 +1222,9 @@ def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_g
         dloglikelihood = {}
         # dloglikelihood['A'] = rlambda_m - torch.dot(lambda_m + A*lambda_var, f_mean) # Derivative of the loglikelihood with respect to A
         dloglikelihood['logA'] = A*(rlambda_m - torch.dot(lambda_m + A*lambda_var, f_mean))
-        dloglikelihood['lambda0'] = sum_r - sum(f_mean)
-        # dloglikelihood['loglambda0'] = (sum_r - sum(f_mean))*lambda0
+        if 'loglambda0' in f_params:  dloglikelihood['loglambda0'] = (sum_r - sum(f_mean))*lambda0
+        elif 'lambda0'  in f_params:  dloglikelihood['lambda0']    = sum_r - sum(f_mean)
+
         # dloglikelihood['tanhlambda0'] = (sum_r - sum(f_mean))*(torch.cosh(lambda0)*torch.cosh(lambda0))  # Derivative of the loglikelihood with respect to tanhlambda0 is dlogLK/dlambda0 * dlambda0/dtanhlambda0 = dlogLK/dlambda0 * cosh^2(lambda0)
         
         return loglikelihood , dloglikelihood
@@ -1618,8 +1626,10 @@ def varGP(x, r, **kwargs):
     theta             = copy.deepcopy(kwargs.get( 'theta',             hyperparams_tuple[0]) )
     theta_lower_lims  = copy.deepcopy(kwargs.get( 'theta_lower_lims',  hyperparams_tuple[1] ))
     theta_higher_lims = copy.deepcopy(kwargs.get( 'theta_higher_lims', hyperparams_tuple[2] ))
-    # f_params          = copy.deepcopy(kwargs['f_params']) if 'f_params' in kwargs.keys() else {'logA': torch.log(torch.tensor(0.0001)), 'loglambda0':torch.log(torch.tensor(1))}
-    f_params          = copy.deepcopy(kwargs['f_params']) if 'f_params' in kwargs.keys() else {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(1)}
+    if 'f_params' not in kwargs.keys():
+        raise Exception('f_params not provided')
+    f_params          = copy.deepcopy(kwargs['f_params']) 
+    # f_params          = copy.deepcopy(kwargs['f_params']) if 'f_params' in kwargs.keys() else {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(1)}
     for key in f_params.keys(): f_params[key] = f_params[key].requires_grad_(True)
     
     # f_params          = copy.deepcopy(kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(-1)} )) # Parameters of the firing rate (A and lambda_0) in the paper
@@ -1662,7 +1672,7 @@ def varGP(x, r, **kwargs):
                             'KL'           : torch.zeros((maxiter)),
                             } 
     theta_track         = {key : torch.zeros((maxiter)) for key in theta.keys()}
-    f_par_track         = {'logA': torch.zeros((maxiter)), 'lambda0': torch.zeros((maxiter))} # track hyperparamers
+    f_par_track         = {'logA': torch.zeros((maxiter)), 'lambda0': torch.zeros((maxiter))} if 'lambda0' in f_params else {'logA': torch.zeros((maxiter)), 'loglambda0': torch.zeros((maxiter))}
     # f_par_track         = {'logA': torch.zeros((maxiter)), 'loglambda0': torch.zeros((maxiter))} # track hyperparamers
 
     variation_par_track = {'V_b': (), 'm_b': ()}               # track the variation parameters
@@ -1672,37 +1682,36 @@ def varGP(x, r, **kwargs):
                             'f_par_track':    f_par_track,  'variation_par_track': variation_par_track}
                             # 'subspace_track': subspace_track }
     
-    print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
+    # print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
 
     #region _________ Memory usage___________
-    memory = 0
-    for dict in values_track.values():
-        for key in dict.keys():
-            if isinstance(dict[key], tuple):
-                for i in range(len(dict[key])):
-                    memory += dict[key][i].element_size() * dict[key][i].nelement()
-                # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-            else:
-                memory += dict[key].element_size() * dict[key].nelement()
-                # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+    # memory = 0
+    # for dict in values_track.values():
+    #     for key in dict.keys():
+    #         if isinstance(dict[key], tuple):
+    #             for i in range(len(dict[key])):
+    #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
+    #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+    #         else:
+    #             memory += dict[key].element_size() * dict[key].nelement()
+    #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
-    # Convert bytes to megabytes (MB)
-    total_memory_MB = memory / (1024 ** 2)
-    print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-    # Allocated memory
-    allocated_bytes = torch.cuda.memory_allocated()
-    allocated_MB = allocated_bytes / (1024 ** 2)
-    print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
+    # # Convert bytes to megabytes (MB)
+    # total_memory_MB = memory / (1024 ** 2)
+    # print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+    # # Allocated memory
+    # allocated_bytes = torch.cuda.memory_allocated()
+    # allocated_MB = allocated_bytes / (1024 ** 2)
+    # print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
 
-    # Reserved (cached) memory
-    reserved_bytes = torch.cuda.memory_reserved()
-    reserved_MB = reserved_bytes / (1024 ** 2)
-    print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
+    # # Reserved (cached) memory
+    # reserved_bytes = torch.cuda.memory_reserved()
+    # reserved_MB = reserved_bytes / (1024 ** 2)
+    # print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
     #endregion _________ Memory usage___________
 
     #endregion _________ Initialization _________
-    try:
-        #region _________ Main Loop ___________
+    try: 
         # Loop variables
         start_time_loop        = time.time()
         time_estep_total       = 0
@@ -1710,7 +1719,6 @@ def varGP(x, r, **kwargs):
         time_mstep_total       = 0
         time_computing_kernels = 0
         time_computing_loss    = 0
-
 
         #region ________________ Initialize tracking dict ______________________
 
@@ -1725,8 +1733,10 @@ def varGP(x, r, **kwargs):
             values_track['theta_track'][key][0].copy_(theta[key])
 
         values_track['f_par_track']['logA'][0].copy_(f_params['logA'])
-        values_track['f_par_track']['lambda0'][0].copy_(f_params['lambda0'])
-        # values_track['f_par_track']['loglambda0'][0].copy_(f_params['loglambda0'])
+        if 'lambda0' in f_params:
+            values_track['f_par_track']['lambda0'][0].copy_(f_params['lambda0'])
+        elif 'loglambda0' in f_params:
+            values_track['f_par_track']['loglambda0'][0].copy_(f_params['loglambda0'])
 
         # values_track['subspace_track']['eigvals'][0].copy_(eigvals)
         # values_track['subspace_track']['eigvecs'][0].copy_(eigvecs)
@@ -1734,8 +1744,10 @@ def varGP(x, r, **kwargs):
         values_track['variation_par_track']['V_b'] += (V_b.clone(),)
         values_track['variation_par_track']['m_b'] += (m_b.clone(),)
         #endregion
-
+        
+        #_______________________ Main Loop ___________
         for iteration in range(1,maxiter):
+
             print(f'*Iteration*: {iteration}', end='')
 
             #region ________________ Computing Kernel and Stabilization____________________
@@ -1808,6 +1820,7 @@ def varGP(x, r, **kwargs):
                 # Optimizer defined here to allow it to keep history of previous gradients and explored directions. 
                 # Keep in mind that the curvature of the loss gets changed also by updates on m,V and the Kernel, so
                 # Defining this in the outer loop makes it less stable it seems
+                # lr_f_params = 0.01 # learning rate
                 lr_f_params = 0.1 # learning rate
                 # lr_f_params = 1
                 optimizer_f_params = torch.optim.LBFGS(f_params.values(), lr=lr_f_params, max_iter=nFparamstep, 
@@ -1837,8 +1850,7 @@ def varGP(x, r, **kwargs):
                                                             K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, 
                                                             K=K_b, C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, 
                                                             lambda_m=None, lambda_var=None  )
-
-                    # endregion
+                    #endregion
 
                     #region ____________ Update f_params ______________ 
                     start_time_f_params = time.time()
@@ -1859,8 +1871,10 @@ def varGP(x, r, **kwargs):
                         # Update gradients of the loss with respect to the firing rate parameters
                         # The minus here is because we are minimizing the negative loglikelihood
                         f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
-                        f_params['lambda0'].grad = -dloglikelihood['lambda0']         #if f_params['lambda0'].requires_grad else None
-                        # f_params['loglambda0'].grad = -dloglikelihood['loglambda0']   #if f_params['lambda0'].requires_grad else None
+                        if 'lambda0' in f_params:
+                            f_params['lambda0'].grad = -dloglikelihood['lambda0']         #if f_params['lambda0'].requires_grad else None
+                        elif 'loglambda0' in f_params:
+                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']   #if f_params['lambda0'].requires_grad else None
                         # f_params['tanhlambda0'].grad = -dloglikelihood['tanhlambda0']    #if f_params['lambda0'].requires_grad else None 
 
                         # the closure has to return the loss,
@@ -1873,16 +1887,16 @@ def varGP(x, r, **kwargs):
                         # if  torch.any( f_mean > 1.e4):
                             # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
                         return -loglikelihood
-                    
+
                     optimizer_f_params.step(closure_f_params)        
                     
                     time_f_params_total += time.time()-start_time_f_params
                     #endregion
             else: print('No E-step')
-            
+
             time_estep = time.time()-start_time_estep
             time_estep_total += time_estep 
-            print(f'\r*Iteration*: {iteration} E-step took: {time_estep:.4f}s', end='')
+            print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s', end='')
             #endregion                       
         
             #region ________________ Update the tracking dictionaries _______________  
@@ -1920,8 +1934,10 @@ def varGP(x, r, **kwargs):
                 values_track['theta_track'][key][iteration].copy_(theta[key])
 
             values_track['f_par_track']['logA'][iteration].copy_(f_params['logA'])
-            values_track['f_par_track']['lambda0'][iteration].copy_(f_params['lambda0'])
-            # values_track['f_par_track']['loglambda0'][iteration].copy_(f_params['loglambda0'])                
+            if 'lambda0' in f_params:
+                values_track['f_par_track']['lambda0'][iteration].copy_(f_params['lambda0'])
+            elif 'loglambda0' in f_params:
+                values_track['f_par_track']['loglambda0'][iteration].copy_(f_params['loglambda0'])                
 
             # values_track['subspace_track']['eigvals'][iteration].copy_(eigvals)
             # values_track['subspace_track']['eigvecs'][iteration].copy_(eigvecs)
@@ -1934,8 +1950,8 @@ def varGP(x, r, **kwargs):
             #region ________________ M-Step : Update on hyperparameters theta  ________________
 
             start_time_mstep = time.time()
-            if iteration == maxiter-1:
-                print(f'\nM-step skipped in the last iteration')
+            # if iteration == maxiter-1:
+                # print(f'\nM-step skipped in the last iteration')
             if nMstep > 0 and iteration < maxiter-1: 
                 # Skip the M-step in the last iteration to avoid generating a new eigenspace that will not be used by V and m
                 # print(f'Mstep in iteration {iteration}')
@@ -2076,7 +2092,7 @@ def varGP(x, r, **kwargs):
                 # progbar.set_description(f"GP step loss: {-logmarginal.item():.4f}")
                 # progbar.update(1)
                 mstep_time = time.time()-start_time_mstep
-                print(f'\r*Iteration*: {iteration} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
+                print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
 
             else: 
                 if iteration < maxiter-1: print(' No M-step')
@@ -2084,7 +2100,7 @@ def varGP(x, r, **kwargs):
             time_mstep_total += time_mstep
             #endregion __________________________________________
 
-        #endregion 
+
 
     except KeyboardInterrupt as e:
 
@@ -2105,8 +2121,10 @@ def varGP(x, r, **kwargs):
         theta = last_theta                                                              # and eigenvectors were calculated ( therefore onto which the last used V-b was projected )
 
         f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
-        f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
-        # f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1] 
+        if 'lambda0' in f_params:
+            f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
+        elif 'loglambda0' in f_params:
+            f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1] 
         # f_params['tanhlambda0'] = values_track['f_par_track']['tanhlambda0'][iteration-1]
 
         V_b = values_track['variation_par_track']['V_b'][iteration-1]
@@ -2137,8 +2155,10 @@ def varGP(x, r, **kwargs):
         theta = last_theta
 
         f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
-        f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
-        # f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1]            
+        if 'lambda0' in f_params:
+            f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
+        elif 'loglambda0' in f_params:
+            f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1]            
 
 
         V_b = values_track['variation_par_track']['V_b'][iteration-1]
@@ -2198,19 +2218,19 @@ def varGP(x, r, **kwargs):
                 print('Final V_b is not posdef, this should not be possible if you are skipping the last M-step')   
                 V_b += torch.eye(V_b.shape[0])*EIGVAL_TOL
 
-            print(f'Final Loss: {-logmarginal.item():.4f}' ) 
+            # print(f'Final Loss: {-logmarginal.item():.4f}' ) 
 
-            print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
-            print(f'Time spent for f params:      {time_f_params_total:.3f}s')
-            print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
-            print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
-            print(f'Time spent for X-steps:       {time_estep_total+time_mstep_total:.3f}s')
-            print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
-            print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
-            # print(f"      time for final loss computation: {time.time()-final_start_time:.3f} s")
-            print(f'Time total after init:        {time.time()-start_time_loop:.3f}s')
+            # print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
+            # print(f'Time spent for f params:      {time_f_params_total:.3f}s')
+            # print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
+            # print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
+            # print(f'Time spent for X-steps:       {time_estep_total+time_mstep_total:.3f}s')
+            # print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
+            # print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
+            print(f'\nTime total after init:        {time.time()-start_time_loop:.3f}s')
             print(f"Time total before init:       {time.time()-start_time_before_init:.3f}s")
 
+            print(f'Final Loss: {-logmarginal.item():.4f}' )
             # Reduce values_track dictionary to the first 'iteration' elements`
             for key in values_track.keys():
                 for subkey in values_track[key].keys():
@@ -2238,29 +2258,29 @@ def varGP(x, r, **kwargs):
 
 
                 #region _________ Memory usage___________
-            memory = 0
-            for dict in values_track.values():
-                for key in dict.keys():
-                    if isinstance(dict[key], tuple):
-                        for i in range(len(dict[key])):
-                            memory += dict[key][i].element_size() * dict[key][i].nelement()
-                        # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-                    else:
-                        memory += dict[key].element_size() * dict[key].nelement()
-                        # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+            # memory = 0
+            # for dict in values_track.values():
+            #     for key in dict.keys():
+            #         if isinstance(dict[key], tuple):
+            #             for i in range(len(dict[key])):
+            #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
+            #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+            #         else:
+            #             memory += dict[key].element_size() * dict[key].nelement()
+            #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
-            # Convert bytes to megabytes (MB)
-            total_memory_MB = memory / (1024 ** 2)
-            print(f'\nFinal Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-            # Allocated memory
-            allocated_bytes = torch.cuda.memory_allocated()
-            allocated_MB = allocated_bytes / (1024 ** 2)
-            print(f"Final Allocated memory: {allocated_MB:.2f} MB")
+            # # Convert bytes to megabytes (MB)
+            # total_memory_MB = memory / (1024 ** 2)
+            # print(f'\nFinal Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+            # # Allocated memory
+            # allocated_bytes = torch.cuda.memory_allocated()
+            # allocated_MB = allocated_bytes / (1024 ** 2)
+            # print(f"Final Allocated memory: {allocated_MB:.2f} MB")
 
-            # Reserved (cached) memory
-            reserved_bytes = torch.cuda.memory_reserved()
-            reserved_MB = reserved_bytes / (1024 ** 2)
-            print(f"Final Reserved (cached) memory: {reserved_MB:.2f} MB")
+            # # Reserved (cached) memory
+            # reserved_bytes = torch.cuda.memory_reserved()
+            # reserved_MB = reserved_bytes / (1024 ** 2)
+            # print(f"Final Reserved (cached) memory: {reserved_MB:.2f} MB")
             #endregion _________ Memory usage___________
             return fit_model, err_dict
     
