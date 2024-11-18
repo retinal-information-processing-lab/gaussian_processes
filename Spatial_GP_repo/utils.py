@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 import json
 import copy
+import itertools
 
 
 import matplotlib.pyplot as plt
@@ -325,13 +326,13 @@ def test(X_test, R_test, xtilde, X_train=None, at_iteration=None, **kwargs):
 
     # X_test # shape (30,108,108,1) # nimages, npx, npx
 
-    maxiter   = kwargs['fit_parameters'].get('maxiter', 0)
-    nEstep    = kwargs['fit_parameters'].get('nEstep', 0)
-    nMstep    = kwargs['fit_parameters'].get('nMstep', 0)
-    kernfun   = kwargs['fit_parameters'].get('kernfun')
-    cellid    = kwargs['fit_parameters'].get('cellid')
-    n_px_side = kwargs['fit_parameters'].get('n_px_side')
-    # kernfun = acosker if kernfun == 'acosker' else print('Kernel function not recognized')
+    maxiter     = kwargs['fit_parameters'].get('maxiter', 0)
+    nEstep      = kwargs['fit_parameters'].get('nEstep', 0)
+    nMstep      = kwargs['fit_parameters'].get('nMstep', 0)
+    kernfun     = kwargs['fit_parameters'].get('kernfun')
+    cellid      = kwargs['fit_parameters'].get('cellid')
+    n_px_side   = kwargs['fit_parameters'].get('n_px_side')
+    # kernfun   = acosker if kernfun == 'acosker' else print('Kernel function not recognized')
     mask        = kwargs.get('mask')
     theta       = kwargs.get('hyperparams_tuple')[0]
     C           = kwargs.get('C')
@@ -1127,7 +1128,7 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, d
             else :
                 return lambda_m, lambda_var
 
-def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var):
+def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var,):
         '''Compute the expectation value of the vector of firing rates for every training point: 
                         <f> = exp(A*<lambda> + 0.5*A^2*Var(lambda) + lambda0)
         as shown (between other things) in (34)-(37) of Notes for Pietro
@@ -1136,18 +1137,16 @@ def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var):
         '''
         A       = torch.exp(f_params['logA'])
         # lambda0 = f_params['lambda0']
+
         lambda0 = torch.exp(f_params['loglambda0']) if 'loglambda0' in f_params else f_params['lambda0']
-        # return torch.exp(A*lambda_m + 0.5*A*A*lambda_var + f_params['lambda0'] )
+
         f_mean = torch.exp(A*lambda_m + 0.5*A*A*lambda_var + lambda0 )
-        n_f_mean_big = torch.sum(f_mean>1000)
-        
-        # if n_f_mean_big>0:
-            # print(f'\nNumber of f_mean bigger than 100: {n_f_mean_big}\n')
-        return torch.min( f_mean, torch.tensor(1000.))
-        # return f_mean
+
+        # return torch.min( f_mean, torch.tensor(1000.))
+        return f_mean
         
 def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None, K_tilde=None, KKtilde_inv=None, 
-           Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None):
+           Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None, r=None):
         
         # Compute the mean of the firing rate f for every training point (a vector) as in (52) Notes for Pietro, 
         # It calls lambda_moments to calculate mean and variance of lambda [ eq (56)(57) of Notes for Pietro ] if they are not known.
@@ -1185,19 +1184,54 @@ def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None
             if dK is not None and dK_tilde is not None and dK_vec is not None and K_tilde_inv is not None:
                 lambda_m, lambda_var, dlambda_m, dlambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=kernfun, dK=dK, dK_tilde=dK_tilde, dK_vec=dK_vec, K_tilde_inv=K_tilde_inv)
                 # Calculate the actual mean of the firing rate
-                f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+
+                # feature 2 lambda0
+                if r is not None:
+                    f_params_temp = {'logA':f_params['logA'], 'lambda0': lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
+                    f_mean = mean_f_given_lambda_moments( f_params_temp, lambda_m, lambda_var)
+                else:
+                    f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var )
+                
                 return f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var
             
             else:
                 lambda_m, lambda_var = lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=kernfun)
                 # Calculate the actual mean of the firing rate
-                f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+
+                # feature 2 lambda0
+                if r is not None:
+                    f_params_temp = {'logA':f_params['logA'], 'lambda0': lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
+                    f_mean = mean_f_given_lambda_moments( f_params_temp, lambda_m, lambda_var)
+                else:
+                    f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var )
                 return f_mean, lambda_m, lambda_var
         
         else:
             # Calculate the actual mean of the firing rate
-            f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)
+
+            # feature 2 lambda0
+            if r is not None:
+                f_params_temp = {'logA':f_params['logA'], 'lambda0': lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
+                f_mean = mean_f_given_lambda_moments( f_params_temp, lambda_m, lambda_var)
+            else:   
+                f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var )
             return f_mean
+
+def lambda0_given_logA( logA, r, lambda_m, lambda_var):
+
+    '''Given A, the optimal lambda0 value is in closed form, given by the solution of equation dL/dlambda0 = 0
+        with L = loglikelihood.'''
+    
+    A = torch.exp(logA)
+
+    sumr = r.sum()
+    # This expression is basically the mean log firing rate f_mean withouth the exp(lambda0) factor
+    expexpr = torch.exp( A*lambda_m + 0.5*A*A*lambda_var)
+    sumexpr = expexpr.sum()
+
+    lambda0 = torch.log( sumr ) - torch.log( sumexpr )
+
+    return lambda0
 
 def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False, dlambda_m=None, dlambda_var=None):
     # Returns the Sum of <loglikelihood> terms of the logmarginal likelihood loss as in (51) Notes for Pietro   
@@ -1592,7 +1626,6 @@ def varGP(x, r, **kwargs):
 
     #endregion
     
-
     #region ________ Initialization __________
     start_time_before_init = time.time()
     err_dict = {'is_error': False, 'error_message': None}
@@ -1626,6 +1659,7 @@ def varGP(x, r, **kwargs):
     theta             = copy.deepcopy(kwargs.get( 'theta',             hyperparams_tuple[0]) )
     theta_lower_lims  = copy.deepcopy(kwargs.get( 'theta_lower_lims',  hyperparams_tuple[1] ))
     theta_higher_lims = copy.deepcopy(kwargs.get( 'theta_higher_lims', hyperparams_tuple[2] ))
+
     if 'f_params' not in kwargs.keys():
         raise Exception('f_params not provided')
     f_params          = copy.deepcopy(kwargs['f_params']) 
@@ -1637,25 +1671,31 @@ def varGP(x, r, **kwargs):
 
     # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
     # TODO Calculate it only close to the RF (for now it's every pixel)
-    C, mask = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
-    K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
-    K       = kernfun(theta, x[:,mask],      xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
-    Kvec    = kernfun(theta, x[:,mask],      x2=None,        C=C, dC=None, diag=True)       # shape (nt)
-    
-    eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
-    ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
 
-    B = eigvecs[:, ikeep]                                     # shape (ntilde, n_eigen)            
+
+    C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else kwargs['init_kernel']['C, mask']
+    K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde']
+    K       = kernfun(theta, x[:,mask],      xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
+    Kvec    = kernfun(theta, x[:,mask],      x2=None,        C=C, dC=None, diag=True)                                                        if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
+    if 'init_kernel' not in kwargs:
+        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
+        ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
+
+    B = eigvecs[:, ikeep]                               if 'init_kernel' not in kwargs else kwargs['init_kernel']['B']             # shape (ntilde, n_eigen)            
     # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
-    K_tilde_b = torch.diag(eigvals[ikeep])                    # shape (n_eigen, n_eigen)
-    K_b       = K @ B                                         # shape (3190, n_eigen)
+    K_tilde_b = torch.diag(eigvals[ikeep])              if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_b']     # shape (n_eigen, n_eigen)
+    K_b       = K @ B                                   if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_b']           # shape (3190, n_eigen)
 
-    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])        # shape (n_eigen, n_eigen)
-    KKtilde_inv_b = K_b @ K_tilde_inv_b                       # shape (nt, n_eigen) # this is 'a' in matthews code
+    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])  if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
+    KKtilde_inv_b = K_b @ K_tilde_inv_b                 if 'init_kernel' not in kwargs else kwargs['init_kernel']['KKtilde_inv_b'] # shape (nt, n_eigen) # this is 'a' in matthews code
 
-    # In the first iteration we get the projetion V_b from the complete V
+    # We always pass the non projected variational parameters because the dimensionality of the problem is determined by the lines above ( B ).
     m = copy.deepcopy(kwargs.get('m', torch.zeros( (ntilde) )).detach())
     V = copy.deepcopy(kwargs.get('V', K_tilde ).detach())
+
+    # m_b = copy.deepcopy(kwargs.get('m_b', torch.zeros( (ntilde) )).detach())
+    # V_b = copy.deepcopy(kwargs.get('V_b', K_tilde_b ).detach())
+
     V_b = B.T @ V @ B if 'V' in kwargs else K_tilde_b     # shape (n_eigen, n_eigen)
     m_b = B.T @ m 
 
@@ -1685,32 +1725,32 @@ def varGP(x, r, **kwargs):
     # print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
 
     #region _________ Memory usage___________
-    # memory = 0
-    # for dict in values_track.values():
-    #     for key in dict.keys():
-    #         if isinstance(dict[key], tuple):
-    #             for i in range(len(dict[key])):
-    #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
-    #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-    #         else:
-    #             memory += dict[key].element_size() * dict[key].nelement()
-    #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+    memory = 0
+    for dict in values_track.values():
+        for key in dict.keys():
+            if isinstance(dict[key], tuple):
+                for i in range(len(dict[key])):
+                    memory += dict[key][i].element_size() * dict[key][i].nelement()
+                # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+            else:
+                memory += dict[key].element_size() * dict[key].nelement()
+                # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
-    # # Convert bytes to megabytes (MB)
-    # total_memory_MB = memory / (1024 ** 2)
-    # print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-    # # Allocated memory
-    # allocated_bytes = torch.cuda.memory_allocated()
-    # allocated_MB = allocated_bytes / (1024 ** 2)
-    # print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
+    # Convert bytes to megabytes (MB)
+    total_memory_MB = memory / (1024 ** 2)
+    print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+    # Allocated memory
+    allocated_bytes = torch.cuda.memory_allocated()
+    allocated_MB = allocated_bytes / (1024 ** 2)
+    print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
 
-    # # Reserved (cached) memory
-    # reserved_bytes = torch.cuda.memory_reserved()
-    # reserved_MB = reserved_bytes / (1024 ** 2)
-    # print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
+    # Reserved (cached) memory
+    reserved_bytes = torch.cuda.memory_reserved()
+    reserved_MB = reserved_bytes / (1024 ** 2)
+    print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
     #endregion _________ Memory usage___________
 
-    #endregion _________ Initialization _________
+    #endregion ______________________________
     try: 
         # Loop variables
         start_time_loop        = time.time()
@@ -1719,6 +1759,7 @@ def varGP(x, r, **kwargs):
         time_mstep_total       = 0
         time_computing_kernels = 0
         time_computing_loss    = 0
+        time_lambda0_estimation= 0
 
         #region ________________ Initialize tracking dict ______________________
 
@@ -1726,6 +1767,8 @@ def varGP(x, r, **kwargs):
         values_track['loss_track']['loglikelihood'][0].copy_(loglikelihood)
         values_track['loss_track']['KL'][0].copy_(KL_div)
         values_track['loss_track']['logmarginal'][0].copy_(loglikelihood-KL_div)
+
+        print(f'Initial Loss: {-(loglikelihood-KL_div):.4f}')
 
         # Theta before the Mstep of 0 "i" is the one used to build the kernel of the E-step of 0 "i+1". 
         # The theta we are saving here is the one we just used.
@@ -1738,8 +1781,6 @@ def varGP(x, r, **kwargs):
         elif 'loglambda0' in f_params:
             values_track['f_par_track']['loglambda0'][0].copy_(f_params['loglambda0'])
 
-        # values_track['subspace_track']['eigvals'][0].copy_(eigvals)
-        # values_track['subspace_track']['eigvecs'][0].copy_(eigvecs)
 
         values_track['variation_par_track']['V_b'] += (V_b.clone(),)
         values_track['variation_par_track']['m_b'] += (m_b.clone(),)
@@ -1748,7 +1789,7 @@ def varGP(x, r, **kwargs):
         #_______________________ Main Loop ___________
         for iteration in range(1,maxiter):
 
-            print(f'*Iteration*: {iteration}', end='')
+            # print(f'*Iteration*: {iteration}', end='')
 
             #region ________________ Computing Kernel and Stabilization____________________
             # Compute starting Kernel, if no M-step -> only compute it once cause it's not changing
@@ -1817,16 +1858,6 @@ def varGP(x, r, **kwargs):
             if nEstep > 0:
                 # print(f'Estep in iteration {iteration}')
 
-                # Optimizer defined here to allow it to keep history of previous gradients and explored directions. 
-                # Keep in mind that the curvature of the loss gets changed also by updates on m,V and the Kernel, so
-                # Defining this in the outer loop makes it less stable it seems
-                # lr_f_params = 0.01 # learning rate
-                lr_f_params = 0.1 # learning rate
-                # lr_f_params = 1
-                optimizer_f_params = torch.optim.LBFGS(f_params.values(), lr=lr_f_params, max_iter=nFparamstep, 
-                                                        tolerance_change=1.e-9, tolerance_grad=1.e-7,
-                                                        history_size=100, line_search_fn='strong_wolfe')
-
                 for i_estep in range(nEstep):
                     # print(f'   Estep n {i_estep}')
 
@@ -1834,8 +1865,13 @@ def varGP(x, r, **kwargs):
                     # They are update again after the Estep
 
                     if i_estep == 0 and nMstep > 0:
-                        lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)               
-                    
+                        lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)  
+
+                        # feature 2: lambda0
+                        lambda0_estimation_start_time = time.time()
+                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                        time_lambda0_estimation += time.time()-lambda0_estimation_start_time             
+
                     # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
                     start_time_f_params = time.time()
                     f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var) # Since f_params influece f_mean, we need to update it at each estep
@@ -1853,14 +1889,22 @@ def varGP(x, r, **kwargs):
                     #endregion
 
                     #region ____________ Update f_params ______________ 
+
+                    lambda0_estimation_start_time = time.time()
+                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                    time_lambda0_estimation += time.time()-lambda0_estimation_start_time
+
+                    # lr_f_params = 0.01 # learning rate
+                    lr_f_params = 0.1 # learning rate
+                    # lr_f_params = 1
+                    optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_f_params, max_iter=nFparamstep, 
+                                                            tolerance_change=1.e-9, tolerance_grad=1.e-7,
+                                                            history_size=nFparamstep, line_search_fn='strong_wolfe')
                     start_time_f_params = time.time()
                     CLOSURE2_COUNTER = [0]
                     @torch.no_grad()
                     def closure_f_params( ):
                         CLOSURE2_COUNTER[0] += 1
-
-                        if i_estep == 1 and CLOSURE2_COUNTER[0] == 0:
-                            pass
                         optimizer_f_params.zero_grad()
                         nonlocal f_mean          # Update f_mean of the outer scope each time the closure is called
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
@@ -1872,31 +1916,41 @@ def varGP(x, r, **kwargs):
                         # The minus here is because we are minimizing the negative loglikelihood
                         f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
                         if 'lambda0' in f_params:
-                            f_params['lambda0'].grad = -dloglikelihood['lambda0']         #if f_params['lambda0'].requires_grad else None
+                            f_params['lambda0'].grad = -dloglikelihood['lambda0']        if f_params['lambda0'].requires_grad else None
                         elif 'loglambda0' in f_params:
-                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']   #if f_params['lambda0'].requires_grad else None
-                        # f_params['tanhlambda0'].grad = -dloglikelihood['tanhlambda0']    #if f_params['lambda0'].requires_grad else None 
+                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['lambda0'].requires_grad else None
+ 
 
                         # the closure has to return the loss,
                         # the loss is the negative loglikelihood
-                        # NOTE: don't use this return value, its just the first iteration of the optimizer, however many iterations are done in the optimizer
                         # print(f'      Update f_params n {CLOSURE2_COUNTER[0]}')
 
                         if torch.any(torch.isnan(f_mean)):
-                            raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
+                            raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
                         # if  torch.any( f_mean > 1.e4):
                             # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
+
+                        if f_mean.mean() > 100:
+                            print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}')
                         return -loglikelihood
 
                     optimizer_f_params.step(closure_f_params)        
                     
+                    lambda0_estimation_start_time = time.time()
+                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                    time_lambda0_estimation += time.time()-lambda0_estimation_start_time
+
+                    if f_mean.mean() > 100:
+                        print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
+
+
                     time_f_params_total += time.time()-start_time_f_params
                     #endregion
             else: print('No E-step')
 
             time_estep = time.time()-start_time_estep
             time_estep_total += time_estep 
-            print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s', end='')
+            # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s', end='')
             #endregion                       
         
             #region ________________ Update the tracking dictionaries _______________  
@@ -1947,6 +2001,9 @@ def varGP(x, r, **kwargs):
             values_track['variation_par_track']['m_b'] += (m_b.clone(),)
             #endregion
 
+            print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
+
+
             #region ________________ M-Step : Update on hyperparameters theta  ________________
 
             start_time_mstep = time.time()
@@ -1961,60 +2018,30 @@ def varGP(x, r, **kwargs):
                 # This is not entirely precise because a change in hyperparameters could change the eigenvalues  over the threshold (and therefore change the dimension of the subspace I'm projecting onto)
                 # But this most likely has a minimal effect. And it saves nMstep eigenvalue decompositions per iteration.
                 
-                # if nMstep == 1: nbfgsteps = 1
-                # else:           nbfgsteps = int(nMstep/2)
-                # for _ in range(nbfgsteps):
-                # else:           nbfgsteps = nMstep
-                nbfgsteps = 1
-
                 # lr_hyperparams = 0.01
                 lr_hyperparams = 0.1
-                # lr_hyperparams = 1 # too much
+                # lr_hyperparams = 1 # This is often too much and the optimizer takes the Hp out of bounds. Every time this happens we basically lose an M-step iteration
+                if iteration > 1:
+                    del optimizer_hyperparams
                 optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_hyperparams, max_iter=nMstep, line_search_fn='strong_wolfe', tolerance_change=1.e-9, tolerance_grad=1.e-7, history_size=100)
-                # optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_hyperparams, max_iter=max([nMstep, 2]),  )
+
                 
-                #region ___________________ Set the gradients for the first closure call
-                optimizer_hyperparams.zero_grad()
-                C, mask, dC       = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
-                K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                Kvec, dKvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
-
-                # Projecting the Kernel into the same eigenspace used in the E-step
-                K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
-                K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5       # make sure it is symmetric
-                K_b  = K @ B                             # Project K into eigenspace, shape (3190, n_eigen)
-
-                # Projection of the gradients of the Kernel into the eigenspace
-                dK_tilde_b = {}
-                dK_b = {}
-                for key in dK_tilde.keys():
-                    dK_tilde_b[key] = B.T@dK_tilde[key]@B
-                    dK_b[key]       = dK[key] @ B                     # Project dK into eigenspace, shape (3190, n_eigen)
-                
-                K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
-                KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen)                
-
-                f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
-                                                                            C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
-                
-                loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
-                KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
-                logmarginal                   = loglikelihood - KL
-
-                # Dictionary of gradients of the -loss with respect to the hyperparameters, to be assigned to the gradients of the parameters
-                # Update the gradients of the loss with respect to the hyperparameters ( its minus the gradeints of the logmarginal)
-                dlogmarginal = {}
-                for key in theta.keys():
-                    dlogmarginal[key] = dloglikelihood[key] - dKL[key]
-                    if theta[key].requires_grad:
-                        theta[key].grad = -dlogmarginal[key]
-                #endregion 
-
+                CLOSURE2_COUNTER = [0]
                 @torch.no_grad()
                 def closure_hyperparams( ):
-
+                    CLOSURE2_COUNTER[0] += 1
                     optimizer_hyperparams.zero_grad()
+                    # if any hyperparameter is out of bounds, return infinite loss to signal the optimizer to revaluate the step size
+                    return_infinite_loss = False
+                    for key, value in theta.items():
+                        if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
+                            return_infinite_loss = True
+                            print(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}, returning inifinite loss in closure call {CLOSURE2_COUNTER[0]}")
+                            if theta[key].requires_grad:
+                                theta[key].grad = torch.tensor(float('inf'))
+                    if return_infinite_loss: return torch.tensor(float('inf'))
+
+
                     C, mask, dC       = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
                     K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
                     K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
@@ -2058,6 +2085,18 @@ def varGP(x, r, **kwargs):
                     f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
                                                                                 C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
                     
+                    # feature 2 lambda0
+                    # f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
+                                                                                # C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b, r=r) # Shape (nt
+                    
+
+                    # feature 2: lambda0
+                    # lambda0_estimation_start_time = time.time()
+                    # temp_f_params = {'logA':f_params['logA'], 'lambda0':lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
+                    # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                    # time_lambda0_estimation += time.time()-lambda0_estimation_start_time
+
+                    # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, temp_f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
                     loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
                     KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
                     logmarginal                   = loglikelihood - KL
@@ -2092,15 +2131,13 @@ def varGP(x, r, **kwargs):
                 # progbar.set_description(f"GP step loss: {-logmarginal.item():.4f}")
                 # progbar.update(1)
                 mstep_time = time.time()-start_time_mstep
-                print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
+                # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
 
             else: 
                 if iteration < maxiter-1: print(' No M-step')
             time_mstep        = time.time()-start_time_mstep
             time_mstep_total += time_mstep
             #endregion __________________________________________
-
-
 
     except KeyboardInterrupt as e:
 
@@ -2220,13 +2257,14 @@ def varGP(x, r, **kwargs):
 
             # print(f'Final Loss: {-logmarginal.item():.4f}' ) 
 
-            # print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
-            # print(f'Time spent for f params:      {time_f_params_total:.3f}s')
-            # print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
-            # print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
-            # print(f'Time spent for X-steps:       {time_estep_total+time_mstep_total:.3f}s')
-            # print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
-            # print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
+            print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
+            print(f'Time spent for f params:      {time_f_params_total:.3f}s')
+            print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
+            print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
+            print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
+            print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
+            print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
+            print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
             print(f'\nTime total after init:        {time.time()-start_time_loop:.3f}s')
             print(f"Time total before init:       {time.time()-start_time_before_init:.3f}s")
 
