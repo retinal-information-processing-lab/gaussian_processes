@@ -681,6 +681,7 @@ def safe_acos(x):
 
     acos = torch.acos(x)
     return acos
+
 ##################   Initialization   ####################
 
 def save_pickle(filename, **kwargs):
@@ -1049,30 +1050,22 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
 
 ##################   Other functions   ####################
 
-def lambda_moments1( x, K, K_tilde, K_tilde_inv, C, m, V, theta, kernfun ):
-            # Calculate the mean and variance of lambda over the given training points used to calculate K
-            # Formulas for <lambda_i> and Variance(lambda_i) in notes for Pietro are the case of a single training point x_i, therefore a K matrix of shape (1, ntilde)
+def block_matrix_inverse(orig_inv, new_column):
+    '''
+    Use Sherman-Woodbury matrix update for the inverse of the N+1 X N+1 matrix
+    Compute the inverse of the N+1 X N+1 matrix given the inverse of the N X N matrix
+    the N+1 X N+1 matrix is assumed of the form [[K, b], [b.T, d]] where new_column = [b, d]
+    '''
+    b = new_column[:-1]
+    d = new_column[-1]
 
-            # INPUTS
-            # x training points x_i over wich we are calculating mean and variance of lambda_i, shape ( nt_or_less, nx )
-            # K : matrix of kernel values K(x_i, X_tilde) for every training point x_i in x, shape (nt_or_less, ntilde) 
-            # K_tilde matrix of shape (ntilde, ntilde)
-            # m : mean of the variational distribution q(lambda) = N(m, V), shape (ntilde, 1)
-            # V : variance of the variational distribution q(lambda) = N(m, V), shape (ntilde, ntilde)
-            
-            #TODO: pass K_tilde inverse ar argument
-            #a    = torch.matmul(K, torch.inverse(K_tilde)) # shape (nt, ntilde)
-            a   = torch.einsum( 'ij,jk->ik', K, K_tilde_inv ) # shape (nt, ntilde)
+    e = orig_inv @ b
+    g = 1/( d - b.T @ e )
 
-            # vector of mean target function for every training point
-            lambda_m = torch.matmul( a, m ) # shape (nt, 1)
+    updated_inv = torch.cat( ( orig_inv + g * e @ e.T, -g * e),                         axis=1)
+    updated_inv = torch.cat( ( updated_inv ,          torch.cat((-g * e, g), axis=0).T),axis=0)
 
-            # Vector of kernel values kii for every training point
-            Kvec = kernfun(x, x, C, theta, xtilde_case=False, scalar_case=True) # shape (nt_or_less, 1)
-            # vector of variances of the target function for every training point
-            lambda_var = Kvec + torch.einsum( 'ij,ji->i', a, torch.matmul(V-K_tilde, a.T) )
-
-            return lambda_m, lambda_var
+    return updated_inv
 
 @torch.no_grad()
 def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
@@ -1672,22 +1665,31 @@ def varGP(x, r, **kwargs):
     # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
     # TODO Calculate it only close to the RF (for now it's every pixel)
 
-
+    # The following lines initialize the kernel values. 
+    # They take care of setting the kernel of the whole dataset equal to the kernel on the inducing points (K_tilde) the same if the inducing points are the whole dataset
+    # They also dont calculate the kernel if its starting values are passed as an argument
+    # They also take care of projecting the kernel into the eigenspace of the largest eigenvectors of K_tilde
     C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else kwargs['init_kernel']['C, mask']
     K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde']
-    K       = kernfun(theta, x[:,mask],      xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
-    Kvec    = kernfun(theta, x[:,mask],      x2=None,        C=C, dC=None, diag=True)                                                        if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
+    
+    if ntilde != nt:  K  = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                     if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
+    else:             K  = K_tilde
+    
+    Kvec = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                                                        if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
     if 'init_kernel' not in kwargs:
         eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
         ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
 
-    B = eigvecs[:, ikeep]                               if 'init_kernel' not in kwargs else kwargs['init_kernel']['B']             # shape (ntilde, n_eigen)            
+    B = eigvecs[:, ikeep]                                 if 'init_kernel' not in kwargs else kwargs['init_kernel']['B']             # shape (ntilde, n_eigen)            
     # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
-    K_tilde_b = torch.diag(eigvals[ikeep])              if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_b']     # shape (n_eigen, n_eigen)
-    K_b       = K @ B                                   if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_b']           # shape (3190, n_eigen)
+    K_tilde_b = torch.diag(eigvals[ikeep])                if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_b']     # shape (n_eigen, n_eigen)
+    K_b       = K @ B                                     if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_b']           # shape (3190, n_eigen)
 
-    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])  if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
-    KKtilde_inv_b = K_b @ K_tilde_inv_b                 if 'init_kernel' not in kwargs else kwargs['init_kernel']['KKtilde_inv_b'] # shape (nt, n_eigen) # this is 'a' in matthews code
+
+    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])    if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
+    K_tilde_inv_p = torch.diag_embed(1/eigvals)           if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_p'] # shape (ntilde, ntilde)
+    if ntilde != nt:  KKtilde_inv_b = K_b @ K_tilde_inv_b if 'init_kernel' not in kwargs else kwargs['init_kernel']['KKtilde_inv_b'] # shape (nt, n_eigen) # this is 'a' in matthews code
+    else:             KKtilde_inv_b = B                                                                                              # the resulting matrix of Ktildeb @ B @ B.T @ Ktildeb_inv @ B = B  
 
     # We always pass the non projected variational parameters because the dimensionality of the problem is determined by the lines above ( B ).
     m = copy.deepcopy(kwargs.get('m', torch.zeros( (ntilde) )).detach())
@@ -1797,23 +1799,22 @@ def varGP(x, r, **kwargs):
             if nMstep > 0 and iteration > 1:
                 #________________ Compute the KERNELS after M-Step and the inverse of V _____________
                 C, mask    = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)                
-                K_tilde    = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) # shape (ntilde, ntilde)
-                K          = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      # shape (nt, ntilde) set of row vectors K_i for every input 
-                Kvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=None, diag=True)              # shape (nt)
+                K_tilde    = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                   # shape (ntilde, ntilde)
+                K          = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      if ntilde != nt else K_tilde      # shape (nt, ntilde) set of row vectors K_i for every input 
+                Kvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                                                # shape (nt)
                 
                 eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
                 ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
             
                 B_old = B 
-                B = eigvecs[:, ikeep]                                     # shape (ntilde, n_eigen)            
+                B = eigvecs[:, ikeep]                                                  # shape (ntilde, n_eigen)            
                 # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
-                K_tilde_b = torch.diag(eigvals[ikeep])                    # shape (n_eigen, n_eigen)
-                K_b       = K @ B                                         # shape (3190, n_eigen)
-
-                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])        # shape (n_eigen, n_eigen)
-                KKtilde_inv_b = K_b @ K_tilde_inv_b                       # shape (nt, n_eigen) # this is 'a' in matthews code                         
+                K_tilde_b     = torch.diag(eigvals[ikeep])                                 # shape (n_eigen, n_eigen)
+                K_tilde_inv_p = torch.diag_embed(1/eigvals)                                # We keep the latest inverse of the complete K_tilde just to return it and be fast in computing the inverse of the incremented K_tilde if needed ( active learning )
+                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                     # shape (n_eigen, n_eigen)
+                K_b           = K @ B                                                      # shape (3190, n_eigen)
+                KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B             # shape (nt, n_eigen) # this is 'a' in matthews code                         
         
-
                 # In the following iterations we already have V_b (maybe updated in an E-step) and if Mstep > 0 we changed the eigenspace,
                 # Get V_b_new referring to this new eigenspace as:
                 #       V_b_new = (B_new.T@V)@B_new 
@@ -1996,13 +1997,11 @@ def varGP(x, r, **kwargs):
             # values_track['subspace_track']['eigvals'][iteration].copy_(eigvals)
             # values_track['subspace_track']['eigvecs'][iteration].copy_(eigvecs)
 
-
             values_track['variation_par_track']['V_b'] += (V_b.clone(),)
             values_track['variation_par_track']['m_b'] += (m_b.clone(),)
-            #endregion
 
             print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
-
+            #endregion
 
             #region ________________ M-Step : Update on hyperparameters theta  ________________
 
@@ -2024,8 +2023,7 @@ def varGP(x, r, **kwargs):
                 if iteration > 1:
                     del optimizer_hyperparams
                 optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_hyperparams, max_iter=nMstep, line_search_fn='strong_wolfe', tolerance_change=1.e-9, tolerance_grad=1.e-7, history_size=100)
-
-                
+    
                 CLOSURE2_COUNTER = [0]
                 @torch.no_grad()
                 def closure_hyperparams( ):
@@ -2041,11 +2039,10 @@ def varGP(x, r, **kwargs):
                                 theta[key].grad = torch.tensor(float('inf'))
                     if return_infinite_loss: return torch.tensor(float('inf'))
 
-
                     C, mask, dC       = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
-                    K_tilde, dK_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                    K, dK             = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                    Kvec, dKvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
+                    K_tilde, dK_tilde = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                    K, dK             = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False) if ntilde != nt else (K_tilde, dK_tilde) 
+                    Kvec, dKvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
 
                     #region ____________Stabilization____________________
                     # The eigenvectors are not recalculated during the M-step.
@@ -2059,9 +2056,9 @@ def varGP(x, r, **kwargs):
                     # B = eigvecs[:, ikeep]                                    # shape (ntilde, n_eigen)            
 
                     # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters/Kernel)
-                    K_tilde_b = B.T@K_tilde@B                # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
-                    K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5       # make sure it is symmetric
-                    K_b  = K @ B                             # Project K into eigenspace, shape (3190, n_eigen)
+                    K_tilde_b = B.T@K_tilde@B                 # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
+                    K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5 # make sure it is symmetric
+                    K_b  = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
 
                     # If eigenspace B has been recalculated, one has to reproject m and V into the new eigenspace
                     # V_b_new = B.T@(B_old@V_b@B_old.T)@B
@@ -2080,7 +2077,7 @@ def varGP(x, r, **kwargs):
                     # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
                     # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
                     K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
-                    KKtilde_inv_b = K_b @ K_tilde_inv_b # shape (nt, n_eigen)                
+                    KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
 
                     f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
                                                                                 C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
@@ -2197,12 +2194,8 @@ def varGP(x, r, **kwargs):
         elif 'loglambda0' in f_params:
             f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1]            
 
-
         V_b = values_track['variation_par_track']['V_b'][iteration-1]
         m_b = values_track['variation_par_track']['m_b'][iteration-1]
-
-        # eigvals = values_track['subspace_track']['eigvals'][iteration-1]
-        # eigvecs = values_track['subspace_track']['eigvecs'][iteration-1]
 
         err_dict['is_error'] = True
         err_dict['error'] = e 
@@ -2214,17 +2207,18 @@ def varGP(x, r, **kwargs):
                 # If execution was interrupted, the values of the Kernel have yet to be updated
                 C, mask    = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
                 K_tilde    = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, diag=False)        # shape (ntilde, ntilde)
-                K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)    # shape (nt, ntilde) set of row vectors K_i for every input 
+                K          = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)    if ntilde != nt else K_tilde
                 Kvec       = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)            # shape (nt)]
 
                 eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                   
                 ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)  
                 B = eigvecs[:, ikeep]                                           
-                #
-                K_tilde_b = torch.diag(eigvals[ikeep])                              # shape (n_eigen, n_eigen)
-                K_b = K @ B   
-                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                  # shape (n_eigen, n_eigen)
-                KKtilde_inv_b = K_b @ K_tilde_inv_b                                 # shape (nt, n_eigen) # this is a in matthews code
+                K_tilde_b     = torch.diag(eigvals[ikeep])
+                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                  
+                K_tilde_inv_p = torch.diag_embed(1/eigvals)                                         # Complete inverse of K_tilde, projected onto the eigenspace             
+                K_b           = K @ B 
+                KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
+
 
                 '''# if not err_dict['is_error']:
             #     B_old = B
@@ -2247,6 +2241,16 @@ def varGP(x, r, **kwargs):
                 values_track['loss_track']['loglikelihood'][fit_parameters['maxiter']-1] = loglikelihood
                 values_track['loss_track']['KL'][fit_parameters['maxiter']-1]            = KL
                 values_track['loss_track']['logmarginal'][fit_parameters['maxiter']-1]   = logmarginal
+
+            # If they have not just been updated, these values come from the beginning of the last iteration
+            final_kernel = {}
+            final_kernel['C']             = C
+            final_kernel['mask']          = mask
+            final_kernel['K_tilde']       = K_tilde
+            final_kernel['K_tilde_inv_p'] = K_tilde_inv_p
+            final_kernel['K']             = K
+            final_kernel['Kvec']          = Kvec
+            final_kernel['eigvecs']       = eigvecs
 
             if not is_simmetric(V_b, 'V_b'): 
                 print('Final V_b is not simmetric, maximum difference: ', torch.max(torch.abs(V_b - V_b.T)))
@@ -2278,6 +2282,7 @@ def varGP(x, r, **kwargs):
 
             fit_model = {
                 'fit_parameters':    fit_parameters,
+                'final_kernel':      final_kernel,
                 'err_dict':          err_dict,
                 'xtilde':            xtilde,
                 'hyperparams_tuple': hyperparams_tuple,
