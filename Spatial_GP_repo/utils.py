@@ -1669,7 +1669,7 @@ def varGP(x, r, **kwargs):
     # They take care of setting the kernel of the whole dataset equal to the kernel on the inducing points (K_tilde) the same if the inducing points are the whole dataset
     # They also dont calculate the kernel if its starting values are passed as an argument
     # They also take care of projecting the kernel into the eigenspace of the largest eigenvectors of K_tilde
-    C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else kwargs['init_kernel']['C, mask']
+    C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else (kwargs['init_kernel']['C'], kwargs['init_kernel']['mask'])
     K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde']
     
     if ntilde != nt:  K  = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                     if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
@@ -1687,7 +1687,7 @@ def varGP(x, r, **kwargs):
 
 
     K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])    if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
-    K_tilde_inv_p = torch.diag_embed(1/eigvals)           if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_p'] # shape (ntilde, ntilde)
+    # K_tilde_inv_p = torch.diag_embed(1/eigvals)           if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_p'] # If we want to invert the whole K_tilde, not only the projected one, maybe outside VarGP for active loop
     if ntilde != nt:  KKtilde_inv_b = K_b @ K_tilde_inv_b if 'init_kernel' not in kwargs else kwargs['init_kernel']['KKtilde_inv_b'] # shape (nt, n_eigen) # this is 'a' in matthews code
     else:             KKtilde_inv_b = B                                                                                              # the resulting matrix of Ktildeb @ B @ B.T @ Ktildeb_inv @ B = B  
 
@@ -1810,7 +1810,7 @@ def varGP(x, r, **kwargs):
                 B = eigvecs[:, ikeep]                                                  # shape (ntilde, n_eigen)            
                 # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
                 K_tilde_b     = torch.diag(eigvals[ikeep])                                 # shape (n_eigen, n_eigen)
-                K_tilde_inv_p = torch.diag_embed(1/eigvals)                                # We keep the latest inverse of the complete K_tilde just to return it and be fast in computing the inverse of the incremented K_tilde if needed ( active learning )
+                # K_tilde_inv_p = torch.diag_embed(1/eigvals)                              # We keep the latest inverse of the complete K_tilde just to return it and be fast in computing the inverse of the incremented K_tilde if needed ( active learning )
                 K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                     # shape (n_eigen, n_eigen)
                 K_b           = K @ B                                                      # shape (3190, n_eigen)
                 KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B             # shape (nt, n_eigen) # this is 'a' in matthews code                         
@@ -2215,7 +2215,7 @@ def varGP(x, r, **kwargs):
                 B = eigvecs[:, ikeep]                                           
                 K_tilde_b     = torch.diag(eigvals[ikeep])
                 K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                  
-                K_tilde_inv_p = torch.diag_embed(1/eigvals)                                         # Complete inverse of K_tilde, projected onto the eigenspace             
+                # K_tilde_inv_p = torch.diag_embed(1/eigvals)                                         # Complete inverse of K_tilde, projected onto the eigenspace. This would be used outside the function to invert the rank+1 kernel after choosing new point             
                 K_b           = K @ B 
                 KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
 
@@ -2247,7 +2247,7 @@ def varGP(x, r, **kwargs):
             final_kernel['C']             = C
             final_kernel['mask']          = mask
             final_kernel['K_tilde']       = K_tilde
-            final_kernel['K_tilde_inv_p'] = K_tilde_inv_p
+            # final_kernel['K_tilde_inv_p'] = K_tilde_inv_p
             final_kernel['K']             = K
             final_kernel['Kvec']          = Kvec
             final_kernel['eigvecs']       = eigvecs
