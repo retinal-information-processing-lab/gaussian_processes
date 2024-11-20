@@ -1073,6 +1073,7 @@ def block_matrix_inverse(orig_inv, new_column):
 def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=None, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
             # Calculate the mean and variance (diagonal of covariance matrix ) of (vec)lambda(of the training points) over the distribution given by:
             # p_cond(lambda|lambda_tilde,X,theta)*(N/q)_posterior(lambda_tilde|m,V) as ini eq (56)(57) of Notes for Pietro
+            # We make use of the mean and variace of the same distribution, but oly its inducing point approximation ( m_b and V_b )
 
             # Formulas for <lambda_i> and Variance(lambda_i) in notes for Pietro are the case of a single training point x_i, here we are calculating the whole vector of lambda_i ( nt, )
 
@@ -1871,7 +1872,7 @@ def varGP(x, r, **kwargs):
                         lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)  
 
                         # feature 2: lambda0
-                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                        # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
                     # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
                     start_time_f_params = time.time()
@@ -1880,7 +1881,7 @@ def varGP(x, r, **kwargs):
 
                     #region ____________ Update m, V ______________
                     m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
-                                        K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b,  update_V_inv=False, alpha=1  ) # Do not change udpate_V_inv or alpha, read Estep docs
+                                        K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, update_V_inv=False, alpha=1  ) # Do not change udpate_V_inv or alpha, read Estep docs
 
                     # And the things that depend on them ( moments of lambda )
                     f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], 
@@ -1906,6 +1907,12 @@ def varGP(x, r, **kwargs):
                         CLOSURE2_COUNTER[0] += 1
                         optimizer_f_params.zero_grad()
                         nonlocal f_mean          # Update f_mean of the outer scope each time the closure is called
+                        # Lambda0 feature 3
+
+                        # Each time the closure is called the optimizer expects the value of the loss. It might be using it to explore how big of a step to take (line search) or actually updating the parameters ( logA)
+                        # We need the optimizer to evaluate the loss with the optimal lambda0 parameter given logA, so we update it here, before computing all the other things that depend on it.
+
+                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
                         f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
 
                         loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )                       
@@ -1915,26 +1922,26 @@ def varGP(x, r, **kwargs):
                         # The minus here is because we are minimizing the negative loglikelihood
                         f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
 
-                        # Lambda0 feature 3
-                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
                         if 'lambda0' in f_params:
                             f_params['lambda0'].grad = -dloglikelihood['lambda0']        if f_params['lambda0'].requires_grad else None
                         elif 'loglambda0' in f_params:
-                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['lambda0'].requires_grad else None
+                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['loglambda0'].requires_grad else None
  
                         if torch.any(torch.isnan(f_mean)):
                             raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
                         # if  torch.any( f_mean > 1.e4):
                             # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
 
-                        if f_mean.mean() > 100:
-                            print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}')
+                        if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
+                            print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}, returning infinite loss')
+                            return torch.tensor(float('inf'))
+                        
                         return -loglikelihood
 
                     optimizer_f_params.step(closure_f_params)        
                     
-                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var) # the optimal logA value found by the optimizer might not be the one used in the last closure call. We need to make sure lambda0 is updated.
 
                     if f_mean.mean() > 100:
                         print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
