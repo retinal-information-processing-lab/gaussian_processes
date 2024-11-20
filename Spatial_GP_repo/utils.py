@@ -1,3 +1,5 @@
+import torch
+torch.set_grad_enabled(False)
 import numpy as np
 import scipy.io
 
@@ -1068,7 +1070,7 @@ def block_matrix_inverse(orig_inv, new_column):
     return updated_inv
 
 @torch.no_grad()
-def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
+def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=None, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
             # Calculate the mean and variance (diagonal of covariance matrix ) of (vec)lambda(of the training points) over the distribution given by:
             # p_cond(lambda|lambda_tilde,X,theta)*(N/q)_posterior(lambda_tilde|m,V) as ini eq (56)(57) of Notes for Pietro
 
@@ -1227,7 +1229,7 @@ def lambda0_given_logA( logA, r, lambda_m, lambda_var):
     return lambda0
 
 def compute_loglikelihood( r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False, dlambda_m=None, dlambda_var=None):
-    # Returns the Sum of <loglikelihood> terms of the logmarginal likelihood loss as in (51) Notes for Pietro   
+    # Returns the Sum of <loglikelihood> terms of the logmarginal loss as in (51) Notes for Pietro   
     # TODO handle the thwo cases better (with and without gradients). Its returning a tuple in one case and and not int he other
 
     # NB: A here is the firing rate parameter, not the receptive field Amplitude one
@@ -1727,29 +1729,29 @@ def varGP(x, r, **kwargs):
     # print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
 
     #region _________ Memory usage___________
-    memory = 0
-    for dict in values_track.values():
-        for key in dict.keys():
-            if isinstance(dict[key], tuple):
-                for i in range(len(dict[key])):
-                    memory += dict[key][i].element_size() * dict[key][i].nelement()
-                # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-            else:
-                memory += dict[key].element_size() * dict[key].nelement()
-                # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
+    # memory = 0
+    # for dict in values_track.values():
+    #     for key in dict.keys():
+    #         if isinstance(dict[key], tuple):
+    #             for i in range(len(dict[key])):
+    #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
+    #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+    #         else:
+    #             memory += dict[key].element_size() * dict[key].nelement()
+    #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
-    # Convert bytes to megabytes (MB)
-    total_memory_MB = memory / (1024 ** 2)
-    print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-    # Allocated memory
-    allocated_bytes = torch.cuda.memory_allocated()
-    allocated_MB = allocated_bytes / (1024 ** 2)
-    print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
+    # # Convert bytes to megabytes (MB)
+    # total_memory_MB = memory / (1024 ** 2)
+    # print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+    # # Allocated memory
+    # allocated_bytes = torch.cuda.memory_allocated()
+    # allocated_MB = allocated_bytes / (1024 ** 2)
+    # print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
 
-    # Reserved (cached) memory
-    reserved_bytes = torch.cuda.memory_reserved()
-    reserved_MB = reserved_bytes / (1024 ** 2)
-    print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
+    # # Reserved (cached) memory
+    # reserved_bytes = torch.cuda.memory_reserved()
+    # reserved_MB = reserved_bytes / (1024 ** 2)
+    # print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
     #endregion _________ Memory usage___________
 
     #endregion ______________________________
@@ -1869,9 +1871,7 @@ def varGP(x, r, **kwargs):
                         lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)  
 
                         # feature 2: lambda0
-                        lambda0_estimation_start_time = time.time()
                         f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-                        time_lambda0_estimation += time.time()-lambda0_estimation_start_time             
 
                     # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
                     start_time_f_params = time.time()
@@ -1891,9 +1891,7 @@ def varGP(x, r, **kwargs):
 
                     #region ____________ Update f_params ______________ 
 
-                    lambda0_estimation_start_time = time.time()
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-                    time_lambda0_estimation += time.time()-lambda0_estimation_start_time
 
                     # lr_f_params = 0.01 # learning rate
                     lr_f_params = 0.1 # learning rate
@@ -1916,16 +1914,15 @@ def varGP(x, r, **kwargs):
                         # Update gradients of the loss with respect to the firing rate parameters
                         # The minus here is because we are minimizing the negative loglikelihood
                         f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
+
+                        # Lambda0 feature 3
+                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+
                         if 'lambda0' in f_params:
                             f_params['lambda0'].grad = -dloglikelihood['lambda0']        if f_params['lambda0'].requires_grad else None
                         elif 'loglambda0' in f_params:
                             f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['lambda0'].requires_grad else None
  
-
-                        # the closure has to return the loss,
-                        # the loss is the negative loglikelihood
-                        # print(f'      Update f_params n {CLOSURE2_COUNTER[0]}')
-
                         if torch.any(torch.isnan(f_mean)):
                             raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
                         # if  torch.any( f_mean > 1.e4):
@@ -1937,9 +1934,7 @@ def varGP(x, r, **kwargs):
 
                     optimizer_f_params.step(closure_f_params)        
                     
-                    lambda0_estimation_start_time = time.time()
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-                    time_lambda0_estimation += time.time()-lambda0_estimation_start_time
 
                     if f_mean.mean() > 100:
                         print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
@@ -2263,7 +2258,7 @@ def varGP(x, r, **kwargs):
 
             print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
             print(f'Time spent for f params:      {time_f_params_total:.3f}s')
-            print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
+            # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
             print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
             print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
             print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
