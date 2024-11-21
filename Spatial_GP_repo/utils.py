@@ -2252,7 +2252,7 @@ def varGP(x, r, **kwargs):
             # final_kernel['K_tilde_inv_p'] = K_tilde_inv_p
             final_kernel['K']             = K
             final_kernel['Kvec']          = Kvec
-            final_kernel['eigvecs']       = eigvecs
+            # final_kernel['eigvecs']       = eigvecs
 
             if not is_simmetric(V_b, 'V_b'): 
                 print('Final V_b is not simmetric, maximum difference: ', torch.max(torch.abs(V_b - V_b.T)))
