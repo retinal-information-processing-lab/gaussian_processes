@@ -22,3 +22,5 @@ This still happened, but it might be solved by:
         [x] Look for instabilities with no capping on f_mean(). 
             [x] Didn't find them yet, trying to go back to lambda0 optimization ( no loglambda0 )
         [x] Found an instability in the M step. The receptive fireld goes out of the allowed limits. Saved as model 'bug_rf_out_of_bounds' -> solved by returning infinite loss and infinite gradient for the out of bound hyperparameter
+
+- While evaluating the utility of a model trained on 1080 inducing points, which make a 1080 remaining dataset to be evaluated, I get an error, stemming from negatiev lambda_var values for the 1080 predicted firing rate.

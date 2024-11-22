@@ -1098,7 +1098,6 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=No
 
             # wrong formula
             # lambda_var = Kvec + torch.einsum( 'ij,ji->i', a, torch.matmul(V-K_tilde, a.T) ) # This is the same as doing Diag(a.T @ (V-K_tilde) @ a
-            # lambda_var = Kvec + torch.sum( -(K*a).T + a.T*(  torch.linalg.solve(V_inv, a.T)), dim=0)
             lambda_var = Kvec + torch.sum(-K.T*a.T + a.T*(V@a.T), 0)
 
             # TODO check that this method with einsum is actually faster than torch.sum(a*(V-K_tilde)@a, dim=1)
