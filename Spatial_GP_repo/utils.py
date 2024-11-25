@@ -1674,10 +1674,10 @@ def varGP(x, r, **kwargs):
     C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else (kwargs['init_kernel']['C'], kwargs['init_kernel']['mask'])
     K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde']
     
-    if ntilde != nt:  K  = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                     if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
+    if ntilde != nt:  K  = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
     else:             K  = K_tilde
     
-    Kvec = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                                                        if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
+    Kvec = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                         if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
     if 'init_kernel' not in kwargs:
         eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
         ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
@@ -1891,6 +1891,7 @@ def varGP(x, r, **kwargs):
 
                     #region ____________ Update f_params ______________ 
 
+                    # if i_estep > 0:
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
                     # lr_f_params = 0.01 # learning rate
@@ -1927,8 +1928,8 @@ def varGP(x, r, **kwargs):
                         elif 'loglambda0' in f_params:
                             f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['loglambda0'].requires_grad else None
  
-                        if torch.any(torch.isnan(f_mean)):
-                            raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
+                        # if torch.any(torch.isnan(f_mean)):
+                            # raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
                         # if  torch.any( f_mean > 1.e4):
                             # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
 
