@@ -964,48 +964,5 @@ utils.plot_loss_and_theta_notebook(fit_model_max, figsize=(15,10), marker='.')#y
 # %% [markdown]
 # ### Compare models
 
-# %%
-# Old plot with noMstep
-
-# Upload a active loop likelihood 
-# with open('data/loglk_test_1000_active_cell_8_nstart_50_to_1000.pkl', 'rb') as f:
-with open('data/loglk_test_1000_active_cell_4_nstart_50_to_2160.pkl', 'rb') as f:
-    loglk_test_1000_active = pickle.load(f)
-
-# Upload the random loop likelihood
-# with open(f'data/loglk_test_1000_random_cell_8_nstart_50_to_1000.pkl', 'rb') as file:
-with open(f'data/loglk_test_1000_random_cell_4_nstart_50_to_2160.pkl', 'rb') as file:
-    loglk_test_1000_random = pickle.load(file)
-
-# Upload the max model likelihood
-with open('data/loglk_test_1000_max_cell_4_20iterations.pkl', 'rb') as f:
-    loglk_test_1000_max = pickle.load(f)
-
-plt.figure(figsize=(10,5))
-xrange = np.arange(50, 50+loglk_test_1000_active.shape[0])
-
-plt.plot(xrange, loglk_test_1000_active.cpu().numpy()-loglk_test_1000_max.cpu().numpy(), label='Active learning', color='red', )  
-
-
-for i in range(loglk_test_1000_random.shape[0]):
-    plt.plot(xrange, loglk_test_1000_random[i,:].cpu().numpy()-loglk_test_1000_max.cpu().numpy(), color='k', alpha=0.3)     
-
-
-# Plot the loglk random averaged over rows
-plt.plot(xrange, loglk_test_1000_random.mean(0).cpu().numpy()-loglk_test_1000_max.cpu().numpy(), label=f'Random learning Avg: {n_random_starts} trials', color='black' )
-
-plt.ylim(-800,100)
-# plt.xlim(1900,2160)
-plt.ylabel('- Delta LogLK ')
-plt.xlabel('New Image number')
-plt.title(f'Cell {cellid} - Delta LogLK on the 1000 test set : nE={nEstep} nF={nFparamstep} nM={nMstep}')
-plt.axhline(0, color='black', linestyle='--')
-
-plt.legend()
-
-# Save the image
-# plt.savefig(f'figures/Cell_{cellid}_DeltaLogLK_nstart_{ntrain_start}_to_{ntrain_start+n_add_images}_nE_{nEstep}_nF_{nFparamstep}_nM_{nMstep}_noM.png')
-
-# BUG IN NO MSTEP 2000 NEW IMAGES FOR CELL 14
 
 
