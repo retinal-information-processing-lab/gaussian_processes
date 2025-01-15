@@ -324,7 +324,7 @@ def load_model(directory):
     return model_b
 
 @torch.no_grad()
-def test(X_test, R_test, xtilde, X_train=None, at_iteration=None, **kwargs):
+def test(X_test, R_test_cell, xtilde, X_train=None, at_iteration=None, **kwargs):
 
     # X_test # shape (30,108,108,1) # nimages, npx, npx
 
@@ -397,14 +397,10 @@ def test(X_test, R_test, xtilde, X_train=None, at_iteration=None, **kwargs):
         R_predicted[i] = rate_star #ends up being of shape 30
         # print(f'rate_star: {rate_star.item():.4f}')
 
-    r2, sigma_r2 = explained_variance( R_test[:,:,cellid], R_predicted, sigma=True)
 
-    # for i in range(R_predicted.shape[0]):
-        # print(f' {R_predicted[i].item():4f}')
+    r2, sigma_r2 = explained_variance( R_test_cell, R_predicted, sigma=True)
 
     # Print the results
-
-    R_test_cell = R_test[:,:,cellid]
     R_pred_cell = R_predicted
 
     print(f"\n\n Pietro's model: R2 = {r2:.2f} ± {sigma_r2:.2f} Cell: {cellid} maxiter = {maxiter}, nEstep = {nEstep}, nMstep = {nMstep} \n")
@@ -2298,7 +2294,7 @@ def varGP(x, r, **kwargs):
                 'K_b':               K_b,
                 'Kvec':              Kvec,
                 'B':                 B,
-                'values_track':      values_track,
+                'values_track':      values_track
             }
 
 
