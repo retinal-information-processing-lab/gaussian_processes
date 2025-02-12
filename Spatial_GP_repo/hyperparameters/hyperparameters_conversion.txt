@@ -1,4 +1,4 @@
-This file explains the relatin between the hyperparameters as they where set by Matthew and Samuele in the original code, and how they are set in Pietro's.
+This file explains the relation between the hyperparameters as they where set by Matthew and Samuele in the original code, and how they are set in Pietro's.
 
 HYPERPARAMETERS ARE SET AS:
 
@@ -58,7 +58,7 @@ theta is given in opt, inside varGP as: (line 42 of varGP cell)
     Which is not exactly what was reported in the paper, in fact there it's:
 
     alpha_local = exp( -(1/2beta_paper)^2 * |eps_i-eps_0|  )       -> This means beta_samu = 1/(2*beta_paper^2)
-    cij_smooth  = exp( -( 1/(2*rho_paper^2) ) ) * |eps_i-eps_j| )  -> This means  rho_samu = 1/rho_paper^2
+    cij_smooth  = exp( -( 1/(2*rho_paper^2) ) ) * |eps_i-eps_j|    -> This means  rho_samu = 1/rho_paper^2
 
     Learning is performed on theta, therefore parameters are learned as 'log(sigma_b)', log(rho), eps_0_x, eps_0_y, log(beta)
     

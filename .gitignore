@@ -1,10 +1,15 @@
 
 # Own .gitignore
 
-Spatial_GP_repo/data/*
-Spatial_GP_repo/figures/*
-Spatial_GP_repo/outputs/*
-Spatial_GP_repo/models/*
+Spatial_GP_repo/data/
+Spatial_GP_repo/figures/
+Spatial_GP_repo/outputs/
+Spatial_GP_repo/models/
+Spatial_GP_repo/notebooks/reproducing_paper_fits/fits_28_cells/
+Spatial_GP_repo/notebooks/reproducing_paper_fits/
+Spatial_GP_repo/data/raw_electrode_and_sorted_datasets/
+
+Gaussian-Processes/Spatial_GP_repo/notebooks/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
