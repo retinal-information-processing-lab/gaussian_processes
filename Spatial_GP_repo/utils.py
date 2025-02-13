@@ -2344,10 +2344,8 @@ def varGP_original(x, r, **kwargs):
                         # feature 2: lambda0
                         # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
-                    # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
-                    start_time_f_params = time.time()
+                    # We should also count this in the time for the f_params update, the f_mean computation would not be here if there was no update
                     f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var) # Since f_params influece f_mean, we need to update it at each estep
-                    time_f_params_total += time.time()-start_time_f_params
 
                     #region ____________ Update m, V ______________
                     m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
@@ -2370,7 +2368,6 @@ def varGP_original(x, r, **kwargs):
                     optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_Fparamstep, max_iter=nFparamstep, 
                                                             tolerance_change=1.e-9, tolerance_grad=1.e-7,
                                                             history_size=nFparamstep, line_search_fn='strong_wolfe')
-                    start_time_f_params = time.time()
                     CLOSURE2_COUNTER = [0]
                     @torch.no_grad()
                     def closure_f_params( ):
@@ -3498,7 +3495,7 @@ def varGP(x, r, **kwargs):
             print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
             print(f'Time spent for f params:      {time_f_params_total:.3f}s')
             # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
-            print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
+            print(f'Time spent for m / V update:  {time_estep_total-time_f_params_total:.3f}s')
             print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
             print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
             print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
