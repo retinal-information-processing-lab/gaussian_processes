@@ -53,33 +53,34 @@ class LossStagnationError(Exception):
 
 def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
     
-    # Generate training and testing sets for the fits. 
-    # Especially useful for the active training setup
-
     # NB: Test set in this case is simply a subset of the original X and R.
     #     to allow the its use for performance comparison using the loglikelihood estimation.
     #     we call it test_lk set
 
-
     '''
+    Generate training and testing indices to be uset to generate the datasets 
+    given to the model.
+
+    if X and R are not None:
+    Can also return directly the actual datasets with the indices already applied.
+
+    Especially useful for the active training setup
+
     Args:
     X : torch.tensor shape (nimages, npx, npx)
         Stimuli
     R : torch.tensor shape (nimages, ncells)
         Responses
-
     ntrain : int
         Number of training points
     ntilde : int
         Number of inducing points
     ntest_lk : int
         Number of test points for the test loglikelihood estimation
-
     
     '''
-    
-    all_idx  = torch.arange(0, X.shape[0], device=DEVICE)                     # Indices of the whole dataset  
-    all_idx_perm  = torch.randperm(all_idx.shape[0], device=DEVICE)           # Random permutation of the indices
+    all_idx       = torch.arange(0, X.shape[0], device=DEVICE)                 # Indices of the whole dataset  
+    all_idx_perm  = torch.randperm(all_idx.shape[0], device=DEVICE)            # Random permutation of the indices
 
     test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
     all_idx_perm  = all_idx_perm[~torch.isin( all_idx_perm, test_lk_idx )]     # Remove the test set indices from the permutation
@@ -137,6 +138,11 @@ def set_hyperparameters( X_in_use, R_in_use, n_px_side, theta=None, freeze_list=
     return hyperparams_tuple, theta
 
 def set_f_params( logA, lambda0):
+    '''
+    Generate the f_params dict with the link function parameters
+
+    Set logA to be a learneaable parameter with requires_grad_()
+    '''
     # We are not learning the lambda0, since given an A there is a closed form for it that minimised the loss
     f_params = {'logA': logA, 'lambda0':lambda0}
     f_params['logA'] = f_params['logA'].requires_grad_()
@@ -1112,7 +1118,7 @@ def generate_theta(x, r, n_px_side, display_hyper=False, **kwargs):
         # rho > 0 -> log(rho) > -inf
         # sigma_b > 0 -> log(sigma_b) > -inf
         # beta > e^4 (??) -> log(beta) > 4
-        up_lim  =  torch.tensor(1.)
+        upp_lim =  torch.tensor(1.)
         low_lim = -torch.tensor(1.)
         # If theta is passed as a keyword argument, update the values of the learnable hyperparameters
         theta = {}
@@ -1122,9 +1128,39 @@ def generate_theta(x, r, n_px_side, display_hyper=False, **kwargs):
                 if display_hyper: print(f'updated {key} to {value.cpu().item():.4f}')
         
         theta_lower_lims  = {'sigma_0': 0           , 'eps_0x':low_lim, 'eps_0y':low_lim, '-2log2beta': -float('inf'), '-log2rho2':-float('inf'), 'Amp': 0. }
-        theta_higher_lims = {'sigma_0': float('inf'), 'eps_0x':up_lim,  'eps_0y':up_lim,  '-2log2beta':  float('inf'), '-log2rho2': float('inf'), 'Amp': float('inf') }
+        theta_higher_lims = {'sigma_0': float('inf'), 'eps_0x':upp_lim,  'eps_0y':upp_lim,  '-2log2beta':  float('inf'), '-log2rho2': float('inf'), 'Amp': float('inf') }
         
         return ( theta, theta_lower_lims, theta_higher_lims )
+
+def gen_hyp_tuple(theta, freeze_list, display_hyper=True):
+    '''
+    (Better) Alternative to generate_theta.
+
+    Generates the hyperparameters tuple (theta, theta_lower_lims, theta_higher_lims) 
+
+    Sets the requires_grad attribute of hyp to True except for the ones in freeze_list
+
+    Args:
+        theta: dictionary of hyperparameters
+    Returns:
+        tuple of hyperparameters
+    
+    '''
+    upp_lim =  torch.tensor(1.)
+    low_lim = -torch.tensor(1.)
+    theta_lower_lims  = {'sigma_0': 0           , 'eps_0x':low_lim, 'eps_0y':low_lim, '-2log2beta': -float('inf'), '-log2rho2':-float('inf'), 'Amp': 0. }
+    theta_higher_lims = {'sigma_0': float('inf'), 'eps_0x':upp_lim,  'eps_0y':upp_lim,  '-2log2beta':  float('inf'), '-log2rho2': float('inf'), 'Amp': float('inf') }
+
+    # Set the gradient of the hyperparemters to be updateable 
+    for key, value in theta.items():
+    # to exclude a single hyperparemeters from the optimization ( to exclude them all just set nMstep=0)
+        if key in freeze_list:
+            continue
+        theta[key] = value.requires_grad_()
+    if display_hyper: 
+        print(f'{key} is {value.cpu().item():.4f}')
+
+    return ( theta, theta_lower_lims, theta_higher_lims )
 
 ##################   Kernel related functions   ####################
 
