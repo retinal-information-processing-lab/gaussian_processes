@@ -1098,32 +1098,7 @@ def generate_theta(x, r, n_px_side, display_hyper=False, **kwargs):
         # logrhoexpr = -safe_log(torch.tensor(2.0)*(rho*rho)) # we call it logrhoexpr cause of some factors in the expression (see hyperparameters_conversion.txt)
         # logrhoexpr.requires_grad = True
 
-<<<<<<< HEAD
         # theta = {'sigma_0':sigma_0, 'eps_0x':eps_0x_rescaled, 'eps_0y':eps_0y_rescaled, '-2log2beta': logbetaexpr, '-log2rho2': logrhoexpr, 'Amp': Amp }
-=======
-        theta = {'sigma_0':sigma_0, 'eps_0x':eps_0x_rescaled, 'eps_0y':eps_0y_rescaled, '-2log2beta': logbetaexpr, '-log2rho2': logrhoexpr, 'Amp': Amp }
-
-
-
-        # Print the learnable hyperparameters
-        if display_hyper:
-            # If theta is passed as a keyword argument, update the values of the learnable hyperparameters
-            for key, value in kwargs.items():
-                if key in theta:
-                    theta[key] = value
-                    print(f'updated {key} to {value.cpu().item():.4f}')
-            print(' Before overloading')
-            print(f' Hyperparameters have been SET as  : beta = {beta:.4f}, rho = {rho:.4f}')
-            print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
-            
-            kwargs.get
-            print('\n After overloading')
-            print(f' Dict of learnable hyperparameters : {", ".join(f"{key} = {value.item():.4f}" for key, value in theta.items())}')
-            print(f' Hyperparameters from the logexpr  : beta = {logbetaexpr_to_beta(logbetaexpr):.4f}, rho = {logrhoexpr_to_rho(logrhoexpr):.4f}')
-            beta = logbetaexpr_to_beta(logbetaexpr)
-            rho  = logrhoexpr_to_rho(logrhoexpr)
-            print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
->>>>>>> origin
 
 
         # # Print the learnable hyperparameters
@@ -2385,11 +2360,7 @@ def varGP_original(x, r, **kwargs):
                     #endregion
 
                     #region ____________ Update f_params ______________ 
-<<<<<<< HEAD
-                    # if i_estep > 0:
-=======
                     start_time_f_params = time.time()
->>>>>>> origin
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
                     # lr_f_params = 0.01 # learning rate
