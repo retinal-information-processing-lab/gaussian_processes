@@ -1097,7 +1097,32 @@ def generate_theta(x, r, n_px_side, display_hyper=False, **kwargs):
         # logrhoexpr = -safe_log(torch.tensor(2.0)*(rho*rho)) # we call it logrhoexpr cause of some factors in the expression (see hyperparameters_conversion.txt)
         # logrhoexpr.requires_grad = True
 
+<<<<<<< HEAD
         # theta = {'sigma_0':sigma_0, 'eps_0x':eps_0x_rescaled, 'eps_0y':eps_0y_rescaled, '-2log2beta': logbetaexpr, '-log2rho2': logrhoexpr, 'Amp': Amp }
+=======
+        theta = {'sigma_0':sigma_0, 'eps_0x':eps_0x_rescaled, 'eps_0y':eps_0y_rescaled, '-2log2beta': logbetaexpr, '-log2rho2': logrhoexpr, 'Amp': Amp }
+
+
+
+        # Print the learnable hyperparameters
+        if display_hyper:
+            # If theta is passed as a keyword argument, update the values of the learnable hyperparameters
+            for key, value in kwargs.items():
+                if key in theta:
+                    theta[key] = value
+                    print(f'updated {key} to {value.cpu().item():.4f}')
+            print(' Before overloading')
+            print(f' Hyperparameters have been SET as  : beta = {beta:.4f}, rho = {rho:.4f}')
+            print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
+            
+            kwargs.get
+            print('\n After overloading')
+            print(f' Dict of learnable hyperparameters : {", ".join(f"{key} = {value.item():.4f}" for key, value in theta.items())}')
+            print(f' Hyperparameters from the logexpr  : beta = {logbetaexpr_to_beta(logbetaexpr):.4f}, rho = {logrhoexpr_to_rho(logrhoexpr):.4f}')
+            beta = logbetaexpr_to_beta(logbetaexpr)
+            rho  = logrhoexpr_to_rho(logrhoexpr)
+            print(f' Samuele hyperparameters           : logbetasam = {-torch.log(2*beta*beta):.4f}, logrhosam = {-2*safe_log(rho):.4f}')
+>>>>>>> origin
 
 
         # # Print the learnable hyperparameters
@@ -2344,10 +2369,8 @@ def varGP_original(x, r, **kwargs):
                         # feature 2: lambda0
                         # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
-                    # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
-                    start_time_f_params = time.time()
+                    # We should also count this in the time for the f_params update, the f_mean computation would not be here if there was no update
                     f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var) # Since f_params influece f_mean, we need to update it at each estep
-                    time_f_params_total += time.time()-start_time_f_params
 
                     #region ____________ Update m, V ______________
                     m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
@@ -2361,7 +2384,11 @@ def varGP_original(x, r, **kwargs):
                     #endregion
 
                     #region ____________ Update f_params ______________ 
+<<<<<<< HEAD
                     # if i_estep > 0:
+=======
+                    start_time_f_params = time.time()
+>>>>>>> origin
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
                     # lr_f_params = 0.01 # learning rate
@@ -2370,7 +2397,6 @@ def varGP_original(x, r, **kwargs):
                     optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_Fparamstep, max_iter=nFparamstep, 
                                                             tolerance_change=1.e-9, tolerance_grad=1.e-7,
                                                             history_size=nFparamstep, line_search_fn='strong_wolfe')
-                    start_time_f_params = time.time()
                     CLOSURE2_COUNTER = [0]
                     @torch.no_grad()
                     def closure_f_params( ):
@@ -2412,10 +2438,6 @@ def varGP_original(x, r, **kwargs):
                     optimizer_f_params.step(closure_f_params)        
                     
                     f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var) # the optimal logA value found by the optimizer might not be the one used in the last closure call. We need to make sure lambda0 is updated.
-
-                    if f_mean.mean() > 100:
-                        print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
-
 
                     time_f_params_total += time.time()-start_time_f_params
                     #endregion
@@ -2733,7 +2755,7 @@ def varGP_original(x, r, **kwargs):
             print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
             print(f'Time spent for f params:      {time_f_params_total:.3f}s')
             # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
-            print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
+            print(f'Time spent for m / V update:  {time_estep_total-time_f_params_total:.3f}s')
             print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
             print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
             print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
