@@ -3492,7 +3492,7 @@ def varGP(x, r, **kwargs):
             print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
             print(f'Time spent for f params:      {time_f_params_total:.3f}s')
             # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
-            print(f'Time spent for m update:      {time_estep_total-time_f_params_total:.3f}s')
+            print(f'Time spent for m / V update:  {time_estep_total-time_f_params_total:.3f}s')
             print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
             print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
             print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
