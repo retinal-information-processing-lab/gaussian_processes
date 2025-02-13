@@ -25,7 +25,7 @@ import logging
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
 # Warnings
-warnings.filterwarnings("ignore", "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated")
+# warnings.filterwarnings("ignore", "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated")
 
 ## This file was the Spatial_GP.py file in the original code.
 TORCH_DTYPE = torch.float64
@@ -44,10 +44,10 @@ LOSS_STOP_TOL = 1.e-4
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
 print(f'Using device: {DEVICE} (from utils.py)')
 
-################## Expeptions ##################
+# ################## Expeptions ##################
 class LossStagnationError(Exception):
-    """Exception raised when the loss has not changed significantly over recent iterations."""
-    pass
+#     """Exception raised when the loss has not changed significantly over recent iterations."""
+#     pass
 
 ##################  Preprocessing  ##################
 
@@ -59,7 +59,6 @@ def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
     # NB: Test set in this case is simply a subset of the original X and R.
     #     to allow the its use for performance comparison using the loglikelihood estimation.
     #     we call it test_lk set
-
 
     '''
     Args:
