@@ -46,8 +46,8 @@ print(f'Using device: {DEVICE} (from utils.py)')
 
 # ################## Expeptions ##################
 class LossStagnationError(Exception):
-#     """Exception raised when the loss has not changed significantly over recent iterations."""
-#     pass
+    """Exception raised when the loss has not changed significantly over recent iterations."""
+    pass
 
 ##################  Preprocessing  ##################
 
@@ -79,6 +79,7 @@ def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
         Number of test points for the test loglikelihood estimation
     
     '''
+    
     all_idx       = torch.arange(0, X.shape[0], device=DEVICE)                 # Indices of the whole dataset  
     all_idx_perm  = torch.randperm(all_idx.shape[0], device=DEVICE)            # Random permutation of the indices
 
