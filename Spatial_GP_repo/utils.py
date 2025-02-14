@@ -49,6 +49,42 @@ class LossStagnationError(Exception):
     """Exception raised when the loss has not changed significantly over recent iterations."""
     pass
 
+################## ClosedloopProject ##################
+
+def get_idx_for_active_training( n_imgs, ntrain, ntilde, ntest_lk):
+    
+    '''
+    Generate training and testing indices to be uset to generate the datasets 
+    given to the model.
+
+    Copy of get_idx_for_training_testing_validation() without return of the datasets themselves
+
+    Args:
+    ntrain : int
+        Number of training points
+    ntilde : int
+        Number of inducing points
+    ntest_lk : int
+        Number of test points to exclude from training, to keep for the test loglikelihood estimation
+    
+    '''
+    
+    all_idx       = torch.arange(0, n_imgs )                 # Indices of the whole dataset  
+    all_idx_perm  = torch.randperm(all_idx.shape[0] )        # Random permutation of the indices
+
+    test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
+    all_idx_perm  = all_idx_perm[~torch.isin( all_idx_perm, test_lk_idx )]     # Remove the test set indices from the permutation
+    rndm_idx      = all_idx_perm[:]                                            # These will be the indices of the training. 
+
+    # Choose the indices of the training set. This is overkill here, but in the active learning these indices are constantly changing
+    in_use_idx    = rndm_idx[:ntrain]
+    xtilde_idx    = in_use_idx[:ntilde] 
+    remaining_idx = all_idx_perm[~torch.isin( all_idx_perm, in_use_idx )]
+
+    idx_tuple = (xtilde_idx, in_use_idx, remaining_idx, test_lk_idx)
+
+    return idx_tuple
+
 ##################  Preprocessing  ##################
 
 def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
@@ -102,8 +138,8 @@ def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
     R_in_use      = R[in_use_idx]
     R_test_lk     = R[test_lk_idx]
 
-    X_tuple = (xtilde, X_in_use, X_remaining, X_test_lk)
-    R_tuple = (R_remaining, R_in_use, R_test_lk)
+    X_tuple   = (xtilde, X_in_use, X_remaining, X_test_lk)
+    R_tuple   = (R_remaining, R_in_use, R_test_lk)
     idx_tuple = (xtilde_idx, in_use_idx, remaining_idx, test_lk_idx)
 
     return X_tuple, R_tuple, idx_tuple
