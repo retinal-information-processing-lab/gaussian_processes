@@ -51,7 +51,7 @@ class LossStagnationError(Exception):
 
 ################## ClosedloopProject ##################
 
-def get_idx_for_active_training( n_imgs, ntrain, ntilde, ntest_lk):
+def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
     
     '''
     Generate training and testing indices to be uset to generate the datasets 
@@ -69,7 +69,7 @@ def get_idx_for_active_training( n_imgs, ntrain, ntilde, ntest_lk):
     
     '''
     
-    all_idx       = torch.arange(0, n_imgs )                 # Indices of the whole dataset  
+    all_idx       = torch.arange(0, n_tot_img_dataset )                 # Indices of the whole dataset  
     all_idx_perm  = torch.randperm(all_idx.shape[0] )        # Random permutation of the indices
 
     test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
@@ -1021,12 +1021,20 @@ def save_pickle(filename, **kwargs):
 
     return 0
 
-def generate_xtilde(ntilde, x):
+def generate_xtilde(ntilde, x, xtilde_idxs=None ):
+    '''
+    Returns the inducing points dataset from the original dataset x
 
-    tilde_idx = torch.randperm(ntilde)
-    xtilde_first = x[ tilde_idx, :]
-    epsi = torch.finfo(TORCH_DTYPE).eps*10*torch.randn(xtilde_first.shape).to(DEVICE) # TODO is randn missing arguments? this is different than the implementation of smauele
-    xtilde = xtilde_first + epsi
+    Can extract randomly or get xtildes from the indices
+    
+    '''
+    if xtilde_idxs is not None:
+        xtilde = x[xtilde_idxs, :]
+        return xtilde
+
+    else:
+        xtilde_idxs = torch.randperm(ntilde)
+        
     return xtilde
 
 def logbetaexpr_to_beta(logbetaexpr):
