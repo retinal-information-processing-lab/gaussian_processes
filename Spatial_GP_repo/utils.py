@@ -588,9 +588,8 @@ def get_cell_STA(X, R, zscore=True, show=False):
 def plot_hyperparams_on_STA( fit_model, STA=None, ax=None, **kwargs):
 
     label = kwargs.get('label', None)
-    center_color = kwargs.get('center_color', 'white')
-    width_color  = kwargs.get('width_color', 'white')
-
+    center_color = kwargs.get('center_color', 'k')
+    width_color  = kwargs.get('width_color', 'k')
 
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(5,5)) 
@@ -620,11 +619,17 @@ def plot_hyperparams_on_STA( fit_model, STA=None, ax=None, **kwargs):
     levels = torch.tensor( [np.exp(-4.5), np.exp(-2), np.exp(-1/2) ])
     ax.contour( alpha_local_fit.reshape(n_px_side,n_px_side).cpu(), levels=levels.cpu(), colors=width_color, alpha=0.5)
     ax.scatter( eps_idxs_fit[0].cpu(),eps_idxs_fit[1].cpu(), color=center_color, s=30, marker="o", label=label, )
+    ax.set_title('Hyperparameters on STA')
+
+    # show the updated image
+    plt.show(block=False)
 
     if STA is not None:
         # vmax = abs(STA.max()) 
         # vmin = -vmax
         ax.imshow(STA, origin='lower',  vmax=STA.max(), vmin=STA.min(), cmap='bwr')
+
+
 
 def plot_final_and_intermediate_fit(fit_model, init_model, X_in_use, R_in_use, X_test_avg, R_test_avg_cell, cells_reliability, intermediate_model_iteration=2):
 
