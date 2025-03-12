@@ -16,22 +16,29 @@ from datetime import datetime
 import json
 import copy
 import itertools
-
+import shutil
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 import logging
+
+from config.config import *
+
+from gaussian_processes.Spatial_GP_repo.model import GPModel
+
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
+print(f"In GP Utils: Default device: {torch.empty(1).device}")  # Verify default device
+print(f"In GP Utils: Default dtype: {torch.get_default_dtype()}")    #
+
 # Warnings
-# warnings.filterwarnings("ignore", "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated")
+warnings.filterwarnings("ignore", "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated")
 
 ## This file was the Spatial_GP.py file in the original code.
-TORCH_DTYPE = torch.float64
+# TORCH_DTYPE = torch.float64
 # TORCH_DTYPE = torch.float32
-# Set the default dtype to float64
-torch.set_default_dtype(TORCH_DTYPE)
+# torch.set_default_dtype(TORCH_DTYPE)
 
 # The minimum tolerance for float64 should be 1.e-15 but there are matrices that dont appear to be simmetric up to more than 1.e-13 precision, 
 # even if they should ( see V_b reprojection after M step )
@@ -40,9 +47,6 @@ MIN_TOLERANCE = 1.e-11
 EIGVAL_TOL    = 1.e-4
 
 LOSS_STOP_TOL = 1.e-4
-
-DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu") 
-print(f'Using device: {DEVICE} (from utils.py)')
 
 # ################## Expeptions ##################
 class LossStagnationError(Exception):
@@ -54,7 +58,7 @@ class LossStagnationError(Exception):
 def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
     
     '''
-    Generate training and testing indices to be uset to generate the datasets 
+    Generate training and testing indices to be used to generate the datasets 
     given to the model.
 
     Copy of get_idx_for_training_testing_validation() without return of the datasets themselves
@@ -69,7 +73,7 @@ def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
     
     '''
     
-    all_idx       = torch.arange(0, n_tot_img_dataset )                 # Indices of the whole dataset  
+    all_idx       = torch.arange(0, n_tot_img_dataset )      # Indices of the whole dataset  
     all_idx_perm  = torch.randperm(all_idx.shape[0] )        # Random permutation of the indices
 
     test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
@@ -81,9 +85,132 @@ def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
     xtilde_idx    = in_use_idx[:ntilde] 
     remaining_idx = all_idx_perm[~torch.isin( all_idx_perm, in_use_idx )]
 
-    idx_tuple = (xtilde_idx, in_use_idx, remaining_idx, test_lk_idx)
+    idx_tuple = (xtilde_idx, in_use_idx, remaining_idx, test_lk_idx, all_idx_perm)
 
     return idx_tuple
+
+def threaded_train_GP_phase1(init_model, img_train, spike_counts, threadict):
+
+    '''
+    Used in phase1 initial_listener_linux(). Fits the model using the initial training set.
+
+    Args:
+    init_model (dict): Dictionary containing the initial model infos in the form of a dictionary:
+        fit_parameters = {'ntilde':    ntilde_init,
+                        'maxiter':     maxiter_init,
+                        'nMstep':      nMstep_init,
+                        'nEstep':      nEstep_init,
+                        'nFparamstep': nFparamstep_init,
+                        'kernfun':     GP_utils.acosker,
+                        'cellid':      cellid_init,
+                        'n_px_side':   n_px_side_init,
+                        'in_use_idx':  in_use_idx,     # Used idx for generating xtilde, referred to the whole X dataset
+                        'xtilde_idx':  xtilde_idx,     # Used idx for generating the complete set, referred to the whole X dataset
+                        'start_idx':   in_use_idx,     # Indexes used to generate the initial training set
+                        'lr_Mstep':      lr_Mstep_init, 
+                        'lr_Fparamstep': lr_Fparamstep_init
+        }
+
+        init_model = {
+                'fit_parameters':    fit_parameters,
+                'xtilde':            xtilde,
+                'hyperparams_tuple': hyperparams_tuple,     # Contains also the upper and lower bounds for the hyperparameters
+                'f_params':          f_params,
+            }
+
+    spike_counts (torch.tensor): Tensor containing the spike counts for each image in the initial training set
+
+    threadict (dict): Dictionary containing the threads, their variables and events
+
+    '''
+
+    try:
+        print('Starting GP fit with collected spikes...')
+
+        X_in_use = img_train[init_model['fit_parameters']['in_use_idx']]
+        R_in_use = spike_counts
+
+        assert X_in_use.shape[0] == R_in_use.shape[0]
+
+        fit_model, err_dict = varGP(X_in_use, R_in_use, **init_model)
+
+        if err_dict['is_error']:
+            threadict['global_stop_event'].set()
+            threadict['exceptions_q'].put(err_dict['error'])
+            with threadict['print_lock']:
+                print(f'\n...GP Thread: Error in fitting the model: {err_dict["error"]}')
+            return
+            # loginfo(f"\n...RCV Thread: Unexpected ERROR: {e}")
+
+        threadict['model_queue'].put(fit_model)
+        return
+    
+    except Exception as e:
+        threadict['global_stop_event'].set()
+        threadict['exceptions_q'].put(e)
+        with threadict['print_lock']:
+            print(f'\n...GP Thread: Unexpected ERROR: {e}')
+        return
+
+    #         raise err_dict['error']
+        
+    # finally:
+    #     return fit_model
+
+def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
+
+    '''
+    Used in phase1 initial_listener_linux(). Fits the model using the initial training set.
+
+    Args:
+    model (GPModel)
+            
+    spike_counts (torch.tensor): Tensor containing the spike counts for each image in the initial training set
+
+    threadict (dict): Dictionary containing the threads, their variables and events
+
+    '''
+
+    try:
+        model_dict = model.to_dict()
+
+        print('Starting GP fit with collected spikes...')
+
+        X_in_use = img_train[model_dict['fit_parameters']['in_use_idx']]
+        R_in_use = spike_counts
+
+        assert X_in_use.shape[0] == R_in_use.shape[0]
+
+        fit_model_dict, err_dict = varGP(X_in_use, R_in_use, **model_dict)
+
+        fit_model_dict['all_idx_perm'] = model_dict['fit_parameters']['all_idx_perm']
+        fit_model_dict['in_use_idx'] = model_dict['fit_parameters']['in_use_idx']
+
+        fit_model = GPModel(model_dict=fit_model_dict)
+
+        if err_dict['is_error']:
+            threadict['global_stop_event'].set()
+            threadict['exceptions_q'].put(err_dict['error'])
+            with threadict['print_lock']:
+                print(f'\n...GP Thread: Error in fitting the model: {err_dict["error"]}')
+            return
+            # loginfo(f"\n...RCV Thread: Unexpected ERROR: {e}")
+
+        threadict['model_queue'].put(fit_model)
+        return
+    
+    except Exception as e:
+        threadict['global_stop_event'].set()
+        threadict['exceptions_q'].put(e)
+        with threadict['print_lock']:
+            print(f'\n...GP Thread: Unexpected ERROR: {e}')
+        return
+
+    #         raise err_dict['error']
+        
+    # finally:
+    #     return fit_model
+
 
 ##################  Preprocessing  ##################
 
@@ -271,70 +398,159 @@ def get_cell_STA(X, R, zscore=True):
 
 ################## Visualization and Saving ##################
 
-def save_model(model, directory, additional_description=None):
+def save_model(model, directory, additional_description=None, overwrite=False):
     """
-    Save the model parameters  and metadata to a specified directory.
+    Save the model parameters and metadata to a specified directory with robust error handling.
 
     Args:
-        model: Dictionary containing all the models results and parameters. As well and the projected matrices ( on B )
-        directory (str): The directory to save the model and parameters.
+        model: Dictionary containing all the models results and parameters
+        directory (Path): The directory path to save the model
+        additional_description (str, optional): Additional text to add to the description
+        overwrite (bool, optional): Whether to overwrite an existing directory
     """
+    model_path = directory / f'start_model_{session_name}.pkl'
+
+    # Create directory if it doesn't exist
     if not os.path.exists(directory):
         os.makedirs(directory)
     else:
-        raise ValueError(f"Directory {directory} already exists")
+        if overwrite:
+            print(f"Overwriting the directory {directory}")
+            shutil.rmtree(directory)
+            os.makedirs(directory)
+        else:
+            answer = input(f"Directory {directory} already exists. Overwrite? [y/N]: ")
+            if answer.strip().lower().startswith('y'):
+                print(f"Overwriting the directory {directory}")
+                shutil.rmtree(directory)
+                os.makedirs(directory)
+            else:
+                raise ValueError(f"Directory {directory} already exists. No overwriting access. Exiting...")
 
+    # Helper function to safely format values with proper checks
+    def safe_format(value, format_spec=">8.4f", default_value="N/A"):
+        """Format a value safely, handling None, missing keys, and formatting errors."""
+        if value is None:
+            return default_value
+            
+        try:
+            # Handle torch tensors
+            if hasattr(value, 'item'):
+                try:
+                    return f"{value.item():{format_spec}}"
+                except (ValueError, TypeError):
+                    return str(value.item())
+            # Handle regular values
+            return f"{value:{format_spec}}"
+        except (ValueError, TypeError):
+            # If formatting fails, return as string
+            return str(value)
 
-    description = f"""
-        Model Description:
-        Cell ID:       {model['fit_parameters']['cellid']:>8}
-        ntilde:        {model['fit_parameters']['ntilde']:>8}
-        maxiter:       {model['fit_parameters']['maxiter']:>8}
-        nMstep:        {model['fit_parameters']['nMstep']:>8}
-        nEstep:        {model['fit_parameters']['nEstep']:>8}
-        MIN_TOLERANCE: {model['fit_parameters']['min_tolerance']:>8.12f}
-        EIGVAL_TOL:    {model['fit_parameters']['eigval_tol']:>8.4f}
+    # Helper to safely get nested values from dictionary
+    def safe_get(d, key_path, default=None):
+        """Safely get a value from nested dictionaries."""
+        if not isinstance(d, dict):
+            return default
+            
+        keys = key_path.split('.')
+        value = d
         
+        for key in keys:
+            if isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return default
+                
+        return value
+
+    # Check if the required keys exist
+    fit_params = safe_get(model, 'fit_parameters', {})
+    values_track = safe_get(model, 'values_track', {})
+    theta_track = safe_get(values_track, 'theta_track', {})
+    f_par_track = safe_get(values_track, 'f_par_track', {})
+
+    # Build description with robust checks
+    description = f"""\
+        Model Description:
+        Cell ID:       {safe_format(safe_get(fit_params, 'cellid'), ">8", "None")}
+        ntilde:        {safe_format(safe_get(fit_params, 'ntilde'), ">8", "None")}
+        maxiter:       {safe_format(safe_get(fit_params, 'maxiter'), ">8", "None")}
+        nMstep:        {safe_format(safe_get(fit_params, 'nMstep'), ">8", "None")}
+        nEstep:        {safe_format(safe_get(fit_params, 'nEstep'), ">8", "None")}
+        MIN_TOLERANCE: {safe_format(safe_get(fit_params, 'min_tolerance'), ">8.12f", "N/A")}
+        EIGVAL_TOL:    {safe_format(safe_get(fit_params, 'eigval_tol'), ">8.4f", "N/A")}
+        """
+
+    # Add hyperparameters section if they exist
+    if theta_track and all(len(v) > 0 for v in theta_track.values()):
+        description += f"""
         Hyperparameters results:
         Start                 ->   End
-        sigma_0:     {model['values_track']['theta_track']['sigma_0'][0]:>8.4f} -> {model['values_track']['theta_track']['sigma_0'][-1]:>8.4f}
-        eps_0x:      {model['values_track']['theta_track']['eps_0x'][0]:>8.4f} -> {model['values_track']['theta_track']['eps_0x'][-1]:>8.4f}
-        eps_0y:      {model['values_track']['theta_track']['eps_0y'][0]:>8.4f} -> {model['values_track']['theta_track']['eps_0y'][-1]:>8.4f}
-        Amp:         {model['values_track']['theta_track']['Amp'][0]:>8.4f} -> {model['values_track']['theta_track']['Amp'][-1]:>8.4f}
-        -2log2beta:  {model['values_track']['theta_track']['-2log2beta'][0]:>8.4f} -> {model['values_track']['theta_track']['-2log2beta'][-1]:>8.4f}
-        -log2rho2:   {model['values_track']['theta_track']['-log2rho2'][0]:>8.4f} -> {model['values_track']['theta_track']['-log2rho2'][-1]:>8.4f}
-
-        beta:        {logbetaexpr_to_beta(model['values_track']['theta_track']['-2log2beta'][0]):>8.4f} -> {logbetaexpr_to_beta(model['values_track']['theta_track']['-2log2beta'][-1]):>8.4f}
-        rho:         {logrhoexpr_to_rho(model['values_track']['theta_track']['-log2rho2'][0]):>8.4f} -> {logrhoexpr_to_rho(model['values_track']['theta_track']['-log2rho2'][-1]):>8.4f}
-
-        Link function results [f_params]:
-
-        logA:        {model['values_track']['f_par_track']['logA'][0]:>8.4f} -> {model['values_track']['f_par_track']['logA'][-1]:>8.4f}
-
-        A:           {torch.exp(model['values_track']['f_par_track']['logA'][0]):>8.4f} -> {torch.exp(model['values_track']['f_par_track']['logA'][-1]):>8.4f}
-        lambda0:     {model['values_track']['f_par_track']['lambda0'][0] if 'lambda0' in model['values_track']['f_par_track'].keys() else torch.exp(model['values_track']['f_par_track']['lambda0'][0]):>8.4f} ->...
-          {model['values_track']['f_par_track']['lambda0'][-1] if 'lambda0' in model['values_track']['f_par_track'].keys() else torch.exp(model['values_track']['f_par_track']['lambda0'][-1]):>8.4f}
-        We are optimising a negative lambda0
         """
-        # lambda0: {torch.exp(model['values_track']['f_par_track']['loglambda0'][0]):>8.4f} -> {torch.exp(model['values_track']['f_par_track']['loglambda0'][-1]):>8.4f}
-        # loglambda0:     {model['values_track']['f_par_track']['loglambda0'][0]:>8.4f} -> {model['values_track']['f_par_track']['loglambda0'][-1]:>8.4f}
+        
+        for key in ['sigma_0', 'eps_0x', 'eps_0y', 'Amp', '-2log2beta', '-log2rho2']:
+            if key in theta_track and len(theta_track[key]) > 0:
+                start_val = theta_track[key][0] if len(theta_track[key]) > 0 else None
+                end_val = theta_track[key][-1] if len(theta_track[key]) > 0 else None
+                description += f"{key}:     {safe_format(start_val)} -> {safe_format(end_val)}\n        "
 
+        # Add derived parameters if possible
+        if '-2log2beta' in theta_track and len(theta_track['-2log2beta']) > 0:
+            start_beta = logbetaexpr_to_beta(theta_track['-2log2beta'][0]) if callable(globals().get('logbetaexpr_to_beta')) else None
+            end_beta = logbetaexpr_to_beta(theta_track['-2log2beta'][-1]) if callable(globals().get('logbetaexpr_to_beta')) else None
+            description += f"beta:        {safe_format(start_beta)} -> {safe_format(end_beta)}\n        "
+
+        if '-log2rho2' in theta_track and len(theta_track['-log2rho2']) > 0:
+            start_rho = logrhoexpr_to_rho(theta_track['-log2rho2'][0]) if callable(globals().get('logrhoexpr_to_rho')) else None
+            end_rho = logrhoexpr_to_rho(theta_track['-log2rho2'][-1]) if callable(globals().get('logrhoexpr_to_rho')) else None
+            description += f"rho:         {safe_format(start_rho)} -> {safe_format(end_rho)}\n        "
+
+    # Add f_params if they exist
+    if f_par_track:
+        description += """
+        Link function results [f_params]:
+        """
+        for key in ['logA', 'lambda0', 'loglambda0']:
+            if key in f_par_track and len(f_par_track[key]) > 0:
+                start_val = f_par_track[key][0] if len(f_par_track[key]) > 0 else None
+                end_val = f_par_track[key][-1] if len(f_par_track[key]) > 0 else None
+                description += f"\n        {key}:        {safe_format(start_val)} -> {safe_format(end_val)}"
+
+        # Add derived A value if logA exists
+        if 'logA' in f_par_track and len(f_par_track['logA']) > 0:
+            try:
+                start_A = torch.exp(f_par_track['logA'][0]) if torch.is_tensor(f_par_track['logA'][0]) else None
+                end_A = torch.exp(f_par_track['logA'][-1]) if torch.is_tensor(f_par_track['logA'][-1]) else None
+                description += f"\n\n        A:           {safe_format(start_A)} -> {safe_format(end_A)}"
+            except Exception:
+                pass  # Skip if calculation fails
+
+    # Add additional description if provided
     if additional_description is not None:
         description += f"\n\n{additional_description}"
     
     model['description'] = description
 
     # Save the file
-    with open(os.path.join(directory, 'model'), 'wb') as f:
+    with open(model_path, 'wb') as f:
         pickle.dump(model, f)
-
+    
     # Save metadata
-    metadata = {
-        'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'description': description
-    }
-    with open(os.path.join(directory, 'metadata'), 'w') as f:
+    metadata_path = os.path.join(directory, f'metadata_{session_name}.txt')
+    with open(metadata_path, 'w') as f:
         f.write(description)
+    
+    print(f"Model saved successfully to {model_path}")
+    return
+
+def upload_model( directory, model_name):
+    ''''''
+    # Load the model
+    model_pathname = directory / model_name
+    with open(model_pathname, 'rb') as f:
+        model = pickle.load(f)
+
+    return model
 
 def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 10), xlim=None, ylim_logmarg=None, ylim_lambda0=None, ylim_eigvals=None):
 
@@ -585,11 +801,24 @@ def get_cell_STA(X, R, zscore=True, show=False):
         plt.imshow(STA, origin='lower', cmap='bwr',  vmax=STA.max(), vmin=STA.min())
         plt.show()
 
-def plot_hyperparams_on_STA( fit_model, STA=None, ax=None, **kwargs):
+def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
+    '''
+    Plot the hyperparameters on top of the STA image. Converts model to dictionary if it is a GPModel object
+
+    Args:
+        fit_model (dict): The fitted model dictionary containing the hyperparameters and STA
+        STA (np.ndarray, optional): The STA image to plot
+    
+        
+    '''
+
+    if isinstance(fit_model, GPModel):
+        fit_model = fit_model.to_dict()
 
     label = kwargs.get('label', None)
     center_color = kwargs.get('center_color', 'k')
     width_color  = kwargs.get('width_color', 'k')
+    show_values = kwargs.get('show_values', True)  # Option to show parameter values
 
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(5,5)) 
@@ -601,35 +830,61 @@ def plot_hyperparams_on_STA( fit_model, STA=None, ax=None, **kwargs):
     eps_0x_fit = fit_model['hyperparams_tuple'][0]['eps_0x']
     eps_0y_fit = fit_model['hyperparams_tuple'][0]['eps_0y']
     logbetaexpr_fit = fit_model['hyperparams_tuple'][0]['-2log2beta']
+    logrhoexpr_fit = fit_model['hyperparams_tuple'][0]['-log2rho2']
+    sigma_0_fit = fit_model['hyperparams_tuple'][0]['sigma_0']
+    amp_fit = fit_model['hyperparams_tuple'][0]['Amp']
 
-    eps_idxs_fit    = torch.tensor( [
+    eps_idxs_fit = torch.tensor([
         center_idxs[0]*(1+eps_0x_fit), 
         center_idxs[1]*(1+eps_0y_fit)
-        ])
+    ])
+
+    # Convert log parameters to their actual physical interpretable values
+    beta_value = logbetaexpr_to_beta(logbetaexpr_fit).item()
+    rho_value = logrhoexpr_to_rho(logrhoexpr_fit).item()
+
+    # We also want to print them in pixel coordinates
+    beta_value_px = beta_value * n_px_side/2
+    rho_value_px  = rho_value * n_px_side/2
 
     # Beta : Width of the receptive field - Implemented by the "alpha_local" part of the C covariance matrix
-    ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='ij') # a grid of 108x108 points between -1 and 1
+    ycord, xcord = torch.meshgrid(torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='ij') # a grid of 108x108 points between -1 and 1
     xcord = xcord.flatten()
     ycord = ycord.flatten()
-    logalpha_fit    = -torch.exp( logbetaexpr_fit )*((xcord - eps_0x_fit)**2+(ycord - eps_0y_fit)**2  )
-    alpha_local_fit =  torch.exp(logalpha_fit)    # aplha_local in the paper
+    logalpha_fit = -torch.exp(logbetaexpr_fit)*((xcord - eps_0x_fit)**2+(ycord - eps_0y_fit)**2)
+    alpha_local_fit = torch.exp(logalpha_fit)    # aplha_local in the paper
 
     # Levels of the contour plot for distances [1sigma, 2sigma, 3sigma]
     # (x**2 + y**2) = n*sigma -> alpha_local = exp( - (n*sigma)^2 / (2*sigma^2) )
-    levels = torch.tensor( [np.exp(-4.5), np.exp(-2), np.exp(-1/2) ])
-    ax.contour( alpha_local_fit.reshape(n_px_side,n_px_side).cpu(), levels=levels.cpu(), colors=width_color, alpha=0.5)
-    ax.scatter( eps_idxs_fit[0].cpu(),eps_idxs_fit[1].cpu(), color=center_color, s=30, marker="o", label=label, )
+    levels = torch.tensor([np.exp(-4.5), np.exp(-2), np.exp(-1/2)])
+    contours = ax.contour(alpha_local_fit.reshape(n_px_side,n_px_side).cpu(), levels=levels.cpu(), colors=width_color, alpha=0.5)
+    center_point = ax.scatter(eps_idxs_fit[0].cpu(), eps_idxs_fit[1].cpu(), color=center_color, s=30, marker="o", label=label)
+    
+    # Set title and add the hyperparameters to the legend
     ax.set_title('Hyperparameters on STA')
 
-    # show the updated image
-    plt.show(block=False)
+    # Create a string with parameter values if requested
+    if show_values:
+        # Format parameter values for display, including both normalized and pixel coordinates
+        param_text = (f"Center: ({eps_0x_fit.item():.2f}, {eps_0y_fit.item():.2f})  |  ({eps_idxs_fit[0].item():.1f}, {eps_idxs_fit[1].item():.1f})px\n"
+                     f"Beta: {beta_value:.2f}  | {beta_value_px:.0f}px\n"
+                     f"Rho: {rho_value:.2f}  | {rho_value_px:.0f}px\n"
+                     f"Sigma₀: {sigma_0_fit.item():.2f}\n"
+                     f"Amp: {amp_fit.item():.2f}")
+        
+        # Add text box with parameter values
+        props = dict(boxstyle='round', facecolor='white', alpha=0.7)
+        ax.text(0.05, 0.95, param_text, transform=ax.transAxes, fontsize=9,
+                verticalalignment='top', bbox=props)
 
+    # Show the STA if provided
     if STA is not None:
-        # vmax = abs(STA.max()) 
-        # vmin = -vmax
-        ax.imshow(STA, origin='lower',  vmax=STA.max(), vmin=STA.min(), cmap='bwr')
+        ax.imshow(STA, origin='lower', vmax=STA.max(), vmin=STA.min(), cmap='bwr')
 
-
+    # Show the updated image
+    plt.show(block=False)
+    
+    return ax
 
 def plot_final_and_intermediate_fit(fit_model, init_model, X_in_use, R_in_use, X_test_avg, R_test_avg_cell, cells_reliability, intermediate_model_iteration=2):
 
@@ -670,6 +925,80 @@ def plot_final_and_intermediate_fit(fit_model, init_model, X_in_use, R_in_use, X
     ax[1].set_title(f'Correlation: {r:.3f}, R^2: {r2:.3f}')
 
     return f_mean, r, r2
+
+def visualize_tensor(tensor, title=None, cmap='viridis', origin='lower', return_fig=False):
+    """
+    Visualize a tensor as a square image for debugging purposes.
+    
+    Parameters:
+    -----------
+    tensor : torch.Tensor or numpy.ndarray
+        The tensor to visualize. If 1D, it will be reshaped to a square.
+    title : str, optional
+        Title for the plot
+    cmap : str, optional
+        Colormap to use (default: 'viridis')
+    origin : str, optional
+        Origin position ('lower' or 'upper')
+    return_fig : bool, optional
+        If True, returns the figure object instead of displaying it
+    
+    Returns:
+    --------
+    fig : matplotlib.figure.Figure, optional
+        Figure object if return_fig is True
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import torch
+    
+    # Convert to numpy if it's a PyTorch tensor
+    if isinstance(tensor, torch.Tensor):
+        tensor = tensor.detach().cpu().numpy()
+    
+    # Flatten if it has more than 2 dimensions
+    if tensor.ndim > 2:
+        tensor = tensor.reshape(-1)
+    
+    # If 1D, reshape to a square (or as square as possible)
+    if tensor.ndim == 1:
+        # Try to find factors close to square
+        length = tensor.shape[0]
+        side = int(np.sqrt(length))
+        
+        # If not a perfect square, find the closest dimensions
+        if side*side == length:
+            # Perfect square
+            tensor = tensor.reshape(side, side)
+        else:
+            # Find the best rectangular shape
+            for i in range(side, 0, -1):
+                if length % i == 0:
+                    tensor = tensor.reshape(i, length // i)
+                    break
+            else:
+                # If no exact divisor found, use the original side and pad
+                tensor = np.pad(tensor, (0, side*side - length), 'constant')
+                tensor = tensor.reshape(side, side)
+    
+    # Create the figure and plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+    im = ax.imshow(tensor, cmap=cmap, origin=origin)
+    plt.colorbar(im, ax=ax)
+    
+    if title:
+        ax.set_title(title)
+    
+    # Add dimension info
+    ax.set_xlabel(f"Shape: {tensor.shape}")
+    
+    # Show the plot or return the figure
+    if return_fig:
+        return fig
+    else:
+        plt.tight_layout()
+        plt.show()
+        plt.close()
 
 ##################   Utility functions  ##################
 
@@ -1229,10 +1558,10 @@ def localker(theta, theta_higher_lims, theta_lower_lims, n_px_side, grad=False):
 
     # spatial localised prior
     # Note: Matlab uses default indexing 'xy' while torch uses 'ij'. They make no difference because the arrays get flattened
-    ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='ij') # a grid of 108x108 points between -1 and 1
+    ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='ij')# a grid of 108x108 points between -1 and 1
     # ycord, xcord = torch.meshgrid( torch.linspace(-1, 1, n_px_side), torch.linspace(-1, 1, n_px_side), indexing='xy') #a grid of 108x108 points between -1 and 1
-    xcord = xcord.flatten()
-    ycord = ycord.flatten()
+    xcord = xcord.flatten().to(DEVICE, dtype=TORCH_DTYPE)
+    ycord = ycord.flatten().to(DEVICE, dtype=TORCH_DTYPE)
     logalpha    = -torch.exp(theta['-2log2beta'])*((xcord - eps_0[0])**2+(ycord - eps_0[1])**2)
     alpha_local =  torch.exp(logalpha)    # aplha_local in the paper
 
@@ -1326,7 +1655,7 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
     n1 = x1.shape[-1]  # Take the shape given by the mask
     sigma_0 = theta['sigma_0']
 
-    if C is None: C = torch.eye(n1)
+    if C is None: C = torch.eye(n1, device=DEVICE, dtype=TORCH_DTYPE)
 
     if not diag:
         n2 = x2.shape[1]
@@ -1389,7 +1718,8 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
             dK = {}
 
             # Test: the following derivative mst be wrt sigma_0 nos log_sigma_0 like in samueles code
-            dK['sigma_0'] = (2*sigma_0**2*torch.ones((n1, 1))).squeeze() / sigma_0
+            ones = torch.ones((n1, 1), device=DEVICE, dtype=TORCH_DTYPE)
+            dK['sigma_0'] = (2*sigma_0**2*ones).squeeze() / sigma_0
             # dK['sigma_0'] = (2*sigma_0**2*torch.ones((n1, 1))).squeeze()
             
             for key in dC.keys():
@@ -1815,7 +2145,8 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
     # Results are still the best with alpha=1 (static images) but if the E step was to give problems try changing alpha.
     if update_V_inv == False and K_tilde is not None:
         if alpha==1:
-            V_new = torch.linalg.solve( torch.eye(K_tilde.shape[0]) +  K_tilde@G, K_tilde)
+            eye = torch.eye(K_tilde.shape[0], dtype=TORCH_DTYPE).to(DEVICE)
+            V_new = torch.linalg.solve( eye +  K_tilde@G, K_tilde)
             m_new = V_new @ (G @ m + g)  # shape(250,1)
         else:
             warnings.warn(' You are using a step size different from 1 in Estep, in case the eigenspace of K_tilde has increased in dimension, you could have a non invertible V_b here. It might mean non positive definite V_new.')
@@ -2899,143 +3230,168 @@ def varGP(x, r, **kwargs):
 
     #endregion
     
-    #region ________ Initialization __________
-    start_time_before_init = time.time()
-    err_dict = {'is_error': False, 'error_message': None}
+    try:
+        #region ________ Initialization __________
+        start_time_before_init = time.time()
+        err_dict = {'is_error': False, 'error_message': None, 'during_init': False}
 
-    # number of pixels, number of training points 
-    nt, nx = x.shape 
+        # number of pixels, number of training points 
+        nt, nx = x.shape 
 
-    # Update the parameters of the fit with the used global variables
-    fit_parameters = copy.deepcopy(kwargs['fit_parameters'])
-    fit_parameters['min_tolerance'] = MIN_TOLERANCE
-    fit_parameters['eigval_tol']    = EIGVAL_TOL
+        # Update the parameters of the fit with the used global variables
+        fit_parameters = copy.deepcopy(kwargs['fit_parameters'])
+        fit_parameters['min_tolerance'] = MIN_TOLERANCE
+        fit_parameters['eigval_tol']    = EIGVAL_TOL
 
-    ntilde        = fit_parameters.get('ntilde',  100 if nt>100 else nt) # if no ntilde is provided try with 100, otherwise inducing points=x   
-    maxiter       = fit_parameters.get('maxiter', 50)
-    nEstep        = fit_parameters.get('nEstep',  50) 
-    nMstep        = fit_parameters.get('nMstep',  20)
-    nFparamstep   = fit_parameters.get('nFparamstep', 10)
-    lr_Mstep      = fit_parameters.get('lr_Mstep', 0.1)
-    lr_Fparamstep = fit_parameters.get('lr_Fparamstep', 0.1)
-    display_hyper = fit_parameters.get('display_hyper', True)
-    n_px_side     = fit_parameters.get('n_px_side', math.sqrt(nx))
-    kernfun       = fit_parameters.get('kernfun', 'acosker')
-    if kernfun == 'acosker': kernfun = acosker
-    else: raise Exception('Kernel function not recognized')
+        ntilde        = fit_parameters.get('ntilde',  100 if nt>100 else nt) # if no ntilde is provided try with 100, otherwise inducing points=x   
+        maxiter       = fit_parameters.get('maxiter', 50)
+        nEstep        = fit_parameters.get('nEstep',  50) 
+        nMstep        = fit_parameters.get('nMstep',  20)
+        nFparamstep   = fit_parameters.get('nFparamstep', 10)
+        lr_Mstep      = fit_parameters.get('lr_Mstep', 0.1)
+        lr_Fparamstep = fit_parameters.get('lr_Fparamstep', 0.1)
+        display_hyper = fit_parameters.get('display_hyper', True)
+        n_px_side     = fit_parameters.get('n_px_side', None)
+        kernfun       = fit_parameters.get('kernfun', 'acosker')
+        if   kernfun == acosker:   pass
+        elif kernfun == 'acosker': kernfun = acosker
+        else: raise Exception('Kernel function not recognized')
+        
 
+        # Initialize hyperparameters of Kernel and parameters of the firing rate
+        # Mutable objects are copied otherwise their values would be updated in the original args dictionary sent as argument
+        if 'xtilde' in kwargs:
+            xtilde            = kwargs['xtilde']  
+        else:
+            raise Exception('Inducing points not provided')
+        if ntilde != xtilde.shape[0]: 
+            raise Exception('Number of inducing points does not match ntilde')
+        if 'hyperparams_tuple' in kwargs.keys():
+            hyperparams_tuple = copy.deepcopy(kwargs['hyperparams_tuple'])  
+            theta             = copy.deepcopy(hyperparams_tuple[0])
+            theta_lower_lims  = copy.deepcopy(hyperparams_tuple[1])
+            theta_higher_lims = copy.deepcopy(hyperparams_tuple[2])
+        else:
+            raise Exception('Hyperparameters not provided')
+        if 'f_params' in kwargs.keys():
+            f_params = copy.deepcopy(kwargs['f_params']) 
+        else:
+            raise Exception('f_params not provided')
+        # f_params          = copy.deepcopy(kwargs['f_params']) if 'f_params' in kwargs.keys() else {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(1)}
+        for key in f_params.keys(): 
+            f_params[key] = f_params[key].requires_grad_(True)
+        
+        # f_params          = copy.deepcopy(kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(-1)} )) # Parameters of the firing rate (A and lambda_0) in the paper
+        # f_params          = copy.deepcopy(kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001,)), 'loglambda0':torch.log(torch.tensor(-1))} )) # Parameters of the firing rate (A and lambda_0) in the paper
 
-    # Initialize hyperparameters of Kernel and parameters of the firing rate
-    # Mutable objects are copied otherwise their values would be updated in the original args dictionary sent as argument
+        # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
+        # TODO Calculate it only close to the RF (for now it's every pixel)
 
-    xtilde            = kwargs['xtilde'] if 'xtilde' in kwargs else generate_xtilde(ntilde, x)
-    if ntilde        != xtilde.shape[0]: raise Exception('Number of inducing points does not match ntilde')
-    hyperparams_tuple = copy.deepcopy(kwargs['hyperparams_tuple']) if 'hyperparams_tuple' in kwargs.keys() else generate_theta(x, r, n_px_side, display_hyper)
-    theta             = copy.deepcopy(kwargs.get( 'theta',             hyperparams_tuple[0]) )
-    theta_lower_lims  = copy.deepcopy(kwargs.get( 'theta_lower_lims',  hyperparams_tuple[1] ))
-    theta_higher_lims = copy.deepcopy(kwargs.get( 'theta_higher_lims', hyperparams_tuple[2] ))
+        # The following lines initialize the kernel values. 
+        # They take care of setting the kernel of the whole dataset equal to the kernel on the inducing points (K_tilde) the same if the inducing points are the whole dataset
+        # They also dont calculate the kernel if its starting values are passed as an argument
+        # They also take care of projecting the kernel into the eigenspace of the largest eigenvectors of K_tilde
+        if 'init_kernel' not in kwargs:
+            C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False)  
+            K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
+            Kvec    = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)
+            if ntilde != nt:
+                K   = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
+            K = K_tilde
+            eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
+            ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
+            B = eigvecs[:, ikeep]
+            K_tilde_b = torch.diag(eigvals[ikeep])
+            K_b       = K @ B
+            K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])
+            if ntilde != nt:  
+                KKtilde_inv_b = K_b @ K_tilde_inv_b
+            else:
+                KKtilde_inv_b = B
+        else: 
+            C, mask = (kwargs['init_kernel']['C'], kwargs['init_kernel']['mask'])
+            K_tilde = kwargs['init_kernel']['K_tilde']
+            Kvec    = kwargs['init_kernel']['Kvec']
+            if ntilde != nt:  
+                K   = kwargs['init_kernel']['K']
+            K = K_tilde
+            B = kwargs['init_kernel']['B']
+            # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
+            K_tilde_b = kwargs['init_kernel']['K_tilde_b']  # shape (n_eigen, n_eigen)
+            K_b       = kwargs['init_kernel']['K_b']
+            K_tilde_inv_b = kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
+            if ntilde != nt:
+                kwargs['init_kernel']['KKtilde_inv_b']
+            else:             
+                KKtilde_inv_b = B # the resulting matrix of Ktildeb @ B @ B.T @ Ktildeb_inv @ B = B  
 
-    if 'f_params' not in kwargs.keys():
-        raise Exception('f_params not provided')
-    f_params          = copy.deepcopy(kwargs['f_params']) 
-    # f_params          = copy.deepcopy(kwargs['f_params']) if 'f_params' in kwargs.keys() else {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(1)}
-    for key in f_params.keys(): f_params[key] = f_params[key].requires_grad_(True)
-    
-    # f_params          = copy.deepcopy(kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001)), 'lambda0':torch.tensor(-1)} )) # Parameters of the firing rate (A and lambda_0) in the paper
-    # f_params          = copy.deepcopy(kwargs.get( 'f_params', {'logA': torch.log(torch.tensor(0.0001,)), 'loglambda0':torch.log(torch.tensor(-1))} )) # Parameters of the firing rate (A and lambda_0) in the paper
+        # K_tilde_inv_p = torch.diag_embed(1/eigvals) if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_p'] # If we want to invert the whole K_tilde, not only the projected one, maybe outside VarGP for active loop
 
-    # Calculate the part of the kernel responsible for implementing smoothness and the receptive field
-    # TODO Calculate it only close to the RF (for now it's every pixel)
+        # We always pass the non projected variational parameters because the dimensionality of the problem is determined by the lines above ( B ).
+        m = copy.deepcopy(kwargs.get('m', torch.zeros( (ntilde) )).detach()).to(DEVICE, dtype=TORCH_DTYPE)
+        V = copy.deepcopy(kwargs.get('V', K_tilde ).detach()).to(DEVICE, dtype=TORCH_DTYPE)
 
-    # The following lines initialize the kernel values. 
-    # They take care of setting the kernel of the whole dataset equal to the kernel on the inducing points (K_tilde) the same if the inducing points are the whole dataset
-    # They also dont calculate the kernel if its starting values are passed as an argument
-    # They also take care of projecting the kernel into the eigenspace of the largest eigenvectors of K_tilde
-    C, mask = localker(theta=theta, theta_lower_lims=theta_lower_lims, theta_higher_lims=theta_higher_lims, n_px_side=n_px_side, grad=False) if 'init_kernel' not in kwargs else (kwargs['init_kernel']['C'], kwargs['init_kernel']['mask'])
-    K_tilde = kernfun(theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                                       if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde']
-    
-    if ntilde != nt:  K  = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False) if 'init_kernel' not in kwargs else kwargs['init_kernel']['K']       # shape (nt, ntilde) set of row vectors K_i for every input 
-    else:             K  = K_tilde
-    
-    Kvec = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                         if 'init_kernel' not in kwargs else kwargs['init_kernel']['Kvec']    # shape (nt)
-    if 'init_kernel' not in kwargs:
-        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
-        ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
+        # m_b = copy.deepcopy(kwargs.get('m_b', torch.zeros( (ntilde) )).detach())
+        # V_b = copy.deepcopy(kwargs.get('V_b', K_tilde_b ).detach())
 
-    B = eigvecs[:, ikeep]                                 if 'init_kernel' not in kwargs else kwargs['init_kernel']['B']             # shape (ntilde, n_eigen)            
-    # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
-    K_tilde_b = torch.diag(eigvals[ikeep])                if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_b']     # shape (n_eigen, n_eigen)
-    K_b       = K @ B                                     if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_b']           # shape (3190, n_eigen)
+        V_b = B.T @ V @ B if 'V' in kwargs else K_tilde_b     # shape (n_eigen, n_eigen)
+        m_b = B.T @ m 
 
+        lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
+        f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
 
-    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])    if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_b'] # shape (n_eigen, n_eigen)
-    # K_tilde_inv_p = torch.diag_embed(1/eigvals)           if 'init_kernel' not in kwargs else kwargs['init_kernel']['K_tilde_inv_p'] # If we want to invert the whole K_tilde, not only the projected one, maybe outside VarGP for active loop
-    if ntilde != nt:  KKtilde_inv_b = K_b @ K_tilde_inv_b if 'init_kernel' not in kwargs else kwargs['init_kernel']['KKtilde_inv_b'] # shape (nt, n_eigen) # this is 'a' in matthews code
-    else:             KKtilde_inv_b = B                                                                                              # the resulting matrix of Ktildeb @ B @ B.T @ Ktildeb_inv @ B = B  
+        loglikelihood, _, __ = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False)
+        KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None, ignore_warning=True )
+        logmarginal          = loglikelihood - KL_div   
 
-    # We always pass the non projected variational parameters because the dimensionality of the problem is determined by the lines above ( B ).
-    m = copy.deepcopy(kwargs.get('m', torch.zeros( (ntilde) )).detach())
-    V = copy.deepcopy(kwargs.get('V', K_tilde ).detach())
+        # Tracking dictionary
+        loss_track          = {'logmarginal'  : torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE),                          # Loss to  maximise: Log Likelihood - KL
+                                'loglikelihood': torch.zeros((maxiter)),
+                                'KL'           : torch.zeros((maxiter)),
+                                } 
+        theta_track         = {key : torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE) for key in theta.keys()}
+        f_par_track         = {'logA': torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE), 
+                            'lambda0': torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE)} if 'lambda0' in f_params else \
+                                {'logA': torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE), 
+                                'loglambda0': torch.zeros((maxiter)).to(DEVICE, dtype=TORCH_DTYPE)}
+        # f_par_track         = {'logA': torch.zeros((maxiter)), 'loglambda0': torch.zeros((maxiter))} # track hyperparamers
 
-    # m_b = copy.deepcopy(kwargs.get('m_b', torch.zeros( (ntilde) )).detach())
-    # V_b = copy.deepcopy(kwargs.get('V_b', K_tilde_b ).detach())
+        variation_par_track = {'V_b': (), 'm_b': ()}               # track the variation parameters
+        # subspace_track      = {'eigvals': torch.zeros((maxiter, K_tilde.shape[0])), 
+                                # 'eigvecs': torch.zeros((maxiter, *tuple(K_tilde.shape)))  }        # track the eigenvectors of the kernel
+        values_track        = {'loss_track':      loss_track,   'theta_track': theta_track, 
+                                'f_par_track':    f_par_track,  'variation_par_track': variation_par_track}
+                                # 'subspace_track': subspace_track }
+        
+        # print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
 
-    V_b = B.T @ V @ B if 'V' in kwargs else K_tilde_b     # shape (n_eigen, n_eigen)
-    m_b = B.T @ m 
+        #region _________ Memory usage___________
+        # memory = 0
+        # for dict in values_track.values():
+        #     for key in dict.keys():
+        #         if isinstance(dict[key], tuple):
+        #             for i in range(len(dict[key])):
+        #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
+        #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
+        #         else:
+        #             memory += dict[key].element_size() * dict[key].nelement()
+        #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
 
-    lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
-    f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+        # # Convert bytes to megabytes (MB)
+        # total_memory_MB = memory / (1024 ** 2)
+        # print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
+        # # Allocated memory
+        # allocated_bytes = torch.cuda.memory_allocated()
+        # allocated_MB = allocated_bytes / (1024 ** 2)
+        # print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
 
-    loglikelihood, _, __ = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False)
-    KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None, ignore_warning=True )
-    logmarginal          = loglikelihood - KL_div   
+        # # Reserved (cached) memory
+        # reserved_bytes = torch.cuda.memory_reserved()
+        # reserved_MB = reserved_bytes / (1024 ** 2)
+        # print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
+        #endregion _________ Memory usage___________
 
-    # Tracking dictionary
-    loss_track          = {'logmarginal'  : torch.zeros((maxiter)),                          # Loss to  maximise: Log Likelihood - KL
-                            'loglikelihood': torch.zeros((maxiter)),
-                            'KL'           : torch.zeros((maxiter)),
-                            } 
-    theta_track         = {key : torch.zeros((maxiter)) for key in theta.keys()}
-    f_par_track         = {'logA': torch.zeros((maxiter)), 'lambda0': torch.zeros((maxiter))} if 'lambda0' in f_params else {'logA': torch.zeros((maxiter)), 'loglambda0': torch.zeros((maxiter))}
-    # f_par_track         = {'logA': torch.zeros((maxiter)), 'loglambda0': torch.zeros((maxiter))} # track hyperparamers
-
-    variation_par_track = {'V_b': (), 'm_b': ()}               # track the variation parameters
-    # subspace_track      = {'eigvals': torch.zeros((maxiter, K_tilde.shape[0])), 
-                            # 'eigvecs': torch.zeros((maxiter, *tuple(K_tilde.shape)))  }        # track the eigenvectors of the kernel
-    values_track        = {'loss_track':      loss_track,   'theta_track': theta_track, 
-                            'f_par_track':    f_par_track,  'variation_par_track': variation_par_track}
-                            # 'subspace_track': subspace_track }
-    
-    # print(f'Initialization took: {(time.time()-start_time_before_init):.4f} seconds\n')
-
-    #region _________ Memory usage___________
-    # memory = 0
-    # for dict in values_track.values():
-    #     for key in dict.keys():
-    #         if isinstance(dict[key], tuple):
-    #             for i in range(len(dict[key])):
-    #                 memory += dict[key][i].element_size() * dict[key][i].nelement()
-    #             # print(f'{key} memory: {memory / (1024 ** 2):.2f} MB')
-    #         else:
-    #             memory += dict[key].element_size() * dict[key].nelement()
-    #             # print(f'{key} memory: {dict[key].element_size() * dict[key].nelement() / (1024 ** 2):.2f} MB')
-
-    # # Convert bytes to megabytes (MB)
-    # total_memory_MB = memory / (1024 ** 2)
-    # print(f'Total values_track memory on GPU: {total_memory_MB:.2f} MB')
-    # # Allocated memory
-    # allocated_bytes = torch.cuda.memory_allocated()
-    # allocated_MB = allocated_bytes / (1024 ** 2)
-    # print(f"\nAfter initialization Allocated memory: {allocated_MB:.2f} MB")
-
-    # # Reserved (cached) memory
-    # reserved_bytes = torch.cuda.memory_reserved()
-    # reserved_MB = reserved_bytes / (1024 ** 2)
-    # print(f"\nAfter initialization Reserved (cached) memory: {reserved_MB:.2f} MB")
-    #endregion _________ Memory usage___________
-
-    #endregion ______________________________
-    try: 
+        #endregion ______________________________
         # Loop variables
         start_time_loop        = time.time()
         time_estep_total       = 0
@@ -3051,8 +3407,11 @@ def varGP(x, r, **kwargs):
         values_track['loss_track']['loglikelihood'][0].copy_(loglikelihood)
         values_track['loss_track']['KL'][0].copy_(KL_div)
         values_track['loss_track']['logmarginal'][0].copy_(loglikelihood-KL_div)
-
-        print(f'Initial Loss: {-(loglikelihood-KL_div):.4f}')
+        
+        initial_loss = -(loglikelihood-KL_div)
+        print(f'Initial Loss: {initial_loss:.4f}')
+        if initial_loss == torch.inf or initial_loss == -torch.inf or initial_loss == torch.nan:
+            raise Exception('Initial loss is inf or nan')
 
         # Theta before the Mstep of 0 "i" is the one used to build the kernel of the E-step of 0 "i+1". 
         # The theta we are saving here is the one we just used.
@@ -3068,418 +3427,431 @@ def varGP(x, r, **kwargs):
         values_track['variation_par_track']['V_b'] += (V_b.clone(),)
         values_track['variation_par_track']['m_b'] += (m_b.clone(),)
         #endregion
-        
-        #_______________________ Main Loop ___________
-        for iteration in range(1,maxiter):
-
-            # print(f'*Iteration*: {iteration}', end='')
-
-            #region ________________ Computing Kernel and Stabilization____________________
-            # Compute starting Kernel, if no M-step -> only compute it once cause it's not changing
-            start_time_computing_kernels = time.time()
-            if nMstep > 0 and iteration > 1:
-                #________________ Compute the KERNELS after M-Step and the inverse of V _____________
-                C, mask    = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)                
-                K_tilde    = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                   # shape (ntilde, ntilde)
-                K          = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      if ntilde != nt else K_tilde      # shape (nt, ntilde) set of row vectors K_i for every input 
-                Kvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                                                # shape (nt)
-                
-                eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
-                ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
-            
-                B_old = B 
-                B = eigvecs[:, ikeep]                                                  # shape (ntilde, n_eigen)            
-                # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
-                K_tilde_b     = torch.diag(eigvals[ikeep])                                 # shape (n_eigen, n_eigen)
-                # K_tilde_inv_p = torch.diag_embed(1/eigvals)                              # We keep the latest inverse of the complete K_tilde just to return it and be fast in computing the inverse of the incremented K_tilde if needed ( active learning )
-                K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                     # shape (n_eigen, n_eigen)
-                K_b           = K @ B                                                      # shape (3190, n_eigen)
-                KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B             # shape (nt, n_eigen) # this is 'a' in matthews code                         
-        
-                # In the following iterations we already have V_b (maybe updated in an E-step) and if Mstep > 0 we changed the eigenspace,
-                # Get V_b_new referring to this new eigenspace as:
-                #       V_b_new = (B_new.T@V)@B_new 
-                # Where V       = B_old@V_b_old@B_old.T, so
-
-                # V_b_new       = B_new.T@(B_old@V_b_old@B_old.T)@B_new and
-                # m_b_new       = B_new.T @ B_old @ m_b_old 
-
-                # Note that we might have augmented the dimension of the eigenspace, this might leave very small eigenvalues in V_b_new
-                # This will not be necessaraly invertible (or posdef ). This might be problem in the Estep when using alpha != 1.
-                # This matrix is not numerically simmetric for precision higher than 1.e-13 even if it should be arount 1.e-15, hence the choice of MIN_TOLERANCE 1.e-13
-                # V_b is guaranteed to be simmetric (and posdef) only when coming out of E step
-                # It will be used only in each first estep iteration. To calculate the lambda moments. It never gave numerical problems but might be a source loss of precision
-                V_b_new = B.T@(B_old@V_b@B_old.T)@B                   
-                V_b     = V_b_new                                     
-
-                # smallest_eig = torch.linalg.eigh(V_b)[0].min()
-                # if smallest_eig <= 0.:
-                    # warnings.warn(f'Matrix V_b is simmetric but has an eigenvalue smaller than 0 ')
-
-                m_b_new = B.T @ B_old @ m_b
-                m_b     = m_b_new
-
-            time_computing_kernels += time.time() - start_time_computing_kernels
-            #endregion 
-
-            #region  _______________ Control over possible Nans ______
-            # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['lambda0']]:
-            # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['loglambda0']]:                
-            # # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['tanhlambda0']]:                                
-            #     if torch.any(torch.isnan(tensor)):
-            #         variable_name = [k for k, v in locals().items() if v is tensor][0]
-            #         raise ValueError(f'NaN in {variable_name}')
-            #     if torch.any(torch.isinf(tensor)):
-            #         variable_name = [k for k, v in locals().items() if v is tensor][0]
-            #         raise ValueError(f'Inf in {variable_name}')
-            #endregion
-            
-            #region ________________ E-Step : Update on m & V and f(lambda) parameters ________
-            start_time_estep = time.time()
-            if nEstep > 0:
-                # print(f'Estep in iteration {iteration}')
-
-                for i_estep in range(1):
-                    # print(f'   Estep n {i_estep}')
-
-                    # Update lambda moments only if the kernel has changed or if it's the first iteration
-                    # They are update again after the Estep
-                    if i_estep == 0 and nMstep > 0:
-                        lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)  
-
-                        # feature 2: lambda0
-                        # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-
-                    # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
-                    start_time_f_params = time.time()
-                    f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var) # Since f_params influece f_mean, we need to update it at each estep
-                    time_f_params_total += time.time()-start_time_f_params
-
-                    #region ____________ Update m, V ______________
-                    for _ in range(nEstep):
-                        m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
-                                            K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, update_V_inv=False, alpha=1  ) # Do not change udpate_V_inv or alpha, read Estep docs
-
-                        # And the things that depend on them ( moments of lambda )
-                        f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], 
-                                                                K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, 
-                                                                K=K_b, C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, 
-                                                                lambda_m=None, lambda_var=None  )
-                    
-                    #endregion
-
-                    #region ____________ Update f_params ______________ 
-                    # if i_estep > 0:
-                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-
-                    # lr_f_params = 0.01 # learning rate
-                   #lr_Fparamstep = 0.1  # what we use usually
-                    # lr_f_params = 1
-                    optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_Fparamstep, max_iter=nFparamstep, 
-                                                            tolerance_change=1.e-9, tolerance_grad=1.e-7,
-                                                            history_size=nFparamstep, line_search_fn='strong_wolfe')
-                    start_time_f_params = time.time()
-                    CLOSURE2_COUNTER = [0]
-                    @torch.no_grad()
-                    def closure_f_params( ):
-                        CLOSURE2_COUNTER[0] += 1
-                        optimizer_f_params.zero_grad()
-                        nonlocal f_mean          # Update f_mean of the outer scope each time the closure is called
-                        # Lambda0 feature 3
-
-                        # Each time the closure is called the optimizer expects the value of the loss. It might be using it to explore how big of a step to take (line search) or actually updating the parameters ( logA)
-                        # We need the optimizer to evaluate the loss with the optimal lambda0 parameter given logA, so we update it here, before computing all the other things that depend on it.
-
-                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-                        f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
-
-                        loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )                       
-                        # print(f' -logmarginal = {(-loglikelihood.item() + KL.item()):.4f} -loglikelihood = {-loglikelihood.item():.4f}  KL = {KL.item():.4f}')
-
-                        # Update gradients of the loss with respect to the firing rate parameters
-                        # The minus here is because we are minimizing the negative loglikelihood
-                        f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
-
-
-                        if 'lambda0' in f_params:
-                            f_params['lambda0'].grad = -dloglikelihood['lambda0']        if f_params['lambda0'].requires_grad else None
-                        elif 'loglambda0' in f_params:
-                            f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['loglambda0'].requires_grad else None
- 
-                        # if torch.any(torch.isnan(f_mean)):
-                            # raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
-                        # if  torch.any( f_mean > 1.e4):
-                            # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
-
-                        if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
-                            print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}, returning infinite loss')
-                            return torch.tensor(float('inf'))
-                        
-                        return -loglikelihood
-
-                    optimizer_f_params.step(closure_f_params)        
-                    
-                    f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var) # the optimal logA value found by the optimizer might not be the one used in the last closure call. We need to make sure lambda0 is updated.
-
-                    if f_mean.mean() > 100:
-                        print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
-
-
-                    time_f_params_total += time.time()-start_time_f_params
-                    #endregion
-            else: print('No E-step')
-
-            time_estep = time.time()-start_time_estep
-            time_estep_total += time_estep 
-            # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s', end='')
-            #endregion                       
-        
-            #region ________________ Update the tracking dictionaries _______________  
-
-            # Update the value every x iterations. 
-            # We are doing it here to avoid having to project V_b and m_b to the updated eigenspace. 
-            # This might pose numerical problem if alpha!=1 as explained in the docs, 
-            # But even in the alpha=1 case the value of the almost singular reprojected V_b would be used for the loss, leading to expliding values sometimes
-            #  ( its only a tracking problem ) 
-            
-            if iteration % 1 == 0 or iteration == maxiter-1:
-
-                start_time_computing_loss = time.time()
-                # lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
-                
-                f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
-
-                loglikelihood, _, __ = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False)
-
-                KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None, ignore_warning=True )
-                logmarginal          = loglikelihood - KL_div   
-
-                time_computing_loss += time.time()-start_time_computing_loss
-                # print(f" TOT time for loss computation at iteration {iteration:>2}: {tot_elapsed_time:>2.6f} s")
-                # print(f"     time for loss computation at iteration {iteration:>2}: {elapsed_time:>2.6f} s")
-
-            # Update the tracking dictionaries. Remember that mutable objects are passed by reference so any modification to them would reflect in the dictionary if we dont copy
-            values_track['loss_track']['loglikelihood'][iteration].copy_(loglikelihood)
-            values_track['loss_track']['KL'][iteration].copy_(KL_div)
-            values_track['loss_track']['logmarginal'][iteration].copy_(loglikelihood-KL_div)
-
-            # Theta before the Mstep of iteration "i" is the one used to build the kernel of the E-step of iteration "i+1". 
-            # The theta we are saving here is the one we just used.
-            for key in theta.keys():
-                values_track['theta_track'][key][iteration].copy_(theta[key])
-
-            values_track['f_par_track']['logA'][iteration].copy_(f_params['logA'])
-            if 'lambda0' in f_params:
-                values_track['f_par_track']['lambda0'][iteration].copy_(f_params['lambda0'])
-            elif 'loglambda0' in f_params:
-                values_track['f_par_track']['loglambda0'][iteration].copy_(f_params['loglambda0'])                
-
-
-            values_track['variation_par_track']['V_b'] += (V_b.clone(),)
-            values_track['variation_par_track']['m_b'] += (m_b.clone(),)
-
-            print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
-
-            # region _________ Check loss stabilization __________
-            # If loss hasn't changed in the last 5 iterations, break the loop
-            if iteration >= 5:
-                # Get the loss values for the last 5 iterations
-                recent_losses = [values_track['loss_track']['logmarginal'][i] for i in range(iteration-4, iteration+1)]
-                recent_losses_tensor = torch.tensor(recent_losses)
-                loss_range = torch.abs(recent_losses_tensor.max() - recent_losses_tensor.min())
-                if loss_range < LOSS_STOP_TOL:
-                    print(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
-                    raise LossStagnationError(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
-            # endregion
-
-            #endregion
-
-            #region ________________ M-Step : Update on hyperparameters theta  ________________
-
-            start_time_mstep = time.time()
-            if nMstep > 0 and iteration < maxiter-1: 
-                # Skip the M-step in the last iteration to avoid generating a new eigenspace that will not be used by V and m
-
-                print(f' Mstep of iteration {iteration}')
-                if iteration > 1:
-                    del optimizer_hyperparams
-                optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_Mstep, max_iter=nMstep, line_search_fn='strong_wolfe', 
-                                                          tolerance_change=1.e-9, tolerance_grad=1.e-7, history_size=100)
     
-                CLOSURE2_COUNTER = [0]
-                @torch.no_grad()
-                def closure_hyperparams( ):
-                    CLOSURE2_COUNTER[0] += 1
-                    optimizer_hyperparams.zero_grad()
-                    # if any hyperparameter is out of bounds, return infinite loss to signal the optimizer to revaluate the step size
-                    return_infinite_loss = False
-                    for key, value in theta.items():
-                        if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
-                            return_infinite_loss = True
-                            print(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}, returning infinite loss in closure call {CLOSURE2_COUNTER[0]}")
-                            if theta[key].requires_grad:
-                                theta[key].grad = torch.tensor(float('inf'))
-                    if return_infinite_loss: return torch.tensor(float('inf'))
+    except Exception as e:
+        print(f'...GP Thread: Error during initialization : {e}')
+        err_dict['is_error'] = True
+        err_dict['error'] = e
+        err_dict['during_init'] = True
 
-                    C, mask, dC       = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
-                    K_tilde, dK_tilde = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
-                    K, dK             = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False) if ntilde != nt else (K_tilde, dK_tilde) 
-                    Kvec, dKvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
+    else:
 
-                    #region ____________Stabilization____________________
-                    # Note on Stabilization
-                    # The eigenvector matrix is not recalculated during the M-step. 
-                    # This is not entirely precise because a change in hyperparameters could change the eigenvalues 
-                    # over the threshold (and therefore change the dimension of the subspace I'm projecting onto)
-                    # But this most likely has a minimal effect. And it saves nMstep eigenvalue decompositions per iteration.
-                    # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
+        if not err_dict['during_init']:
+            try:    
+                #_______________________ Main Loop ___________
+                for iteration in range(1,maxiter):
 
-                    # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters/Kernel)
-                    K_tilde_b = B.T@K_tilde@B                 # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
-                    K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5 # make sure it is symmetric
-                    K_b  = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
+                    # print(f'*Iteration*: {iteration}', end='')
 
-                    # If eigenspace B has been recalculated, one has to reproject m and V into the new eigenspace
-                    # V_b_new = B.T@(B_old@V_b@B_old.T)@B
-                    # V_b     = V_b_new
-                    # m_b_new = B.T @ B_old @ m_b
-                    # m_b = m_b_new
+                    #region ________________ Computing Kernel and Stabilization____________________
+                    # Compute starting Kernel, if no M-step -> only compute it once cause it's not changing
+                    start_time_computing_kernels = time.time()
+                    if nMstep > 0 and iteration > 1:
+                        #________________ Compute the KERNELS after M-Step and the inverse of V _____________
+                        C, mask    = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)                
+                        K_tilde    = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)                                   # shape (ntilde, ntilde)
+                        K          = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)      if ntilde != nt else K_tilde      # shape (nt, ntilde) set of row vectors K_i for every input 
+                        Kvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=None, diag=True)                                                # shape (nt)
+                        
+                        eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
+                        ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
+                    
+                        B_old = B 
+                        B = eigvecs[:, ikeep]                                                  # shape (ntilde, n_eigen)            
+                        # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
+                        K_tilde_b     = torch.diag(eigvals[ikeep])                                 # shape (n_eigen, n_eigen)
+                        # K_tilde_inv_p = torch.diag_embed(1/eigvals)                              # We keep the latest inverse of the complete K_tilde just to return it and be fast in computing the inverse of the incremented K_tilde if needed ( active learning )
+                        K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])                     # shape (n_eigen, n_eigen)
+                        K_b           = K @ B                                                      # shape (3190, n_eigen)
+                        KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B             # shape (nt, n_eigen) # this is 'a' in matthews code                         
+                
+                        # In the following iterations we already have V_b (maybe updated in an E-step) and if Mstep > 0 we changed the eigenspace,
+                        # Get V_b_new referring to this new eigenspace as:
+                        #       V_b_new = (B_new.T@V)@B_new 
+                        # Where V       = B_old@V_b_old@B_old.T, so
 
-                    # Projection of the gradients of the Kernel into the eigenspace
-                    dK_tilde_b, dK_b = {}, {}
-                    for key in dK_tilde.keys():
-                        dK_tilde_b[key] = B.T@dK_tilde[key]@B
-                        dK_b[key]       = dK[key] @ B                     
+                        # V_b_new       = B_new.T@(B_old@V_b_old@B_old.T)@B_new and
+                        # m_b_new       = B_new.T @ B_old @ m_b_old 
+
+                        # Note that we might have augmented the dimension of the eigenspace, this might leave very small eigenvalues in V_b_new
+                        # This will not be necessaraly invertible (or posdef ). This might be problem in the Estep when using alpha != 1.
+                        # This matrix is not numerically simmetric for precision higher than 1.e-13 even if it should be arount 1.e-15, hence the choice of MIN_TOLERANCE 1.e-13
+                        # V_b is guaranteed to be simmetric (and posdef) only when coming out of E step
+                        # It will be used only in each first estep iteration. To calculate the lambda moments. It never gave numerical problems but might be a source loss of precision
+                        V_b_new = B.T@(B_old@V_b@B_old.T)@B                   
+                        V_b     = V_b_new                                     
+
+                        # smallest_eig = torch.linalg.eigh(V_b)[0].min()
+                        # if smallest_eig <= 0.:
+                            # warnings.warn(f'Matrix V_b is simmetric but has an eigenvalue smaller than 0 ')
+
+                        m_b_new = B.T @ B_old @ m_b
+                        m_b     = m_b_new
+
+                    time_computing_kernels += time.time() - start_time_computing_kernels
+                    #endregion 
+
+                    #region  _______________ Control over possible Nans ______
+                    # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['lambda0']]:
+                    # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['loglambda0']]:                
+                    # # for tensor in [C, K_tilde_b, K_b, KKtilde_inv_b, V_b, m_b, f_params['logA'], f_params['tanhlambda0']]:                                
+                    #     if torch.any(torch.isnan(tensor)):
+                    #         variable_name = [k for k, v in locals().items() if v is tensor][0]
+                    #         raise ValueError(f'NaN in {variable_name}')
+                    #     if torch.any(torch.isinf(tensor)):
+                    #         variable_name = [k for k, v in locals().items() if v is tensor][0]
+                    #         raise ValueError(f'Inf in {variable_name}')
+                    #endregion
+                    
+                    #region ________________ E-Step : Update on m & V and f(lambda) parameters ________
+                    start_time_estep = time.time()
+                    if nEstep > 0:
+                        # print(f'Estep in iteration {iteration}')
+
+                        for i_estep in range(1):
+                            # print(f'   Estep n {i_estep}')
+
+                            # Update lambda moments only if the kernel has changed or if it's the first iteration
+                            # They are update again after the Estep
+                            if i_estep == 0 and nMstep > 0:
+                                lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)  
+
+                                # feature 2: lambda0
+                                # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+
+                            # Tracking the time for the f_params update, the f_mean computation would not be here if there was no update
+                            start_time_f_params = time.time()
+                            f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var) # Since f_params influece f_mean, we need to update it at each estep
+                            time_f_params_total += time.time()-start_time_f_params
+
+                            #region ____________ Update m, V ______________
+                            for _ in range(nEstep):
+                                m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
+                                                    K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, update_V_inv=False, alpha=1  ) # Do not change udpate_V_inv or alpha, read Estep docs
+
+                                # And the things that depend on them ( moments of lambda )
+                                f_mean, lambda_m, lambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], 
+                                                                        K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, 
+                                                                        K=K_b, C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, 
+                                                                        lambda_m=None, lambda_var=None  )
+                            
+                            #endregion
+
+                            #region ____________ Update f_params ______________ 
+                            # if i_estep > 0:
+                            f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+
+                            # lr_f_params = 0.01 # learning rate
+                        #lr_Fparamstep = 0.1  # what we use usually
+                            # lr_f_params = 1
+                            optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_Fparamstep, max_iter=nFparamstep, 
+                                                                    tolerance_change=1.e-9, tolerance_grad=1.e-7,
+                                                                    history_size=nFparamstep, line_search_fn='strong_wolfe')
+                            start_time_f_params = time.time()
+                            CLOSURE2_COUNTER = [0]
+                            @torch.no_grad()
+                            def closure_f_params( ):
+                                CLOSURE2_COUNTER[0] += 1
+                                optimizer_f_params.zero_grad()
+                                nonlocal f_mean          # Update f_mean of the outer scope each time the closure is called
+                                # Lambda0 feature 3
+
+                                # Each time the closure is called the optimizer expects the value of the loss. It might be using it to explore how big of a step to take (line search) or actually updating the parameters ( logA)
+                                # We need the optimizer to evaluate the loss with the optimal lambda0 parameter given logA, so we update it here, before computing all the other things that depend on it.
+
+                                f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                                f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
+
+                                loglikelihood, dloglikelihood = compute_loglikelihood(  r,  f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=True )                       
+                                # print(f' -logmarginal = {(-loglikelihood.item() + KL.item()):.4f} -loglikelihood = {-loglikelihood.item():.4f}  KL = {KL.item():.4f}')
+
+                                # Update gradients of the loss with respect to the firing rate parameters
+                                # The minus here is because we are minimizing the negative loglikelihood
+                                f_params['logA'].grad    = -dloglikelihood['logA']    #if f_params['logA'].requires_grad else None
+
+
+                                if 'lambda0' in f_params:
+                                    f_params['lambda0'].grad = -dloglikelihood['lambda0']        if f_params['lambda0'].requires_grad else None
+                                elif 'loglambda0' in f_params:
+                                    f_params['loglambda0'].grad = -dloglikelihood['loglambda0']  if f_params['loglambda0'].requires_grad else None
+        
+                                # if torch.any(torch.isnan(f_mean)):
+                                    # raise ValueError(f'Nan in f_mean during f param update in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration. Try substituting them with inf.')
+                                # if  torch.any( f_mean > 1.e4):
+                                    # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
+
+                                if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
+                                    print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}, returning infinite loss')
+                                    return torch.tensor(float('inf'))
+                                
+                                return -loglikelihood
+
+                            optimizer_f_params.step(closure_f_params)        
+                            
+                            f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var) # the optimal logA value found by the optimizer might not be the one used in the last closure call. We need to make sure lambda0 is updated.
+
+                            if f_mean.mean() > 100:
+                                print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
+
+
+                            time_f_params_total += time.time()-start_time_f_params
+                            #endregion
+                    else: print('No E-step')
+
+                    time_estep = time.time()-start_time_estep
+                    time_estep_total += time_estep 
+                    # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s', end='')
+                    #endregion                       
+                
+                    #region ________________ Update the tracking dictionaries _______________  
+
+                    # Update the value every x iterations. 
+                    # We are doing it here to avoid having to project V_b and m_b to the updated eigenspace. 
+                    # This might pose numerical problem if alpha!=1 as explained in the docs, 
+                    # But even in the alpha=1 case the value of the almost singular reprojected V_b would be used for the loss, leading to expliding values sometimes
+                    #  ( its only a tracking problem ) 
+                    
+                    if iteration % 1 == 0 or iteration == maxiter-1:
+
+                        start_time_computing_loss = time.time()
+                        # lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
+                        
+                        f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+
+                        loglikelihood, _, __ = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, compute_grad_for_f_params=False)
+
+                        KL_div               = compute_KL_div( m_b, V_b, K_tilde_b, K_tilde_inv_b, dK_tilde=None, ignore_warning=True )
+                        logmarginal          = loglikelihood - KL_div   
+
+                        time_computing_loss += time.time()-start_time_computing_loss
+                        # print(f" TOT time for loss computation at iteration {iteration:>2}: {tot_elapsed_time:>2.6f} s")
+                        # print(f"     time for loss computation at iteration {iteration:>2}: {elapsed_time:>2.6f} s")
+
+                    # Update the tracking dictionaries. Remember that mutable objects are passed by reference so any modification to them would reflect in the dictionary if we dont copy
+                    values_track['loss_track']['loglikelihood'][iteration].copy_(loglikelihood)
+                    values_track['loss_track']['KL'][iteration].copy_(KL_div)
+                    values_track['loss_track']['logmarginal'][iteration].copy_(loglikelihood-KL_div)
+
+                    # Theta before the Mstep of iteration "i" is the one used to build the kernel of the E-step of iteration "i+1". 
+                    # The theta we are saving here is the one we just used.
+                    for key in theta.keys():
+                        values_track['theta_track'][key][iteration].copy_(theta[key])
+
+                    values_track['f_par_track']['logA'][iteration].copy_(f_params['logA'])
+                    if 'lambda0' in f_params:
+                        values_track['f_par_track']['lambda0'][iteration].copy_(f_params['lambda0'])
+                    elif 'loglambda0' in f_params:
+                        values_track['f_par_track']['loglambda0'][iteration].copy_(f_params['loglambda0'])                
+
+
+                    values_track['variation_par_track']['V_b'] += (V_b.clone(),)
+                    values_track['variation_par_track']['m_b'] += (m_b.clone(),)
+
+                    print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
+
+                    # region _________ Check loss stabilization __________
+                    # If loss hasn't changed in the last 5 iterations, break the loop
+                    if iteration >= 5:
+                        # Get the loss values for the last 5 iterations
+                        recent_losses = [values_track['loss_track']['logmarginal'][i] for i in range(iteration-4, iteration+1)]
+                        recent_losses_tensor = torch.tensor(recent_losses)
+                        loss_range = torch.abs(recent_losses_tensor.max() - recent_losses_tensor.min())
+                        if loss_range < LOSS_STOP_TOL:
+                            print(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
+                            raise LossStagnationError(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
+                    # endregion
+
                     #endregion
 
-                    # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
-                    # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
-                    K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
-                    KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
+                    #region ________________ M-Step : Update on hyperparameters theta  ________________
 
-                    f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
-                                                                                C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
-                    
-                    # feature 2: lambda0
-                    # lambda0_estimation_start_time = time.time()
-                    # temp_f_params = {'logA':f_params['logA'], 'lambda0':lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
-                    # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
-                    # time_lambda0_estimation += time.time()-lambda0_estimation_start_time
+                    start_time_mstep = time.time()
+                    if nMstep > 0 and iteration < maxiter-1: 
+                        # Skip the M-step in the last iteration to avoid generating a new eigenspace that will not be used by V and m
 
-                    # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, temp_f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
-                    loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
-                    KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
-                    logmarginal                   = loglikelihood - KL
-                    
-                    l = -logmarginal
-                    # print(f' {l.item():.4f} = logmarginal in m-step - closure call {CLOSURE2_COUNTER[0]}')   
-
-
-                    # Dictionary of gradients of the -loss with respect to the hyperparameters, to be assigned to the gradients of the parameters
-                    # Update the gradients of the loss with respect to the hyperparameters ( its minus the gradeints of the logmarginal)
-                    dlogmarginal = {}
-                    for key in theta.keys():
-                        dlogmarginal[key] = dloglikelihood[key] - dKL[key]
-                        if theta[key].requires_grad:
-                            theta[key].grad = -dlogmarginal[key]
-                        # dlogmarginal[key] = -dKL[key]
-                        # if theta[key].requires_grad:
-                        #         theta[key].grad = -dlogmarginal[key]                            
-
-                    # print_hyp(theta)
+                        print(f' Mstep of iteration {iteration}')
+                        if iteration > 1:
+                            del optimizer_hyperparams
+                        optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_Mstep, max_iter=nMstep, line_search_fn='strong_wolfe', 
+                                                                tolerance_change=1.e-9, tolerance_grad=1.e-7, history_size=100)
             
-                    # In case you want to implement the simplest gradient descent, you can use this and call closure_hyperparams() directly   
-                    # for key in theta.keys():
-                    #     if theta[key].requires_grad:
-                    #         theta[key] = theta[key] - 0.0001*theta[key].grad
-                    # print(f'   m-step loss: {-logmarginal.item():.4f}')
-                    # return -KL
-                    return l
-            
-                optimizer_hyperparams.step(closure_hyperparams)
+                        CLOSURE2_COUNTER = [0]
+                        @torch.no_grad()
+                        def closure_hyperparams( ):
+                            CLOSURE2_COUNTER[0] += 1
+                            optimizer_hyperparams.zero_grad()
+                            # if any hyperparameter is out of bounds, return infinite loss to signal the optimizer to revaluate the step size
+                            return_infinite_loss = False
+                            for key, value in theta.items():
+                                if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
+                                    return_infinite_loss = True
+                                    print(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}, returning infinite loss in closure call {CLOSURE2_COUNTER[0]}")
+                                    if theta[key].requires_grad:
+                                        theta[key].grad = torch.tensor(float('inf'), device=DEVICE)
+                            if return_infinite_loss: return torch.tensor(float('inf'), device=DEVICE)
 
-                # mstep_time = time.time()-start_time_mstep
-                # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
+                            C, mask, dC       = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=True)
+                            K_tilde, dK_tilde = kernfun( theta, xtilde[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False)
+                            K, dK             = kernfun( theta, x[:,mask], xtilde[:,mask], C=C, dC=dC, diag=False) if ntilde != nt else (K_tilde, dK_tilde) 
+                            Kvec, dKvec       = kernfun( theta, x[:,mask], x2=None, C=C, dC=dC, diag=True) 
 
-            else: 
-                if iteration < maxiter-1: print(' No M-step')
-            time_mstep        = time.time()-start_time_mstep
-            time_mstep_total += time_mstep
-            #endregion __________________________________________
+                            #region ____________Stabilization____________________
+                            # Note on Stabilization
+                            # The eigenvector matrix is not recalculated during the M-step. 
+                            # This is not entirely precise because a change in hyperparameters could change the eigenvalues 
+                            # over the threshold (and therefore change the dimension of the subspace I'm projecting onto)
+                            # But this most likely has a minimal effect. And it saves nMstep eigenvalue decompositions per iteration.
+                            # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
 
-    except KeyboardInterrupt as e:
+                            # Projecting the Kernel into the same eigenspace used in the E-step (its not changing with the changing hyperparameters/Kernel)
+                            K_tilde_b = B.T@K_tilde@B                 # Projection of K_tilde into eigenspace (n_eigen,n_eigen) 
+                            K_tilde_b = (K_tilde_b + K_tilde_b.T)*0.5 # make sure it is symmetric
+                            K_b  = K @ B                              # Project K into eigenspace, shape (3190, n_eigen)
 
-        print(' ===================  Interrupted  ===================\n')
-        print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
+                            # If eigenspace B has been recalculated, one has to reproject m and V into the new eigenspace
+                            # V_b_new = B.T@(B_old@V_b@B_old.T)@B
+                            # V_b     = V_b_new
+                            # m_b_new = B.T @ B_old @ m_b
+                            # m_b = m_b_new
 
-        #region _________ Adjust to the last available values _________
-        fit_parameters['maxiter'] = iteration
-        if fit_parameters['maxiter'] <= 1: 
-            print('Too few iterations iterations were done to save')
-            err_dict['is_error'] = True
-            err_dict['error'] = e    
-            raise e
+                            # Projection of the gradients of the Kernel into the eigenspace
+                            dK_tilde_b, dK_b = {}, {}
+                            for key in dK_tilde.keys():
+                                dK_tilde_b[key] = B.T@dK_tilde[key]@B
+                                dK_b[key]       = dK[key] @ B                     
+                            #endregion
 
-        last_theta = {}
-        for theta_key in theta.keys():
-            last_theta[theta_key] = values_track['theta_track'][theta_key][iteration-1] # We go back 2 steps cause that is the value of theta for which f_params were optimized 
-        theta = last_theta                                                              # and eigenvectors were calculated ( therefore onto which the last used V-b was projected )
+                            # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
+                            # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
+                            eye = torch.eye(K_tilde_b.shape[0], device=DEVICE, dtype=TORCH_DTYPE)
+                            K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye)
+                            KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
 
-        f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
-        if 'lambda0' in f_params:
-            f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
-        elif 'loglambda0' in f_params:
-            f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1] 
-        # f_params['tanhlambda0'] = values_track['f_par_track']['tanhlambda0'][iteration-1]
+                            f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
+                                                                                        C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, lambda_m=None, lambda_var=None, dK=dK_b, dK_tilde=dK_tilde_b, dK_vec=dKvec, K_tilde_inv=K_tilde_inv_b) # Shape (nt
+                            
+                            # feature 2: lambda0
+                            # lambda0_estimation_start_time = time.time()
+                            # temp_f_params = {'logA':f_params['logA'], 'lambda0':lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)}
+                            # f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+                            # time_lambda0_estimation += time.time()-lambda0_estimation_start_time
 
-        V_b = values_track['variation_par_track']['V_b'][iteration-1]
-        m_b = values_track['variation_par_track']['m_b'][iteration-1]
+                            # loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, temp_f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
+                            loglikelihood, dloglikelihood = compute_loglikelihood(r, f_mean, lambda_m, lambda_var, f_params, dlambda_m=dlambda_m, dlambda_var=dlambda_var )
+                            KL, dKL                       = compute_KL_div(m_b, V_b, K_tilde_b, K_tilde_inv=K_tilde_inv_b, dK_tilde=dK_tilde_b)
+                            logmarginal                   = loglikelihood - KL
+                            
+                            l = -logmarginal
+                            # print(f' {l.item():.4f} = logmarginal in m-step - closure call {CLOSURE2_COUNTER[0]}')   
 
-        # eigvals = values_track['subspace_track']['eigvals'][iteration-1]
-        # eigvecs = values_track['subspace_track']['eigvecs'][iteration-1]
+
+                            # Dictionary of gradients of the -loss with respect to the hyperparameters, to be assigned to the gradients of the parameters
+                            # Update the gradients of the loss with respect to the hyperparameters ( its minus the gradeints of the logmarginal)
+                            dlogmarginal = {}
+                            for key in theta.keys():
+                                dlogmarginal[key] = dloglikelihood[key] - dKL[key]
+                                if theta[key].requires_grad:
+                                    theta[key].grad = -dlogmarginal[key]
+                                # dlogmarginal[key] = -dKL[key]
+                                # if theta[key].requires_grad:
+                                #         theta[key].grad = -dlogmarginal[key]                            
+
+                            # print_hyp(theta)
+                    
+                            # In case you want to implement the simplest gradient descent, you can use this and call closure_hyperparams() directly   
+                            # for key in theta.keys():
+                            #     if theta[key].requires_grad:
+                            #         theta[key] = theta[key] - 0.0001*theta[key].grad
+                            # print(f'   m-step loss: {-logmarginal.item():.4f}')
+                            # return -KL
+                            return l
+                    
+                        optimizer_hyperparams.step(closure_hyperparams)
+
+                        # mstep_time = time.time()-start_time_mstep
+                        # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
+
+                    else: 
+                        if iteration < maxiter-1: print(' No M-step')
+                    time_mstep        = time.time()-start_time_mstep
+                    time_mstep_total += time_mstep
+                    #endregion __________________________________________
+
+            except KeyboardInterrupt as e:
+
+                print(' ===================  Interrupted  ===================\n')
+                print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
+
+                #region _________ Adjust to the last available values _________
+                fit_parameters['maxiter'] = iteration
+                if fit_parameters['maxiter'] <= 1: 
+                    print('Too few iterations iterations were done to save')
+                    err_dict['is_error'] = True
+                    err_dict['error'] = e    
+                    raise e
+
+                last_theta = {}
+                for theta_key in theta.keys():
+                    last_theta[theta_key] = values_track['theta_track'][theta_key][iteration-1] # We go back 2 steps cause that is the value of theta for which f_params were optimized 
+                theta = last_theta                                                              # and eigenvectors were calculated ( therefore onto which the last used V-b was projected )
+
+                f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
+                if 'lambda0' in f_params:
+                    f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
+                elif 'loglambda0' in f_params:
+                    f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1] 
+                # f_params['tanhlambda0'] = values_track['f_par_track']['tanhlambda0'][iteration-1]
+
+                V_b = values_track['variation_par_track']['V_b'][iteration-1]
+                m_b = values_track['variation_par_track']['m_b'][iteration-1]
+
+                # eigvals = values_track['subspace_track']['eigvals'][iteration-1]
+                # eigvecs = values_track['subspace_track']['eigvecs'][iteration-1]
 
 
-        err_dict['is_error'] = True
-        err_dict['error'] = e 
+                err_dict['is_error'] = True
+                err_dict['error'] = e 
 
-    except Exception as e: # Handle any other exception in the same way as KeyboardInterrupt
-        
-        if isinstance( e, LossStagnationError):
-            print(f' ===================  Loss stagnating at iteration: {iteration} =================== \n')
-            print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
-        else:            
-            print(f' ===================  Error During iteration: {iteration} =================== \n')
-            print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
+            except Exception as e: # Handle any other exception in the same way as KeyboardInterrupt
+                
+                if isinstance( e, LossStagnationError):
+                    print(f' ===================  Loss stagnating at iteration: {iteration} =================== \n')
+                    print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
+                else:            
+                    print(f' ===================  Error During iteration: {iteration} =================== \n')
+                    print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
 
-        #region _________ Adjust to the last available values _________
-        fit_parameters['maxiter'] = iteration
-        if fit_parameters['maxiter'] <= 1: 
-            print('Too few iterations iterations were done to save')
-            err_dict['is_error'] = True
-            err_dict['error'] = e    
-            raise e
+                #region _________ Adjust to the last available values _________
+                fit_parameters['maxiter'] = iteration
+                if fit_parameters['maxiter'] <= 1: 
+                    print('Too few iterations iterations were done to save')
+                    err_dict['is_error'] = True
+                    err_dict['error'] = e    
+                    raise e
 
-        last_theta = {}
-        for theta_key in theta.keys():
-            last_theta[theta_key] = values_track['theta_track'][theta_key][iteration-1] # We go bag 2 steps cause that is the value of theta for whihc f_params were optimized and eigenvectors 
-            # were calculated ( therefore onto which V-b was projected )
-        theta = last_theta
+                last_theta = {}
+                for theta_key in theta.keys():
+                    last_theta[theta_key] = values_track['theta_track'][theta_key][iteration-1] # We go bag 2 steps cause that is the value of theta for whihc f_params were optimized and eigenvectors 
+                    # were calculated ( therefore onto which V-b was projected )
+                theta = last_theta
 
-        f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
-        if 'lambda0' in f_params:
-            f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
-        elif 'loglambda0' in f_params:
-            f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1]            
+                f_params['logA']    = values_track['f_par_track']['logA'][iteration-1]
+                if 'lambda0' in f_params:
+                    f_params['lambda0'] = values_track['f_par_track']['lambda0'][iteration-1]
+                elif 'loglambda0' in f_params:
+                    f_params['loglambda0'] = values_track['f_par_track']['loglambda0'][iteration-1]            
 
-        V_b = values_track['variation_par_track']['V_b'][iteration-1]
-        m_b = values_track['variation_par_track']['m_b'][iteration-1]
+                V_b = values_track['variation_par_track']['V_b'][iteration-1]
+                m_b = values_track['variation_par_track']['m_b'][iteration-1]
 
-        err_dict['is_error'] = True
-        err_dict['error'] = e 
+                err_dict['is_error'] = True
+                err_dict['error'] = e 
 
     finally: 
+        print('Startig finally block')
+        final_start_time = time.time()
 
-            final_start_time = time.time()
+        if not err_dict['during_init']:
             if err_dict['is_error']:
                 # If execution was interrupted, the values of the Kernel have yet to be updated
                 C, mask    = localker(theta=theta, theta_higher_lims=theta_higher_lims, theta_lower_lims=theta_lower_lims, n_px_side=n_px_side, grad=False)
@@ -3503,7 +3875,7 @@ def varGP(x, r, **kwargs):
 
             #     ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)   # Keep only the largest eigenvectors
             #     B = eigvecs[:, ikeep]                                           # shape (ntilde, n_eigen)            
-    
+
             #     V_b = B.T@(B_old@V_b@B_old.T)@B                                 # NOTE: there is a high chance of this V not being posdef since is being projected on a new eigenspace
             #     m_b = B.T @ B_old @ m_b'''
         
@@ -3576,8 +3948,7 @@ def varGP(x, r, **kwargs):
                 'values_track':      values_track
             }
 
-
-                #region _________ Memory usage___________
+            #region _________ Memory usage___________
             # memory = 0
             # for dict in values_track.values():
             #     for key in dict.keys():
@@ -3602,7 +3973,11 @@ def varGP(x, r, **kwargs):
             # reserved_MB = reserved_bytes / (1024 ** 2)
             # print(f"Final Reserved (cached) memory: {reserved_MB:.2f} MB")
             #endregion _________ Memory usage___________
-            return fit_model, err_dict
+        else:
+            print("Returning None as fit model")
+            fit_model = None
+
+        return fit_model, err_dict
     
         # else:
             # raise Exception('Error')
