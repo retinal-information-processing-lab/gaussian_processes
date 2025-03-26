@@ -97,7 +97,6 @@ class GPModel:
                     else:
                         attributes.append(f"{attr}={value}")
             return f"KernelValues({', '.join(attributes)})"
-
     class Hyperparameters:
         """
         A nested class to store and manage model hyperparameters that were previously
@@ -246,15 +245,16 @@ class GPModel:
         self.min_tolerance = None
         self.eigval_tol = None
         
-        # Other model components - no more leading underscores
+        # Other model components 
         self.xtilde = None
+        self.spike_counts = None
         self.hyperparams_tuple = None
         self.hyperparams_obj = None  # Public attribute for Hyperparameters object
         self.f_params = {}
         self.values_track = None
         self.description = None
         
-        # Kernel specific components - no more leading underscores
+        # Kernel specific components 
         self.final_kernel_dict = None   # kept for backward compatibility
         self.init_kernel_dict = None    # kept for backward compatibility
         self.final_kernel_values = None # KernelValues instance for final kernel
@@ -270,6 +270,8 @@ class GPModel:
         self.K_b = None
         self.Kvec = None
         self.B = None
+
+        self.model_type = 'None' # active, random or full?
         
         # If a model dictionary is provided, populate from it
         if model_dict is not None:
@@ -288,7 +290,7 @@ class GPModel:
             # Check for kernel values in kwargs - special handling for dictionary conversion
             if 'init_kernel' in kwargs:
                 self.init_kernel_values = self.KernelValues.from_dict(kwargs['init_kernel'])
-    
+
     def from_dict(self, model_dict: Dict):
         """Convert a model dictionary to GPModel attributes."""
         # Extract fit parameters to direct attributes
@@ -325,6 +327,9 @@ class GPModel:
         # Set other model components
         if 'xtilde' in model_dict:
             self.xtilde = model_dict['xtilde']
+
+        if 'spike_counts' in model_dict:
+            self.spike_counts = model_dict['spike_counts']
             
         if 'hyperparams_tuple' in model_dict:
             self.hyperparams_tuple = model_dict['hyperparams_tuple']
@@ -367,10 +372,58 @@ class GPModel:
             
         if 'B' in model_dict:
             self.B = model_dict['B']
+
+        if 'model_type' in model_dict:
+            self.model_type = model_dict['model_type']
         
         # Sync kernel components with KernelValues for consistency
         # self.sync_kernel_components()
-    
+
+    @classmethod
+    def upload_model(cls, directory, model_name):
+        """
+        Loads a complete GPModel instance from a file saved with save_model.
+        
+        Args:
+            directory (str or Path): Directory where the model is saved
+            model_name (str): Name of the model file
+            
+        Returns:
+            GPModel: The loaded model instance
+        """
+        import os
+        import pickle
+        
+        # Create full path
+        model_pathname = os.path.join(directory, model_name)
+        
+        # Check if file exists
+        if not os.path.exists(model_pathname):
+            raise FileNotFoundError(f"Model file not found: {model_pathname}")
+        
+        try:
+            # For safer unpickling, load as dictionary first
+            with open(model_pathname, 'rb') as f:
+                model_dict = pickle.load(f)
+                
+            # If a dictionary was loaded, convert it to a model
+            if isinstance(model_dict, dict):
+                model = cls(model_dict=model_dict)
+            # If a GPModel was directly loaded
+            elif isinstance(model_dict, cls):
+                model = model_dict
+            else:
+                raise TypeError(f"Loaded object is neither a GPModel nor a model dictionary")
+                
+            print(f"Loaded model: {model_name}")
+            print(f"Model type: {model.model_type}, Training examples: {model.in_use_idx.shape[0] if model.in_use_idx is not None else 0}")
+            
+            return model
+            
+        except Exception as e:
+            print(f"Error loading model from {model_pathname}: {e}")
+            raise
+
     def sync_kernel_components(self):
         """Synchronize individual kernel components with kernel values objects."""
         # Use final kernel values if available, otherwise use working kernel values
@@ -412,6 +465,9 @@ class GPModel:
         # Add other model components
         if self.xtilde is not None:
             model_dict['xtilde'] = self.xtilde
+
+        if self.spike_counts is not None:
+            model_dict['spike_counts'] = self.spike_counts
             
         if self.hyperparams_tuple is not None:
             model_dict['hyperparams_tuple'] = self.hyperparams_tuple
@@ -455,7 +511,9 @@ class GPModel:
             
         if self.B is not None:
             model_dict['B'] = self.B
-            
+        
+        if self.model_type is not None:
+            model_dict['model_type'] = self.model_type
         return model_dict
     
     def set_general_model_params(self, old_model):
@@ -477,6 +535,7 @@ class GPModel:
         self.lr_Fparamstep = old_model.lr_Fparamstep
         self.min_tolerance = old_model.min_tolerance
         self.eigval_tol    = old_model.eigval_tol
+        self.model_type    = old_model.model_type
 
     # Only necessary getter - for derived property
     @property
@@ -496,11 +555,153 @@ class GPModel:
         if self.hyperparams_obj:
             self.hyperparams_tuple = self.hyperparams_obj.to_tuple()
 
+    def save_light_model(self, directory, model_name, threadict):
+        """
+        Saves a lightweight version of the model containing only essential components.
+        
+        This method creates a minimal representation of the model for fast saving,
+        keeping only index information, spike counts, and core parameters.
+        
+        Args:
+            directory (str): Path where to save the model
+            
+        Returns:
+            bool: True if successful
+        """    
+        # Create a dictionary with only essential components
+        light_model = {
+            # Index variables (essential for dataset reconstruction)
+            'in_use_idx': self.in_use_idx,
+            'all_idx_perm': self.all_idx_perm,
+            'xtilde_idx': self.xtilde_idx,
+            'start_idx': self.start_idx,
+            
+            # Response data
+            'spike_counts': self.spike_counts,
+            
+            # Model identification
+            'model_type': self.model_type,
+            'cellid': self.cellid,
+            
+            # Basic model parameters (small footprint)
+            'n_px_side': self.n_px_side,
+            'ntilde': self.ntilde,
+            'maxiter': self.maxiter,
+            'nMstep': self.nMstep,
+            'nEstep': self.nEstep,
+            'nFparamstep': self.nFparamstep,
+            
+            # Variational parameters (needed for predictions)
+            'm_b': self.m_b,
+            'V_b': self.V_b,
+            
+            # Hyperparameters (needed for kernel reconstruction)
+            'hyperparams_tuple': self.hyperparams_tuple,
+            
+            # Function parameters
+            'f_params': self.f_params
+        }
+        
+        description = self.generate_model_summary()
+        
+
+        # Ensure directory exists
+        # os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+
+        model_pathname = directory / model_name
+
+        # Create directory if it doesn't exist
+        if not os.path.exists(directory):
+            with threadict['print_lock']:
+                print(f"Directory {directory} did not exist, creating it" )
+            os.makedirs(directory)
+
+        if os.path.exists(model_pathname):
+            with threadict['print_lock']:
+                answer = input(f"Model {model_pathname} already exists in directory. Overwrite? [y/N]: ")
+
+            if answer.strip().lower().startswith('y'):
+                with threadict['print_lock']:
+                    print(f"Overwriting model")
+                shutil.rmtree(model_pathname)
+            else:
+                with threadict['print_lock']:
+                    print(f'Light model not saved')
+                return
+        
+        # Save using highest protocol for speed
+        with open(model_pathname, 'wb') as f:
+            pickle.dump(light_model, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        return True
+
+    def generate_model_summary(self):
+        """
+        Generate a formatted summary of the model's key parameters.
+        Similar to the description in the original save_model function.
+        """
+        # Helper function to safely format values
+        def safe_format(value, format_spec=">8.4f", default_value="N/A"):
+            if value is None:
+                return default_value
+            try:
+                if hasattr(value, 'item'):
+                    try:
+                        return f"{value.item():{format_spec}}"
+                    except (ValueError, TypeError):
+                        return str(value.item())
+                return f"{value:{format_spec}}"
+            except (ValueError, TypeError):
+                return str(value)
+        
+        # Start building the description
+        desc = [f"Model Summary (Type: {self.model_type}, Cell ID: {self.cellid})"]
+        desc.append("-" * 60)
+        
+        # Basic parameters
+        desc.append(f"Training size: {self.in_use_idx.shape[0] if self.in_use_idx is not None else 0} images")
+        desc.append(f"Parameters: ntilde={self.ntilde}, maxiter={self.maxiter}, nMstep={self.nMstep}, nEstep={self.nEstep}")
+        
+        # Hyperparameters
+        if self.hyperparams_tuple and len(self.hyperparams_tuple) > 0:
+            theta = self.hyperparams_tuple[0]
+            desc.append("\nHyperparameters:")
+            
+            for key in ['sigma_0', 'eps_0x', 'eps_0y', 'Amp', '-2log2beta', '-log2rho2']:
+                if key in theta:
+                    desc.append(f"{key}: {safe_format(theta[key])}")
+                    
+            # Add derived parameters if possible
+            if '-2log2beta' in theta:
+                from gaussian_processes.Spatial_GP_repo.utils import logbetaexpr_to_beta
+                beta = logbetaexpr_to_beta(theta['-2log2beta']).item() if hasattr(logbetaexpr_to_beta(theta['-2log2beta']), 'item') else logbetaexpr_to_beta(theta['-2log2beta'])
+                desc.append(f"beta: {safe_format(beta)}")
+                
+            if '-log2rho2' in theta:
+                from gaussian_processes.Spatial_GP_repo.utils import logrhoexpr_to_rho
+                rho = logrhoexpr_to_rho(theta['-log2rho2']).item() if hasattr(logrhoexpr_to_rho(theta['-log2rho2']), 'item') else logrhoexpr_to_rho(theta['-log2rho2'])
+                desc.append(f"rho: {safe_format(rho)}")
+        
+        # Link function parameters
+        if self.f_params:
+            desc.append("\nLink function parameters:")
+            for key, value in self.f_params.items():
+                desc.append(f"{key}: {safe_format(value)}")
+                
+            # Add derived A value if logA exists
+            if 'logA' in self.f_params and hasattr(self.f_params['logA'], 'exp'):
+                desc.append(f"A: {safe_format(self.f_params['logA'].exp())}")
+        
+        # Join all parts with newlines
+        return "\n".join(desc)
+
     def __repr__(self):
         """Return a detailed string representation of the GPModel."""
         parts = ["GPModel("]
         
         # Core model parameters
+        if self.model_type is not None:
+            parts.append(f"model_type={self.model_type}")
         if self.cellid is not None:
             parts.append(f"cell_id={self.cellid}")
         
