@@ -55,7 +55,7 @@ class LossStagnationError(Exception):
 
 ################## ClosedloopProject ##################
 
-def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
+def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk, n_reshuffles=0):
     
     '''
     Generate training and testing indices to be used to generate the datasets 
@@ -73,8 +73,10 @@ def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk):
     
     '''
     
-    all_idx       = torch.arange(0, n_tot_img_dataset )      # Indices of the whole dataset  
-    all_idx_perm  = torch.randperm(all_idx.shape[0] )        # Random permutation of the indices
+    all_idx       = torch.arange(0, n_tot_img_dataset )      # Indices of the whole dataset 
+    all_idx_perm  = all_idx                                  # Shuffled indices of the whole dataset
+    for i in range(n_reshuffles):
+        all_idx_perm  = torch.randperm(all_idx.shape[0] )    # Random permutation of the indices
 
     test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
     all_idx_perm  = all_idx_perm[~torch.isin( all_idx_perm, test_lk_idx )]     # Remove the test set indices from the permutation
@@ -132,9 +134,18 @@ def threaded_train_GP_phase1(init_model, img_train, spike_counts, threadict):
 
         assert X_in_use.shape[0] == R_in_use.shape[0]
 
+        # Fit the model
         fit_model, err_dict = varGP(X_in_use, R_in_use, **init_model)
 
+        fit_model['model_type']   = init_model['model_type']
+
         if err_dict['is_error']:
+            if isinstance( err_dict['error'] , LossStagnationError):
+                with threadict['print_lock']:
+                    print(f'\n...GP Thread: Loss stagnation detected. Stopping the training')
+                threadict['model_queue'].put(fit_model)
+                return
+        
             threadict['global_stop_event'].set()
             threadict['exceptions_q'].put(err_dict['error'])
             with threadict['print_lock']:
@@ -152,10 +163,6 @@ def threaded_train_GP_phase1(init_model, img_train, spike_counts, threadict):
             print(f'\n...GP Thread: Unexpected ERROR: {e}')
         return
 
-    #         raise err_dict['error']
-        
-    # finally:
-    #     return fit_model
 
 def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
 
@@ -184,11 +191,17 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
         fit_model_dict, err_dict = varGP(X_in_use, R_in_use, **model_dict)
 
         fit_model_dict['all_idx_perm'] = model_dict['fit_parameters']['all_idx_perm']
-        fit_model_dict['in_use_idx'] = model_dict['fit_parameters']['in_use_idx']
+        fit_model_dict['in_use_idx']   = model_dict['fit_parameters']['in_use_idx']
+        fit_model_dict['model_type']   = model.model_type
 
         fit_model = GPModel(model_dict=fit_model_dict)
 
         if err_dict['is_error']:
+            if isinstance( err_dict['error'] , LossStagnationError):
+                with threadict['print_lock']:
+                    print(f'\n...GP Thread: Loss stagnation detected. Stopping the training')
+                threadict['model_queue'].put(fit_model)
+                return
             threadict['global_stop_event'].set()
             threadict['exceptions_q'].put(err_dict['error'])
             with threadict['print_lock']:
@@ -206,12 +219,258 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
             print(f'\n...GP Thread: Unexpected ERROR: {e}')
         return
 
-    #         raise err_dict['error']
+
+def set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train ):
+    '''
+    Sets the model image indexes based on the index new image added
+
+    Returns:
+        X_in_use_new:  The new training set with the best image added
+        xtilde_new:    The new xtilde with the best image added
+        new_img:       The best image added to the training set
+    
+    Args:
+        current_model (GPModel): The current active model
+        new_model (GPModel): The new active model ( empty at the beginning )
+        x_idx_chosen (int): The index of the best image in the total dataset
+        img_train (torch.Tensor): The full image dataset
+
+    Sets:
+        new_model.in_use_idx (torch.Tensor): The new in_use_idx with the best image added
+        new_model.nt (int): The new number of training images
         
-    # finally:
-    #     return fit_model
+        new_model.xtilde (torch.Tensor): The xtilde images #TODO remove?
+        new_model.xtilde_idx (torch.Tensor): The new xtilde_idx with the best image added
+        new_model.ntilde (int): The new number of xtilde images
+    
+    '''
+
+    in_use_idx_new = torch.cat((current_model.in_use_idx, x_idx_chosen))
+    xtilde_idx_new = in_use_idx_new
+
+    new_img        = img_train[x_idx_chosen]
+    X_in_use_new   = torch.cat( (img_train[current_model.in_use_idx], new_img), axis=0 )
+    xtilde_new     = X_in_use_new
+
+    assert in_use_idx_new.shape[0] == xtilde_idx_new.shape[0], 'In use and xtilde indexes must have the same length'
+    assert new_img.mean() == X_in_use_new[-1].mean(), 'The new image is not the last in the X_in_use_new array'
+
+    nt_new              = in_use_idx_new.shape[0]
+    ntilde_new          = xtilde_idx_new.shape[0]
+
+    new_model.in_use_idx = in_use_idx_new
+    new_model.nt         = nt_new
+
+    new_model.xtilde_idx = xtilde_idx_new
+    new_model.xtilde     = xtilde_new
+    new_model.ntilde     = ntilde_new
 
 
+    assert img_train[new_model.in_use_idx[-1]].mean() == X_in_use_new[-1].mean(),\
+        'The last image in the in_use_idx is not the last in X_in_use_new'
+    
+    return X_in_use_new, xtilde_new, new_img
+
+def set_new_model_variational_params( current_model, new_model ):
+    '''
+    Sets variational parameters m and V of the new model, based on the old model. 
+    Used in the closed loop case when adding one image
+
+    To update the variational parameters to the new dimensionality we need to pass through the original space. 
+    V and m will be projected onto the right eigenspace in varGP using the last used B.
+    '''
+
+    # Previous variational parameters
+    B   = current_model.B
+    V_b = current_model.V_b
+    m_b = current_model.m_b
+
+    # On the complete space
+    V = B @ V_b @ B.T    # shape (ntilde-1, ntilde-1)
+    V = 0.5*(V + V.T)    # Ensure symmetry
+    m = B @ m_b          # shape (ntilde-1,)
+
+    # On the complete space +1 dimension
+    V_new = torch.eye(new_model.ntilde)
+    V_new[:new_model.ntilde-1, :new_model.ntilde-1] = V       
+
+    # New variational parameters
+    new_model.V = V_new 
+    new_model.m = torch.cat( (m, m.mean()[None]) )
+
+    assert V_new.device.type == DEVICE.type, 'The new V is not on the right device'
+    assert new_model.m.shape[0] == new_model.ntilde, 'The new m has the wrong shape'
+    assert new_model.V.shape[0] == new_model.ntilde, 'The new V has the wrong shape'
+
+    return 
+
+def project_kernel_matrices(K_tilde, K):
+    '''
+    Projects the kernel matrices K_tilde and K onto the subspace of the largest eigenvectors of K_tilde
+    '''
+    
+    # eigenvalues  are returned in ascending order. 
+    # Uplo=L uses the lower triangular part of the matrix. 
+    # Eigenvectors are columns
+    eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L') 
+    ikeep            = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
+    B                = eigvecs[:, ikeep]                                     
+    # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
+    K_tilde_b        = torch.diag(eigvals[ikeep])                    
+    K_b              = K @ B                                         
+    
+    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep])        
+    # if K_tilde.shape[0]==K.shape[0]: 
+        # KKtilde_inv_b = B 
+    # else K_b @ K_tilde_inv_b:
+
+    assert K_tilde.shape[0]==K.shape[0], 'ntilde and nt must be the same'
+
+    KKtilde_inv_b = B
+
+    return B, K_tilde_b, K_b, K_tilde_inv_b, KKtilde_inv_b
+
+def add_one_img_to_kernel( current_model, X_in_use_new, xtilde_new, new_img ):
+    '''
+    Calculates the kernel matrices K_tilde, K and Kvec for the new image based on a current current_model kernel
+
+    Adds one line to kernel matrices
+    '''
+    theta              = current_model.theta
+    C                  = current_model.C
+    mask               = current_model.mask
+    K_tilde_prev       = current_model.final_kernel_values.K_tilde    # Complete Ktilde used in the prev iteration
+    kernfun            = current_model.kernfun
+
+    # 100 computations of K_tilde this way take ~0.03s.
+    assert xtilde_new[-1].mean() == new_img.mean(), 'The new image is not the last in the xtilde_new array'
+    K_tilde_column  = kernfun(theta, xtilde_new[:,mask], new_img[:,mask], C=C, dC=None, diag=False) 
+    K_tilde_new     = torch.cat((K_tilde_prev, K_tilde_column[:-1]), axis=1)
+    K_tilde_new     = torch.cat((K_tilde_new, K_tilde_column.T), axis=0)  
+
+    if current_model.ntilde==current_model.in_use_idx.shape[0]: K_new = K_tilde_new
+    else: raise NotImplementedError('Fast calculation of K not implemented for ntilde != ntrain')
+
+    Kvec_new        = kernfun(theta, X_in_use_new[:,mask],x2=None, C=C, dC=None, diag=True) 
+
+    return K_tilde_new, K_new, Kvec_new
+
+def get_new_model_kernels( current_model, X_in_use_new, xtilde_new, new_img ):
+    '''
+    Adds one image the kernel matrices K_tilde, K and Kvec with a new image saving them to model.working_kernel_values
+
+    - Calculates the kernel matrices K_tilde, K and Kvec
+    - Projects them into the new subspace of the largest eigenvectors
+
+    '''
+
+    # Calculate the kernel matrices for the new image efficently
+    K_tilde_new, K_new, Kvec_new = add_one_img_to_kernel( 
+        current_model, X_in_use_new, xtilde_new, new_img )
+    
+    # Now project into the subspace of biggest eigenvectors:
+
+    B_new, K_tilde_b, K_b, K_tilde_inv_b, KKtilde_inv_b = project_kernel_matrices(
+        K_tilde_new, K_new )
+    
+    # if nMstep_init != 0: 
+        # raise NotImplementedError('nMstep_init must be 0 for now')
+    
+    return K_tilde_new, K_new, Kvec_new, B_new, K_tilde_b, K_b, K_tilde_inv_b, KKtilde_inv_b
+
+def set_new_model_f_params_and_theta( current_model, new_model ):
+    '''
+    Sets the new model f_params and hyperparameters theta based on the current model f_params
+    '''
+    new_model.f_params = current_model.f_params.copy()
+
+    return
+
+def generate_new_active_model(current_model, x_idx_chosen, img_train, new_spike_counts, light_model=False):
+    '''
+    Generate new active model with a new image added to the training set
+
+    Args:
+        model (GPModel): The current active model
+        x_idx_best (int): The index of the best image in the remaining images ( to be added to the training set)
+        img_train (torch.Tensor): The full image dataset
+    
+    Returns: new_active_model (GPModel):
+        The new untrained active model with the new image added to the kernel
+    
+    '''
+    new_model = GPModel( 
+        old_model=current_model, # This only copies the parameters unrelated to the kernel and other learned params
+        C = current_model.C,
+        mask = current_model.mask, 
+        spike_counts = new_spike_counts,
+            )
+
+    # Update the index variables for the new model with the new image idx
+    X_in_use_new, xtilde_new, new_img = set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train )
+
+    if not light_model:
+        # Update variational parameters m and V in the full space ( no projection)                
+        set_new_model_variational_params( current_model, new_model )
+
+        # Calculate the kernel matrices for the new model with the new image
+        kernel_matrices_tuple = get_new_model_kernels(
+            current_model, X_in_use_new, xtilde_new, new_img )
+        
+        K_tilde, K, Kvec, B, K_tilde_b, K_b, K_tilde_inv_b, KKtilde_inv_b = kernel_matrices_tuple
+
+        # Set initial values for the kernel values of new model
+        new_model.init_kernel_values = new_model.KernelValues(
+            C                 = new_model.C,
+            mask              = new_model.mask, # only true if Mstep=0 and hyperparams dont change
+            K_tilde           = K_tilde,
+            K                 = K,
+            Kvec              = Kvec,
+            B                 = B,
+            K_tilde_b         = K_tilde_b,
+            K_b               = K_b,
+            K_tilde_inv_b     = K_tilde_inv_b,
+            KKtilde_inv_b     = KKtilde_inv_b,
+        )
+        
+        set_new_model_f_params_and_theta( current_model, new_model )
+
+        new_model.hyperparams_obj = current_model.hyperparams_obj.copy()
+        new_model.update_hyperparams_tuple()
+
+    return new_model
+
+def update_models_with_new_responses( active_model, random_model, 
+                                     prev_active_model_spike_counts, prev_random_model_spike_counts, 
+                                     x_idx_best, x_idx_rand, 
+                                     img_train, spike_counts ):
+
+    '''
+    Update the models being trained in parallel with the new responses that have jsut been collected.
+
+    In the closed loop experiment, we train two models in parallel, one with
+    active images and one with the random images.
+
+    This function updates the models with the new responses that have just been collected.
+    
+    '''
+
+    # Update the training set with the new responses
+    new_spike_counts_active = torch.cat((prev_active_model_spike_counts, spike_counts[0][None]), axis=0)
+    new_spike_counts_random = torch.cat((prev_random_model_spike_counts, spike_counts[1][None]), axis=0)
+
+    # Initialize a new model with the new image arrays and response
+    new_active_model = generate_new_active_model( 
+        current_model=active_model, x_idx_chosen=x_idx_best, img_train=img_train, 
+        new_spike_counts=new_spike_counts_active  
+    )
+
+    new_random_model = generate_new_active_model(
+        current_model=random_model, x_idx_chosen=x_idx_rand, img_train=img_train,
+        new_spike_counts=new_spike_counts_random, light_model=True
+    )
+
+    return new_active_model, new_random_model
 ##################  Preprocessing  ##################
 
 def get_idx_for_training_testing_validation(X, R, ntrain, ntilde, ntest_lk):
@@ -398,7 +657,7 @@ def get_cell_STA(X, R, zscore=True):
 
 ################## Visualization and Saving ##################
 
-def save_model(model, directory, additional_description=None, overwrite=False):
+def save_model(model, directory, name, additional_description=None, overwrite=False, print_lock=None):
     """
     Save the model parameters and metadata to a specified directory with robust error handling.
 
@@ -408,24 +667,25 @@ def save_model(model, directory, additional_description=None, overwrite=False):
         additional_description (str, optional): Additional text to add to the description
         overwrite (bool, optional): Whether to overwrite an existing directory
     """
-    model_path = directory / f'start_model_{session_name}.pkl'
+    model_pathname = directory / name
 
     # Create directory if it doesn't exist
     if not os.path.exists(directory):
+        with print_lock:
+            print(f"Directory {directory} did not exist, creating it" )
         os.makedirs(directory)
-    else:
-        if overwrite:
-            print(f"Overwriting the directory {directory}")
-            shutil.rmtree(directory)
-            os.makedirs(directory)
+
+    if os.path.exists(model_pathname):
+        # with print_lock:
+        answer = input(f"Model {model_pathname} already exists in directory. Overwrite? [y/N]: ")
+
+        if not answer.strip().lower().startswith('y'):
+            # with print_lock:
+            print(f'Model not saved')
+            return
         else:
-            answer = input(f"Directory {directory} already exists. Overwrite? [y/N]: ")
-            if answer.strip().lower().startswith('y'):
-                print(f"Overwriting the directory {directory}")
-                shutil.rmtree(directory)
-                os.makedirs(directory)
-            else:
-                raise ValueError(f"Directory {directory} already exists. No overwriting access. Exiting...")
+            print(f"Overwriting model")
+
 
     # Helper function to safely format values with proper checks
     def safe_format(value, format_spec=">8.4f", default_value="N/A"):
@@ -532,15 +792,15 @@ def save_model(model, directory, additional_description=None, overwrite=False):
     model['description'] = description
 
     # Save the file
-    with open(model_path, 'wb') as f:
+    with open(model_pathname, 'wb') as f:
         pickle.dump(model, f)
     
     # Save metadata
-    metadata_path = os.path.join(directory, f'metadata_{session_name}.txt')
+    metadata_path = os.path.join(directory, f'{name}_metadata.txt')
     with open(metadata_path, 'w') as f:
         f.write(description)
-    
-    print(f"Model saved successfully to {model_path}")
+    with print_lock:
+        print(f"Model saved successfully to {model_path}")
     return
 
 def upload_model( directory, model_name):
@@ -819,7 +1079,7 @@ def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
     center_color = kwargs.get('center_color', 'k')
     width_color  = kwargs.get('width_color', 'k')
     show_values = kwargs.get('show_values', True)  # Option to show parameter values
-
+    name = kwargs.get('name', 'noname')
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(5,5)) 
 
@@ -884,6 +1144,11 @@ def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
     # Show the updated image
     plt.show(block=False)
     
+    # save the figure
+
+    fig.savefig( session_data_path / f'Hyperparameters_on_STA_{label}_{name}.png')
+
+
     return ax
 
 def plot_final_and_intermediate_fit(fit_model, init_model, X_in_use, R_in_use, X_test_avg, R_test_avg_cell, cells_reliability, intermediate_model_iteration=2):
@@ -1210,7 +1475,8 @@ def utility( sigma2, mu, r_masked):
 def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernfun):
             
     if K_tilde_inv is None:
-        K_tilde_inv = torch.linalg.solve(K_tilde, torch.eye(K_tilde.shape[0]))
+        eye = torch.eye(K_tilde.shape[0], device=DEVICE, dtype=TORCH_DTYPE)
+        K_tilde_inv = torch.linalg.solve(K_tilde, eye)
 
     xstar = xstar.unsqueeze(0)
 
@@ -1218,6 +1484,58 @@ def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernf
     mu_star, sigma2_star = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde_inv , m, V, kernfun=kernfun)
 
     return utility( sigma2=sigma2_star, mu=mu_star )
+
+def most_useful_remaining_idx( active_model, img_train, remaining_idx ):
+
+    '''
+    Works with active model instance of the GPModel class
+
+    Returns a [1] shaped index of the most useful image in the remaining dataset
+
+    So that it can be concatenated to the in_use_idx
+    '''
+    max_r_cap = 100
+
+    X_remaining = img_train[remaining_idx]
+    xtilde      = img_train[active_model.xtilde_idx]
+
+    # Extract model parameters needed for utility calculation
+    theta         = active_model.theta
+    kernfun       = active_model.kernfun
+
+    C             = active_model.C
+    mask          = active_model.mask
+    B             = active_model.B
+    K_tilde_b     = active_model.K_tilde_b
+    K_tilde_inv_b = active_model.K_tilde_inv_b
+
+    m_b           = active_model.m_b
+    V_b           = active_model.V_b
+    A             = torch.exp(active_model.f_params['logA'])
+    lambda0       = active_model.f_params['lambda0']
+
+    # Calculate the matrices to compute the lambda moments. They are referred to the unseen images X_remaining
+    Kvec_star = kernfun(theta, X_remaining[:,mask], x2=None, C=C, dC=None, diag=True)
+    K_star    = kernfun(theta, X_remaining[:,mask], x2=xtilde[:,mask], C=C, dC=None, diag=False)
+    K_star_b  = K_star @ B 
+
+    lambda_m_t, lambda_var_t = lambda_moments( 
+        X_remaining[:,mask], K_tilde_b, K_star_b@K_tilde_inv_b, Kvec_star, K_star_b, C, m_b, V_b, theta)  
+
+    logf_mean = A*lambda_m_t + lambda0
+    logf_var  = A**2 * lambda_var_t
+
+    # Estimate the utility and cap the maximum r ( used in a summation to infinity )
+    r_masked = torch.arange(0, max_r_cap, dtype=TORCH_DTYPE, device=DEVICE)
+    u2d      = nd_utility(logf_var, logf_mean, r_masked )
+
+    i_best     = u2d.argmax()             # Index of the best image in the utility vector
+    x_idx_best = remaining_idx[i_best]    # Index of the best image in the image dataset indices
+    print(f'Utility: {u2d[i_best].item():<8.6f} |  Best image ID: {i_best}  | Best image index: {x_idx_best}')
+
+    assert x_idx_best not in active_model.in_use_idx, 'The best image idx is already in use. This shoudld not be possible for now'
+
+    return x_idx_best[None]
 
 #################   Numerical estimation / problems functions  ####################
 
@@ -1617,7 +1935,7 @@ def linker(x1, x2, C, theta, xtilde_case, scalar_case=False):
     K = torch.matmul(x1,  Cx2) #  (n, ntilde)
     
     if xtilde_case:
-        return  (K + K.T)/2 + 1.e-9*torch.eye(K.shape[0]) # make sure it's simmetric 
+        return  (K + K.T)/2 + 1.e-9*torch.eye(K.shape[0]) # make sure it's simmetric  BUG put it on the right device
     if not xtilde_case:
         return  K 
 
@@ -2152,7 +2470,8 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
             warnings.warn(' You are using a step size different from 1 in Estep, in case the eigenspace of K_tilde has increased in dimension, you could have a non invertible V_b here. It might mean non positive definite V_new.')
             # We haven't proved that V_new is positive even when V is not. To avoid instabilities and crashes, I'd avoid alpha!=1 for now.
             V_new = V @ torch.linalg.solve( (1-alpha)*K_tilde + alpha*V + alpha*(K_tilde@G)@V ,  K_tilde)
-            m_new = m - alpha*(  torch.linalg.solve( ( torch.eye(m.shape[0]) + K_tilde@G ) , ( m-K_tilde@g ) ) )
+            eye = torch.eye(m.shape[0], dtype=TORCH_DTYPE).to(DEVICE)
+            m_new = m - alpha*(  torch.linalg.solve( (eye + K_tilde@G ) , ( m-K_tilde@g ) ) )
 
         V_new = (V_new + V_new.T) / 2 
         return m_new, V_new    
@@ -2162,7 +2481,8 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
         V_inv_new = ( K_tilde_inv + G ) # shape (ntilde, ntilde)
         
         # This ugly control on the positive definiteness of V is also what makes updating V preferable
-        V_inv_new = (V_inv_new + V_inv_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*torch.eye(V_inv_new.shape[0]) # making sure it is symmetric
+        eye = torch.eye(V_inv_new.shape[0], dtype=TORCH_DTYPE, device=DEVICE)
+        V_inv_new = (V_inv_new + V_inv_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*eye # making sure it is symmetric
         try:
             V_new     = torch.linalg.inv(V_inv_new) # shape (ntilde, ntilde)
         except:
@@ -2170,8 +2490,8 @@ def Estep( r, KKtilde_inv, m, f_params, f_mean, K_tilde=None, K_tilde_inv=None, 
 
         # m_new = torch.linalg.solve(V_inv_new , (G @ m + g))  #shape(ntilde)
         m_new = V_new @ (G @ m + g)  #shape(ntilde)
-
-        V_new = (V_new + V_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*torch.eye(V_new.shape[0]) # making sure it is symmetric
+        eye = torch.eye(V_new.shape[0], dtype=TORCH_DTYPE, device=DEVICE)
+        V_new = (V_new + V_new.T) / 2 + torch.finfo(TORCH_DTYPE).eps*1.e-7*eye # making sure it is symmetric
         return m_new, V_new
     else:
         warnings.warn('The update of V is not implemented for the inverse of V with alpha != 0 now in Estep')
@@ -2920,7 +3240,8 @@ def varGP_original(x, r, **kwargs):
 
                     # K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) # shape (n_eigen, n_eigen) To use if I have recalculated the eigenspace of K_tilde
                     # NOTE that even if I am saving resources by not recalculating the eigenspace of K_tilde, I still have to recalculate the inverse of K_tilde in the M-step... still On^3
-                    K_tilde_inv_b = torch.linalg.solve(K_tilde_b, torch.eye(K_tilde_b.shape[0]))
+                    eye = torch.eye(K_tilde_b.shape[0], device=DEVICE, dtype=TORCH_DTYPE)
+                    K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye)
                     KKtilde_inv_b = K_b @ K_tilde_inv_b if ntilde != nt else B
 
                     f_mean, lambda_m, lambda_var, dlambda_m, dlambda_var  =  mean_f( f_params=f_params, calculate_moments=True, x=x[:,mask], K_tilde=K_tilde_b, KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b,  
@@ -3100,7 +3421,7 @@ def varGP_original(x, r, **kwargs):
                 V_b = (V_b + V_b.T)/2
             if not is_posdef(V_b, 'V_b'):
                 print('Final V_b is not posdef, this should not be possible if you are skipping the last M-step')   
-                V_b += torch.eye(V_b.shape[0])*EIGVAL_TOL
+                V_b += torch.eye(V_b.shape[0], device=DEVICE, dtype=TORCH_DTYPE)*EIGVAL_TOL
 
             # print(f'Final Loss: {-logmarginal.item():.4f}' ) 
 
@@ -3906,7 +4227,8 @@ def varGP(x, r, **kwargs):
                 V_b = (V_b + V_b.T)/2
             if not is_posdef(V_b, 'V_b'):
                 print('Final V_b is not posdef, this should not be possible if you are skipping the last M-step')   
-                V_b += torch.eye(V_b.shape[0])*EIGVAL_TOL
+                eye = torch.eye(V_b.shape[0], device=DEVICE, dtype=TORCH_DTYPE)
+                V_b += eye*EIGVAL_TOL
 
             # print(f'Final Loss: {-logmarginal.item():.4f}' ) 
 
@@ -3934,6 +4256,7 @@ def varGP(x, r, **kwargs):
                 'final_kernel':      final_kernel,
                 'err_dict':          err_dict,
                 'xtilde':            xtilde,
+                'spike_counts':      r,
                 'hyperparams_tuple': hyperparams_tuple,
                 'f_params':          f_params,
                 'm_b':               m_b,
