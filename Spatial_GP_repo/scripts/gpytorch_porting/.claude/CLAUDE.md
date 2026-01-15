@@ -11,11 +11,11 @@ This document tracks the porting effort from the custom variational GP implement
 
 | Item | Value |
 |------|-------|
-| **Current status** | Stage 2 + Masking COMPLETE, validated against reference |
-| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `tests/` |
+| **Current status** | Stage 2 + Masking COMPLETE, E-step IMPLEMENTED (limited to M≤25) |
+| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `tests/` |
 | **Run test** | `python test_fit.py --cell 8` (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
-| **Deferred** | Test D (multi-cell), custom E-step (Section 6) |
-| **Known limitation** | RF center (eps_0) needs reasonable init - doesn't learn from corners (Q20) |
+| **Deferred** | Test D (multi-cell), eigenspace projection for E-step M>25 (Section 6.4) |
+| **Known limitations** | RF center needs reasonable init (Q20); E-step only works with M≤25 (Section 6.2) |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
 ---
@@ -619,9 +619,14 @@ This means we can:
 
 **Goal**: Replace GPyTorch's iterative optimization with closed-form Newton update.
 
+**Mathematical reference**: See `.claude/ESTEP_MATH_ANALYSIS.md` for:
+- Correct formulas (V and m updates)
+- Comparison with old LaTeX and current code
+- Key finding: V update in code is CORRECT, m update has minor discrepancy
+
 **Tasks**:
 - [ ] Extract variational parameters from GPyTorch model
-- [ ] Implement E-step update (from utils.py)
+- [ ] Implement E-step update using CORRECT formulas (not old LaTeX)
 - [ ] Convert between Cholesky and full V representations
 - [ ] Write updated parameters back to model
 - [ ] Benchmark speed improvement
@@ -650,17 +655,54 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 - Any active learning functionality
 
 ### 6.2 Custom E-step
-**Reason for deferral**: Start simple, validate structure first.
+**Status**: IMPLEMENTED with limitations (January 2025)
 
-**Implementation notes for later**:
+**File**: `estep.py` - Contains `e_step()`, `update_variational_parameters()`, `train_with_estep()`
+
+**IMPORTANT**: See `.claude/ESTEP_MATH_ANALYSIS.md` for full derivation and formula comparison.
+
+**CORRECT formulas** (implemented in `estep.py`):
 ```python
-# E-step update (from utils.py:Estep)
-# When alpha=1, this is a single matrix solve:
-g = A * (K @ K_tilde_inv).T @ (r - f_mean)
-G = A**2 * (K @ K_tilde_inv).T @ (diag(f_mean) @ (K @ K_tilde_inv))
-V_new = torch.linalg.solve(I + K_tilde @ G, K_tilde)
-m_new = V_new @ (G @ m + g)
+# Helper quantities (standard form, not transformed)
+g = A * K.T @ (r - f_mean)                    # (M,)
+G = A**2 * K.T @ diag(f_mean) @ K             # (M, M)
+
+# V update (CORRECT - symmetric sandwich)
+V_new = K_tilde @ solve(K_tilde + G, K_tilde)
+
+# m update (CORRECT - Newton step)
+m_new = m + K_tilde @ solve(K_tilde + G, g - m)
+
+# Always symmetrize
+V_new = (V_new + V_new.T) / 2
 ```
+
+**Critical finding (January 2025)**: The original `utils.py:Estep()` uses a DIFFERENT m formula:
+```python
+# Original code formula (has discrepancy)
+m_new = V_new @ (G_t @ m + g_t)  # where g_t, G_t are transformed
+```
+This produces Pearson r ≈ 0.07 vs **r ≈ 0.62** with the correct formula above.
+
+**Validation results**:
+
+| n_train | n_inducing | Formula | Pearson r |
+|---------|------------|---------|-----------|
+| 1000 | 25 | Old (code) | 0.07 |
+| 1000 | 100 | Old (code) | -0.02 |
+| 500 | 25 | **Correct** | **0.62** |
+| 1000 | 50 | **Correct** | 0.02 |
+
+**Known limitation**: E-step works only with M≤25 inducing points. With M≥50, Pearson r drops to ~0 despite loss decreasing. See Section 6.4 for analysis.
+
+| n_train | M | Pearson r |
+|---------|---|-----------|
+| 500 | 25 | **0.62** |
+| 500 | 50 | -0.00 |
+| 1000 | 25 | **0.59** |
+| 1000 | 50 | -0.04 |
+
+**Key finding**: It's M (inducing points) that matters, NOT n_train. Eigenspace projection (Section 6.4) may help.
 
 **Cholesky conversion**:
 - GPyTorch stores: L where V = LLᵀ
@@ -675,9 +717,31 @@ m_new = V_new @ (G @ m + g)
 - `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
 
 ### 6.4 Eigenspace Projection
-**Reason for deferral**: GPyTorch has its own numerical stability mechanisms.
+**Status**: DEFERRED (January 2025) - needed for M>25 support
 
-**May be needed if**: GPyTorch's Cholesky-based approach fails on ill-conditioned K̃.
+**Analysis (January 2025)**: We investigated why E-step fails with M≥50.
+
+**K̃ conditioning is NOT the issue**:
+```
+M= 25: cond=3.0e+03, eigval=[4.3e-03, 1.3e+01]
+M= 50: cond=1.3e+04, eigval=[1.9e-03, 2.6e+01]
+M=100: cond=1.4e+05, eigval=[3.7e-04, 5.1e+01]
+M=200: cond=4.4e+05, eigval=[2.0e-04, 9.0e+01]
+```
+These condition numbers are acceptable for float64. No eigenvalues below 1e-6.
+
+**G and (K̃+G) conditioning**:
+- G is poorly conditioned (cond ~1e7-1e8) but has small eigenvalues
+- K̃+G is well-conditioned because K̃ dominates
+
+**Unclear root cause**: With M≥50, loss decreases but predictions don't generalize. The issue appears related to how the variational approximation behaves with more inducing points, not pure numerical conditioning.
+
+**What eigenspace projection does** (from original `utils.py:Estep()`):
+- Projects K̃ = B Λ Bᵀ, keeps only eigenvalues > threshold
+- Makes K̃_b diagonal → K̃⁻¹ is trivial element-wise division
+- May provide implicit regularization that helps generalization
+
+**Implementation needed**: Port eigenspace projection from `utils.py:Estep()` to enable M>25.
 
 ### 6.5 Pixel Masking
 **Status**: COMPLETE (January 2025)
@@ -704,9 +768,9 @@ m_new = V_new @ (G @ m + g)
 ### Source LaTeX Documents
 | File | Content |
 |------|---------|
-| `latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation |
-| `latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math |
-| `latex_summaries/distribution_aware_utility_pietro.tex` | Utility functions (OUT OF SCOPE) |
+| `~/IDV_code/Papers/latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation (E-step Newton, M-step) |
+| `~/IDV_code/Papers/latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math |
+| `~/IDV_code/Papers/latex_summaries/distribution_aware_utility_pietro.tex` | Utility functions (OUT OF SCOPE) |
 
 ### Existing Code to Reference
 | File | Content |
@@ -728,6 +792,7 @@ m_new = V_new @ (G @ m + g)
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
 | `train.py` | Training and evaluation utilities |
+| `estep.py` | Custom E-step Newton update (works for M≤25) |
 | `test_fit.py` | Main test script (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
 | `tests/test_mask_validation.py` | 4 validation tests for pixel masking |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
@@ -1030,4 +1095,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 6 - Pixel masking complete)*
+*Last updated: January 2025 (Session 7 - E-step math analysis complete, see ESTEP_MATH_ANALYSIS.md)*
