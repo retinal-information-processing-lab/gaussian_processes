@@ -1,6 +1,13 @@
 
 # Own .gitignore
 
+# External repos (cloned separately, not submodules)
+torchlambertw/
+
+# Editor/Claude settings at this level
+.vscode/
+.claude/
+
 Spatial_GP_repo/data/
 Spatial_GP_repo/figures/
 Spatial_GP_repo/outputs/

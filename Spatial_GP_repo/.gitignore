@@ -1,0 +1,21 @@
+# Data files (too large for git)
+*.npz
+notebooks/data/
+
+# Editor/IDE
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Claude Code local settings (keep .claude/*.md documentation)
+settings.local.json

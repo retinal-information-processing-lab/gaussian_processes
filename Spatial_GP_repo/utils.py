@@ -2,6 +2,7 @@ import torch
 torch.set_grad_enabled(False)
 import numpy as np
 import scipy.io
+from torchlambertw.special import lambertw as torch_lambertw
 
 from tqdm import tqdm
 import pickle
@@ -26,6 +27,24 @@ import logging
 from config.config import *
 
 from gaussian_processes.Spatial_GP_repo.model import GPModel
+
+# Import new clean kernel implementations from kernels/ subpackage
+# These are re-exported here for backward compatibility
+from gaussian_processes.Spatial_GP_repo.kernels import (
+    C_gradients_hyp,
+    LocalkerCleanFunction,
+    localker_clean,
+    acosker_clean,
+    AcoskerCleanFunction,
+    acosker_with_grad,
+)
+
+# Import visualization utilities from visualization/ subpackage
+# These are re-exported here for backward compatibility
+from gaussian_processes.Spatial_GP_repo.visualization import (
+    update_optimization_comparison,
+    single_image_sampling_plot,
+)
 
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
@@ -53,7 +72,64 @@ class LossStagnationError(Exception):
     """Exception raised when the loss has not changed significantly over recent iterations."""
     pass
 
+
+class LossInfError(Exception):
+    """Exception raised when the loss is infinite."""
+    pass
+
+
+################## Miscellaneous ##################
+class NullLock:
+    """A dummy lock that does nothing, for simplifying code that uses optional locks."""
+    def __enter__(self):
+        pass
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+
+def upload_natural_image_dataset( dataset_path, astensor=True, zscore=True ):
+    '''
+    Uploads the natural image dataset. Its basically a copy of load_stimuli_responses 
+    from GP_utils.py but without the responses.    
+    '''
+
+    X_train = np.load( dataset_path / train_img_dataset_name )
+    X_test  = np.load( dataset_path / test_img_dataset_name)
+
+    if zscore: # Each pixel distribution is now mean 0 and std 1
+        X_train = scipy.stats.zscore(  X_train, axis=0)
+        X_test  = scipy.stats.zscore(  X_test,  axis=0)
+
+    if astensor:
+
+        X_train = torch.from_numpy(X_train).to(DEVICE, dtype=TORCH_DTYPE)
+        X_test  = torch.from_numpy(X_test).to(DEVICE, dtype=TORCH_DTYPE)
+
+        X_train = torch.reshape(X_train, ( X_train.shape[0], X_train.shape[1]*X_train.shape[2])) 
+        X_test  = torch.reshape(X_test, ( X_test.shape[0], X_test.shape[1]*X_test.shape[2])) 
+
+    else:
+        X_train = np.reshape(X_train, ( X_train.shape[0], X_train.shape[1]*X_train.shape[2])) 
+        X_test  = np.reshape(X_test,  ( X_test.shape[0], X_test.shape[1]*X_test.shape[2]))
+
+    return  X_train, X_test 
+
+
+
 ################## ClosedloopProject ##################
+
+def set_global_seed(seed: int):
+    import os, random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk, n_reshuffles=0):
     
@@ -72,14 +148,23 @@ def get_idx_for_active_training( n_tot_img_dataset, ntrain, ntilde, ntest_lk, n_
         Number of test points to exclude from training, to keep for the test loglikelihood estimation
     
     '''
+
+    # set all seeds for reproducibility
+    torch.manual_seed(0)
+    np.random.seed(0)
+    torch.cuda.manual_seed(0) # not needed if DEVICE is cpu
     
     all_idx       = torch.arange(0, n_tot_img_dataset )      # Indices of the whole dataset 
-    all_idx_perm  = all_idx                                  # Shuffled indices of the whole dataset
-    for i in range(n_reshuffles):
-        all_idx_perm  = torch.randperm(all_idx.shape[0] )    # Random permutation of the indices
+    if ntest_lk > 0:
+        test_lk_idx   = all_idx[-ntest_lk:]                       # These will be the indices of the test_lk set
+    else:
+        test_lk_idx   = torch.empty(0, dtype=torch.int64)            # No test set indices
+        
+    all_idx_perm  = all_idx[~torch.isin( all_idx, test_lk_idx )] # Remove the test set indices from the permutation
+    
+    for _ in range(n_reshuffles):
+        all_idx_perm  = torch.randperm(all_idx_perm.shape[0] )    # Random permutation of the indices
 
-    test_lk_idx   = all_idx_perm[:ntest_lk]                                    # These will be the indices of the test_lk set
-    all_idx_perm  = all_idx_perm[~torch.isin( all_idx_perm, test_lk_idx )]     # Remove the test set indices from the permutation
     rndm_idx      = all_idx_perm[:]                                            # These will be the indices of the training. 
 
     # Choose the indices of the training set. This is overkill here, but in the active learning these indices are constantly changing
@@ -179,7 +264,7 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
     '''
 
     try:
-        model_dict = model.to_dict()
+        model_dict = model.to_dict() # very important, the " init kernel values " had not been set out of just the kernel_values attribute"
 
         print('Starting GP fit with collected spikes...')
 
@@ -188,13 +273,27 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
 
         assert X_in_use.shape[0] == R_in_use.shape[0]
 
-        fit_model_dict, err_dict = varGP(X_in_use, R_in_use, **model_dict)
+        fit_model_dict, err_dict = varGP(X_in_use, R_in_use, **model_dict, 
+                                         verbose=False, silent=True)
 
-        fit_model_dict['all_idx_perm'] = model_dict['fit_parameters']['all_idx_perm']
-        fit_model_dict['in_use_idx']   = model_dict['fit_parameters']['in_use_idx']
-        fit_model_dict['model_type']   = model.model_type
+        # time.sleep(5)  
 
-        fit_model = GPModel(model_dict=fit_model_dict)
+
+        if fit_model_dict is not None:
+            fit_model_dict['all_idx_perm'] = model_dict['fit_parameters']['all_idx_perm']
+            fit_model_dict['test_lk_idx']  = model_dict['fit_parameters']['test_lk_idx']
+            fit_model_dict['in_use_idx']   = model_dict['fit_parameters']['in_use_idx']
+            fit_model_dict['model_type']   = model.model_type
+
+            fit_model = GPModel(model_dict=fit_model_dict)
+
+        # else:
+        #     with threadict['print_lock']:
+        #         print(f'\n...GP Thread: fit_model_dict returned None')
+        #     with threadict['dict_lock']:
+        #         threadict['global_stop_event'].set()
+        #         threadict['exceptions_q'].put(Exception('fit_model_dict returned None'))
+        #     return
 
         if err_dict['is_error']:
             if isinstance( err_dict['error'] , LossStagnationError):
@@ -202,12 +301,19 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
                     print(f'\n...GP Thread: Loss stagnation detected. Stopping the training')
                 threadict['model_queue'].put(fit_model)
                 return
-            threadict['global_stop_event'].set()
-            threadict['exceptions_q'].put(err_dict['error'])
+            if isinstance( err_dict['error'] , LossInfError):
+                with threadict['print_lock']:
+                    print(f'\n...GP Thread: Loss is infinite. Adding except to queue. ')
+                # threadict['exceptions_q'].put(err_dict['error'])
+                return
+            
+            # threadict['global_stop_event'].set()
+
+            # threadict['exceptions_q'].put(err_dict['error'])
             with threadict['print_lock']:
                 print(f'\n...GP Thread: Error in fitting the model: {err_dict["error"]}')
             return
-            # loginfo(f"\n...RCV Thread: Unexpected ERROR: {e}")
+            
 
         threadict['model_queue'].put(fit_model)
         return
@@ -220,7 +326,7 @@ def threaded_train_GP_phase2(model, img_train, spike_counts, threadict):
         return
 
 
-def set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train ):
+def set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train,):
     '''
     Sets the model image indexes based on the index new image added
 
@@ -244,15 +350,17 @@ def set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train ):
         new_model.ntilde (int): The new number of xtilde images
     
     '''
-
+    # idxs
     in_use_idx_new = torch.cat((current_model.in_use_idx, x_idx_chosen))
-    xtilde_idx_new = in_use_idx_new
 
+    # images
     new_img        = img_train[x_idx_chosen]
     X_in_use_new   = torch.cat( (img_train[current_model.in_use_idx], new_img), axis=0 )
-    xtilde_new     = X_in_use_new
 
+    xtilde_idx_new = in_use_idx_new
+    xtilde_new     = X_in_use_new
     assert in_use_idx_new.shape[0] == xtilde_idx_new.shape[0], 'In use and xtilde indexes must have the same length'
+
     assert new_img.mean() == X_in_use_new[-1].mean(), 'The new image is not the last in the X_in_use_new array'
 
     nt_new              = in_use_idx_new.shape[0]
@@ -335,7 +443,10 @@ def add_one_img_to_kernel( current_model, X_in_use_new, xtilde_new, new_img ):
     Calculates the kernel matrices K_tilde, K and Kvec for the new image based on a current current_model kernel
 
     Adds one line to kernel matrices
+
     '''
+    if current_model.ntilde!=current_model.in_use_idx.shape[0]:
+        raise NotImplementedError('Fast calculation of K_tilde not implemented for ntilde != ntrain')
     theta              = current_model.theta
     C                  = current_model.C
     mask               = current_model.mask
@@ -410,7 +521,7 @@ def generate_new_active_model(current_model, x_idx_chosen, img_train, new_spike_
     X_in_use_new, xtilde_new, new_img = set_new_model_idxs( current_model, new_model, x_idx_chosen, img_train )
 
     if not light_model:
-        # Update variational parameters m and V in the full space ( no projection)                
+        # Writes Var parameters m and V in the FULL space ( no projection)                
         set_new_model_variational_params( current_model, new_model )
 
         # Calculate the kernel matrices for the new model with the new image
@@ -446,6 +557,8 @@ def update_models_with_new_responses( active_model, random_model,
                                      img_train, spike_counts ):
 
     '''
+    Legacy Function used to update both active and random models with new responses collected in response to a pair of images
+    sent as vec file. In the current version we send one imagea t the time so this is useless
     Update the models being trained in parallel with the new responses that have jsut been collected.
 
     In the closed loop experiment, we train two models in parallel, one with
@@ -642,22 +755,90 @@ def estimate_memory_usage(X, R):
     print(f'Total dataset memory on GPU: {total_memory_MB:.2f} MB')
     return total_memory_MB
 
-def get_cell_STA(X, R, zscore=True):
+def get_cell_STA(X, R, zscore=True, show=True,  return_tensor=False):
 
-    if X.device != 'cpu': X = X.cpu()
-    if R.device != 'cpu': R = R.cpu()
+    if isinstance(X, torch.Tensor): 
+        if X.device != 'cpu': 
+            X = X.cpu().clone().detach()
+        X = X.numpy()
+    if isinstance(R, torch.Tensor): 
+        if R.device != 'cpu': 
+            R = R.cpu().clone().detach()
+        R = R.numpy()
 
     n_px_side = int(np.sqrt(X.shape[1]))
 
     if zscore:
-        X_zsorted = scipy.stats.zscore(  X.numpy(), axis=0)    # Z-score the images
+        X_zsorted = scipy.stats.zscore(  X, axis=0)    # Z-score the images
+    else:
+        X_zsorted = X
     STA = np.multiply( R[:,None], X_zsorted ).sum(axis=0) / R.sum()
     STA = STA.reshape(n_px_side,n_px_side)
-    return STA
+
+    if not show:
+        return STA if not return_tensor else torch.from_numpy(STA).to(DEVICE, dtype=TORCH_DTYPE)
+    else:
+        plt.imshow(STA, origin='lower', cmap='bwr',  vmax=STA.max(), vmin=STA.min())
+        plt.show()
+
+    return STA if not return_tensor else torch.from_numpy(STA).to(DEVICE, dtype=TORCH_DTYPE)
+
+# this works better but i dont know how
+
+def whiten_STA_new(STA, images, ridge_frac=0.1):
+    """
+    Simple whitening: project onto data subspace and apply (C + λI)^(-1/2).
+    STA: (H,W), images: (n,H,W)
+    """
+    imgs = images.to(DEVICE, dtype=TORCH_DTYPE)
+    n = imgs.shape[0]
+    X = (imgs - imgs.mean(0, keepdim=True)).reshape(n, -1)            # (n, p)
+    STA_vec = STA.reshape(-1).to(DEVICE, dtype=TORCH_DTYPE)           # (p)
+
+    # Economy SVD of centered data (cov = V diag(S^2/(n-1)) V^T)
+    U, S, Vt = torch.linalg.svd(X / torch.sqrt(torch.tensor(max(n-1,1),
+                               device=DEVICE, dtype=TORCH_DTYPE)),
+                                full_matrices=False)
+    # Eigenvalues of covariance: eig = S^2
+    eig = S**2
+    ridge = ridge_frac * eig.mean()
+    denom = torch.sqrt(eig + ridge)                                   # inverse sqrt
+
+    # Project STA into subspace spanned by rows of Vt (same as columns of V)
+    proj = Vt @ STA_vec                                               # (n)
+    proj_w = proj / denom                                             # whiten scaling
+    STA_w = (proj_w @ Vt).reshape_as(STA)                             # back to pixel space
+
+    return STA_w
+
+def whiten_STA(STA_squared, images ):
+    
+    flat_STA = STA_squared.flatten().to(DEVICE)
+
+    mean_images = torch.mean(images, dim=0).to(DEVICE)
+
+    images_centered = images - mean_images
+
+    # traspose cause cov expects the variable to be the row 
+    # ( variable is a pixel, observationsare the number of images, different vals of that pixel)
+    cov_matrix_images = torch.cov(images_centered.view(images_centered.shape[0], -1).T)
+
+    # Regularize ill conditioned covariance matrix
+    alpha = 0.1 * torch.mean(torch.diag(cov_matrix_images)) 
+
+    regularized_covariance = cov_matrix_images + alpha * torch.eye(cov_matrix_images.shape[0], device=DEVICE, dtype=TORCH_DTYPE)
+
+    inv_covariance = torch.linalg.inv(regularized_covariance)
+
+    STA_corrected_vector = inv_covariance @ flat_STA
+
+    STA_corrected_squared = STA_corrected_vector.reshape(STA_squared.shape)
+
+    return STA_corrected_squared
 
 ################## Visualization and Saving ##################
 
-def save_model(model, directory, name, additional_description=None, overwrite=False, print_lock=None):
+def save_model(model, directory, name, additional_description=None, force_overwrite=False, print_lock=NullLock()):
     """
     Save the model parameters and metadata to a specified directory with robust error handling.
 
@@ -669,22 +850,25 @@ def save_model(model, directory, name, additional_description=None, overwrite=Fa
     """
     model_pathname = directory / name
 
+    print(model_pathname)
+
     # Create directory if it doesn't exist
     if not os.path.exists(directory):
         with print_lock:
-            print(f"Directory {directory} did not exist, creating it" )
+                print(f"Directory {directory} did not exist, creating it" )
         os.makedirs(directory)
 
     if os.path.exists(model_pathname):
-        # with print_lock:
-        answer = input(f"Model {model_pathname} already exists in directory. Overwrite? [y/N]: ")
+        if not force_overwrite:
+            with print_lock:
+                answer = input(f"Model {model_pathname} already exists in directory. Overwrite? [y/N]: ")
 
-        if not answer.strip().lower().startswith('y'):
-            # with print_lock:
-            print(f'Model not saved')
-            return
-        else:
-            print(f"Overwriting model")
+            if not answer.strip().lower().startswith('y'):
+                with print_lock:
+                    print(f'Model not saved')
+                return
+            else:
+                print(f"Overwriting model")
 
 
     # Helper function to safely format values with proper checks
@@ -799,8 +983,9 @@ def save_model(model, directory, name, additional_description=None, overwrite=Fa
     metadata_path = os.path.join(directory, f'{name}_metadata.txt')
     with open(metadata_path, 'w') as f:
         f.write(description)
+
     with print_lock:
-        print(f"Model saved successfully to {model_path}")
+        print(f"Model saved successfully to {model_pathname}")
     return
 
 def upload_model( directory, model_name):
@@ -811,6 +996,8 @@ def upload_model( directory, model_name):
         model = pickle.load(f)
 
     return model
+
+
 
 def plot_loss_and_theta_notebook(model, linestyle='-', marker='o', figsize=(10, 10), xlim=None, ylim_logmarg=None, ylim_lambda0=None, ylim_eigvals=None):
 
@@ -1040,36 +1227,114 @@ def print_hyp( theta ):
 
             print(f' {key:<{key_width}}: {theta[ key ]:>{number_width}.4f}')     
 
-def get_cell_STA(X, R, zscore=True, show=False):
-    '''
-    X shape : (nimages, npx*npx)
-    R shape : (nimages)
-    '''
-
-    if X.device != 'cpu': X = X.cpu()
-    if R.device != 'cpu': R = R.cpu()
-
-    n_px_side = int(np.sqrt(X.shape[1]))
-
-    if zscore:
-        X_zsorted = scipy.stats.zscore(  X.numpy(), axis=0)    # Z-score the images
-    STA = np.multiply( R[:,None], X_zsorted ).sum(axis=0) / R.sum()
-    STA = STA.reshape(n_px_side,n_px_side)
-    if not show:
-        return STA
-    else:
-        plt.imshow(STA, origin='lower', cmap='bwr',  vmax=STA.max(), vmin=STA.min())
-        plt.show()
-
 def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
+    """
+    Backward-compatible version:
+      - Returns ax (as legacy) OR (fig, ax) if return_fig=True.
+      - Keeps default savefig=True.
+      - Accepts same kwargs (label, center_color, width_color, show_values, name, savefig, return_fig).
+      - Draws image first (better visibility) unless keep_legacy_order=True.
+    """
+    if isinstance(fit_model, GPModel):
+        fit_model = fit_model.to_dict()
+
+    label            = kwargs.get('label', None)
+    center_color     = kwargs.get('center_color', 'k')
+    width_color      = kwargs.get('width_color', 'k')
+    show_values      = kwargs.get('show_values', True)
+    name             = kwargs.get('name', 'noname')
+    savefig          = kwargs.get('savefig', True)          # legacy default
+    return_fig       = kwargs.get('return_fig', False)      # new opt
+    keep_legacy_order= kwargs.get('keep_legacy_order', False)
+
+
+    created_fig = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(5,5))
+        created_fig = True
+    else:
+        fig = ax.figure
+
+    n_px_side = fit_model['fit_parameters']['n_px_side']
+    center_idxs = torch.tensor([(n_px_side-1)/2, (n_px_side-1)/2])
+    hp = fit_model['hyperparams_tuple'][0]
+    eps_0x_fit = hp['eps_0x']; eps_0y_fit = hp['eps_0y']
+    logbetaexpr_fit = hp['-2log2beta']; logrhoexpr_fit = hp['-log2rho2']
+    sigma_0_fit = hp['sigma_0']; amp_fit = hp['Amp']
+
+    eps_idxs_fit = torch.tensor([
+        center_idxs[0]*(1+eps_0x_fit),
+        center_idxs[1]*(1+eps_0y_fit)
+    ])
+
+    beta_value = logbetaexpr_to_beta(logbetaexpr_fit).item()
+    rho_value  = logrhoexpr_to_rho(logrhoexpr_fit).item()
+    beta_value_px = beta_value * n_px_side/2
+    rho_value_px  = rho_value  * n_px_side/2
+
+    # Grid
+    ycord, xcord = torch.meshgrid(
+        torch.linspace(-1, 1, n_px_side),
+        torch.linspace(-1, 1, n_px_side),
+        indexing='ij')
+    xflat = xcord.flatten(); yflat = ycord.flatten()
+    logalpha_fit = -torch.exp(logbetaexpr_fit)*((xflat - eps_0x_fit)**2 + (yflat - eps_0y_fit)**2)
+    alpha_local_fit = torch.exp(logalpha_fit)
+    alpha_img = alpha_local_fit.reshape(n_px_side, n_px_side)
+
+    # Draw order
+    if keep_legacy_order:
+        # Contours first
+        levels = torch.tensor([np.exp(-4.5), np.exp(-2), np.exp(-0.5)])
+        ax.contour(alpha_img.cpu(), levels=levels.cpu(), colors=width_color, alpha=0.5)
+        if STA is not None:
+            vmax = float(STA.max())
+            vmin = -vmax 
+            ax.imshow(STA, vmax=vmax, vmin=vmin, cmap='bwr')
+    else:
+        if STA is not None:
+            vmax = float(STA.max())
+            vmin = -vmax 
+            ax.imshow(STA, vmax=vmax, vmin=vmin, cmap='bwr')
+        levels = torch.tensor([np.exp(-4.5), np.exp(-2), np.exp(-0.5)])
+        ax.contour(alpha_img.cpu(), levels=levels.cpu(), colors=width_color, alpha=0.6, linewidths=1.0)
+
+    ax.scatter(eps_idxs_fit[0].cpu(), eps_idxs_fit[1].cpu(),
+               color=center_color, s=30, marker="o", label=label)
+    ax.set_title('Hyperparameters on STA')
+    # ax.set_xticks([]); ax.set_yticks([])
+
+    if show_values:
+        param_text = (f"Center: ({eps_0x_fit.item():.2f},{eps_0y_fit.item():.2f}) "
+                      f"| px({eps_idxs_fit[0].item():.1f},{eps_idxs_fit[1].item():.1f})\n"
+                      f"Beta: {beta_value:.2f} ({beta_value_px:.0f}px)\n"
+                      f"Rho:  {rho_value:.2f} ({rho_value_px:.0f}px)\n"
+                      f"Sigma0: {sigma_0_fit.item():.2f}  Amp: {amp_fit.item():.2f}")
+        ax.text(0.03, 0.97, param_text, transform=ax.transAxes,
+                ha='left', va='top', fontsize=8,
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.65, pad=0.3))
+
+    if savefig and created_fig:
+        os.makedirs( figs_dir, exist_ok=True)
+        fig.savefig( figs_dir / f'{name}.png', dpi=200, bbox_inches='tight')
+
+    # Close figure to free memory if we created it and are not returning it
+    if created_fig and not return_fig:
+        plt.close(fig)
+
+    if return_fig:
+        return fig, ax
+    return ax
+
+def plot_hyperparams_on_STA_old(fit_model, STA=None, ax=None,  **kwargs):
     '''
     Plot the hyperparameters on top of the STA image. Converts model to dictionary if it is a GPModel object
 
     Args:
         fit_model (dict): The fitted model dictionary containing the hyperparameters and STA
         STA (np.ndarray, optional): The STA image to plot
-    
-        
+
+
     '''
 
     if isinstance(fit_model, GPModel):
@@ -1080,6 +1345,8 @@ def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
     width_color  = kwargs.get('width_color', 'k')
     show_values = kwargs.get('show_values', True)  # Option to show parameter values
     name = kwargs.get('name', 'noname')
+    savefig = kwargs.get('savefig', True)
+    created_fig = (ax is None)
     if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(5,5)) 
 
@@ -1139,15 +1406,18 @@ def plot_hyperparams_on_STA(fit_model, STA=None, ax=None, **kwargs):
 
     # Show the STA if provided
     if STA is not None:
-        ax.imshow(STA, origin='lower', vmax=STA.max(), vmin=STA.min(), cmap='bwr')
+        ax.imshow(STA, vmax=STA.max(), vmin=STA.min(), cmap='bwr')
 
     # Show the updated image
-    plt.show(block=False)
+    # plt.show(block=False)
     
     # save the figure
+    if savefig:
+        fig.savefig( session_data_path / f'STA_w_hyp_{label}_{name}.png')
 
-    fig.savefig( session_data_path / f'Hyperparameters_on_STA_{label}_{name}.png')
-
+    # Close figure to free memory if we created it
+    if created_fig:
+        plt.close(fig)
 
     return ax
 
@@ -1265,62 +1535,543 @@ def visualize_tensor(tensor, title=None, cmap='viridis', origin='lower', return_
         plt.show()
         plt.close()
 
+####### Get info from model #########
+def get_K_and_Kinv_B(K_tilde):
+    
+    eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')  
+    EIGVAL_TOL    = 1.e-4                                 
+    ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)  
+    B = eigvecs[:, ikeep]                                           
+    K_tilde_b     = torch.diag(eigvals[ikeep])
+    K_tilde_inv_b = torch.diag_embed(1/eigvals[ikeep]) 
+
+    return K_tilde_b, K_tilde_inv_b, B
+
+def get_final_K_vals(model, mask_override=None):
+
+    if isinstance(model, GPModel):
+        model = model.to_dict()
+    final_kernel_vals = model['final_kernel']
+
+    C    = final_kernel_vals['C']
+    mask = final_kernel_vals['mask']
+    K_tilde = final_kernel_vals['K_tilde']  # This is correct
+    K_tilde_b, K_tilde_inv_b, B = get_K_and_Kinv_B(K_tilde)
+
+    return C, mask, K_tilde_b, K_tilde_inv_b, B
+
+def pred_firing_rate(model_dict, x):
+
+    """
+    Predict the firing of image
+    x shape     : (n, nx) n images
+
+    """
+    kernfun     = model_dict['fit_parameters'].get('kernfun')
+    xtilde      = model_dict.get('xtilde').to(DEVICE, dtype=TORCH_DTYPE)
+
+    C, mask, K_tilde_b, K_tilde_inv_b, B = get_final_K_vals(model_dict)
+
+    theta       = model_dict.get('hyperparams_tuple')[0]
+    f_params      = model_dict.get('f_params')
+
+    m_b           = model_dict.get('m_b')
+    V_b           = model_dict.get('V_b')
+
+    Kvec    = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)
+
+    K   = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
+    K_b       = K @ B
+    KKtilde_inv_b = K_b @ K_tilde_inv_b
+
+    lambda_m, lambda_var = lambda_moments( x[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta, kernfun=kernfun)
+    f_mean               = mean_f_given_lambda_moments(f_params, lambda_m, lambda_var)
+
+    return f_mean, lambda_m, lambda_var
+
+
+#### gradient related functions ####
+
+def compare_gradient_patterns(predicted_grad, reference_grad):
+        """Compare gradient patterns regardless of scale/offset differences"""
+        
+        # Option 1: Correlation coefficient instead of R²
+        pred_flat = predicted_grad.flatten()
+        ref_flat = reference_grad.flatten()
+        correlation = torch.corrcoef(torch.stack([pred_flat, ref_flat]))[0,1]
+        
+        # Option 2: Z-score normalize before computing R²
+        pred_norm = (predicted_grad - torch.mean(predicted_grad)) / (torch.std(predicted_grad) + 1e-8)
+        ref_norm = (reference_grad - torch.mean(reference_grad)) / (torch.std(reference_grad) + 1e-8)
+        
+        ss_tot = torch.sum((ref_norm)**2) 
+        ss_res = torch.sum((pred_norm - ref_norm)**2)
+        r2_normalized = 1 - ss_res / (ss_tot + 1e-8)
+        
+        return correlation, r2_normalized
+
+def reconstruct_gradient_image(dlambda, mask, n_px_side=108):
+    """
+    Reconstructs a full image from the gradient values computed on the masked pixels.
+    
+    Parameters:
+    ----------
+    dlambda : torch.Tensor
+        The gradient vector (contains only values for masked pixels)
+    mask : torch.Tensor
+        Boolean mask indicating which pixels were used in the computation
+    n_px_side : int
+        The side length of the original square image
+        
+    Returns:
+    -------
+    torch.Tensor
+        The reconstructed square image with gradient values
+    """
+    # Create a zero tensor with the total number of pixels in the original image
+    full_size = n_px_side * n_px_side
+    gradient_image = torch.zeros(full_size, device=dlambda.device, dtype=dlambda.dtype)
+    
+    assert dlambda.shape[0] == mask.sum().item(), "dlambda size must match number of True values in mask"
+
+    # Place the gradient values back into their original positions
+    gradient_image[mask] = dlambda
+    
+    # Reshape to square image
+    gradient_image = gradient_image.reshape(n_px_side, n_px_side)
+    
+    return gradient_image
+
+def overlay_gradient_on_image(image, gradient, mask, STA, alpha=0.7, n_px_side=108):
+    """
+    Overlay the gradient on the original image and show the masked area boundary.
+    
+    Parameters:
+    ----------
+    image : torch.Tensor
+        Original input image
+    gradient : torch.Tensor
+        2D gradient image (already reconstructed to full size)
+    mask : torch.Tensor
+        Boolean mask indicating pixels used by the model
+    alpha : float
+        Transparency for gradient overlay
+    n_px_side : int
+        Side length of square image
+    """
+    plt.figure(figsize=(11, 3))
+    
+    # Create 2D version of mask for visualization
+    mask_2d = torch.zeros((n_px_side * n_px_side), device=mask.device)
+    mask_2d[mask] = 1.0
+    mask_2d = mask_2d.reshape(n_px_side, n_px_side).cpu().numpy()
+
+    # Original image
+    plt.subplot(1, 4, 1)
+    plt.imshow(image.reshape(n_px_side, n_px_side).cpu().detach(), cmap='gray')
+    plt.title('Original Image')
+    plt.axis('off')
+    
+    # Gradient with mask boundary
+    plt.subplot(1, 4, 2)
+    plt.imshow(gradient.cpu().detach(), cmap='RdBu_r', 
+               vmin=-torch.max(torch.abs(gradient)), 
+               vmax=torch.max(torch.abs(gradient)))
+    
+    # Add contour around the mask
+    plt.contour(mask_2d, levels=[0.5], colors='yellow', linewidths=1.5)
+    plt.title('Gradient with Mask Boundary')
+    plt.axis('off')
+    
+    # Overlay with mask boundary
+    plt.subplot(1, 4, 3)
+    plt.imshow(image.reshape(n_px_side, n_px_side).cpu().detach(), cmap='gray')
+    plt.imshow(gradient.cpu().detach(), cmap='RdBu_r', alpha=alpha,
+               vmin=-torch.max(torch.abs(gradient)), 
+               vmax=torch.max(torch.abs(gradient)))
+    
+    # Add contour around the mask
+    plt.contour(mask_2d, levels=[0.5], colors='yellow', linewidths=1.5)
+    plt.title('Overlay with Mask Boundary')
+    plt.axis('off')
+
+    # STA
+    plt.subplot(1, 4, 4)
+    plt.imshow(STA.reshape(n_px_side, n_px_side).cpu().detach(), cmap='bwr', 
+               vmin=-torch.max(torch.abs(STA)), 
+                vmax=torch.max(torch.abs(STA)))
+    plt.title('STA')
+    plt.axis('off')
+    
+    rows, cols = np.where(mask_2d == 1)
+    if rows.size > 0 and cols.size > 0:
+        ymin, ymax = np.min(rows), np.max(rows)
+        xmin, xmax = np.min(cols), np.max(cols)
+        
+        # Add some padding
+        padding = 10
+        xlim = (max(0, xmin - padding), min(n_px_side, xmax + padding))
+        # For imshow with default origin='upper', the y-axis is inverted
+        ylim = (min(n_px_side, ymax + padding), max(0, ymin - padding))
+
+        # Apply zoom to all subplots
+        for ax in axs:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+    plt.tight_layout()
+
+def gradients_wrt_dx(model, x_i, mask_override=None):
+
+    ''' Compute the gradient of the mean firing rate, of lambda moments and K(xtilde,x_i) w.r.t. x_i
+        for one or mode image x_i UNMASKED
+        
+        x_i must be of shape (nx) . ONLY ONE IMAGE SUPPORTED FOR NOW
+        '''
+
+    theta = model.get('hyperparams_tuple')[0]
+    m_b   = model['m_b']
+    V_b   = model['V_b']
+    f_params = model['f_params']
+
+    C, mask, K_tilde_b, K_tilde_inv_b, B = get_final_K_vals(model, mask_override=mask_override)
+
+    xtilde = model['xtilde']
+
+    xtilde_m = xtilde[:,mask]
+    x_i_m    = x_i[mask]
+
+    # Get the gradient of K(xtilde, x_i) w.r.t. x_i
+    # K, dK_x    = acosker(theta, xtilde_m, x_i_m[None,:], C, get_dK_x=True) # (1, ntilde) and (ntilde, 1, nx)
+
+    # Note we are not using batch dimensions correctly, n of images is middle dimension
+
+    # dlambda, dvar_lambda, dK_vec_x, dsecond_term = lambda_moments_gradient_wrt_x(theta, xtilde_m, x_i_m[None,:], C, m_b, V_b, K_tilde_b, K_tilde_inv_b, B ) #[:,-1]
+
+    lambda_m, lambda_var, dlambda, dvar_lambda = lambda_moments_and_gradient_wrt_x(
+        theta, xtilde_m, x_i_m[None,:], C, m_b, V_b, K_tilde_b, K_tilde_inv_b, B ) 
+
+    f_mean, df_mean = mean_f_gradients_wrt_x_given_lambda_moments(
+        f_params, lambda_m, lambda_var, dlambda, dvar_lambda)
+
+
+    # return dlambda, dvar_lambda, dK_vec_x, dsecond_term, dK_x, K
+    return f_mean, df_mean, dlambda, dvar_lambda#, dK_x, K
+
+
+def test_dK_gradients_wrt_dx(model, x_i):
+
+    ''' Test if out gradient of K(xtilde,x_i) w.r.t. x_i is correct numerically
+    
+        eps not too low to avoid catastrophic cancellation
+        
+        giving model as argument of gradients_wrt_dx '''
+
+
+    theta = model.get('hyperparams_tuple')[0]
+    m_b   = model['m_b']
+    V_b   = model['V_b']
+
+    C, mask, K_tilde_b, K_tilde_inv_b, B = get_final_K_vals(model)
+
+    xtilde = model['xtilde']
+
+    xtilde_m = xtilde[:,mask]
+    x_i_m    = x_i[mask]
+
+    print(f' mean masked xi: {x_i_m.mean().cpu().item():.4f}')
+
+    maxdiffs_K = []
+
+    for pxl in range(  x_i[mask].shape[0] ):
+        
+        # temporary kernel computation of shape ( ntilde, 1)
+
+        eps = 1.e-2
+    
+        x_perturbed_1 = x_i_m.clone()
+        x_perturbed_1[pxl] = x_perturbed_1[pxl] + eps
+
+        x_perturbed_2 = x_i_m.clone()
+        x_perturbed_2[pxl] = x_perturbed_2[pxl] - eps
+
+        # _,_, _,_  = gradients_wrt_dx(model, x_i) # -> note x_i is unmasked. evarything is calculated in gradients_wrt_x
+        # dK_x = dK_x.squeeze()
+
+        K, dK_x  = acosker(theta, xtilde_m, x_i_m[None,:], C, get_dK_x=True) # (1, ntilde) and (ntilde, 1, nx)
+        dK_x     = dK_x.squeeze()
+
+        K_1, _   = acosker(theta, xtilde_m, x_perturbed_1[None,:], C, get_dK_x=True) # (1, ntilde)
+        K_2, _   = acosker(theta, xtilde_m, x_perturbed_2[None,:], C, get_dK_x=True) # (1, ntilde)
+
+        dK_x_num = (K_1-K_2).flatten() / (2*eps)
+
+        maxdiff = torch.max(torch.abs(dK_x[:,pxl] - dK_x_num))
+
+        maxdiffs_K.append(maxdiff.cpu().item())
+        # print(f" Pixel {pxl}: max diff dK_x: {maxdiff.cpu().item():.4e}")
+        if maxdiff > 1.e-1:
+            raise ValueError("Gradient check failed")
+
+        # dlambda, Sigma_dlambda = lambda_moments_gradient_wrt_x(theta, xtilde_m, x_i_m, C, m_b, V_b, K_tilde_inv_b, B ) #[:,-1]
+
+    maxdiffs_K = np.array(maxdiffs_K)
+    print(f" Gradient check (analytic vs numeric) max abs diff over {maxdiffs_K.shape[0]} pixels:")
+    print(f" max difference: {np.max(maxdiffs_K):.4e}, mean: {np.mean(maxdiffs_K):.4e}, std: {np.std(maxdiffs_K):.4e}, eps used: {eps:.4e}")    
+
+def lambda_moments_and_gradient_wrt_x(theta, xtilde, x, C, m_b, V_b, K_tilde_b, K_tilde_inv_b, B, lambda_m=None, lambda_var=None):
+
+    '''Compute gradients of mean and covariance of lambda wrt z
+    
+    x can be one or more images (n, nx) (batch dimension first)
+    '''
+
+    # K_tilde_inv_b: (ntilde-B, ntilde_b) projection onto eigenspace of K_tilde_inv
+    # xtilde : (ntilde, nx)
+    # x : (nx) -> note its a single image
+    # C : (nx_masked, nx_masked)
+
+    # In MATLAB we got the pseudoinverse. No need here, saved in the model
+    # K_tilde_inv = torch.linalg.pinv(K) ( shape (ntilde, ntilde) )
+    
+
+    # Derivative ok K(xtilde,x) wrt x ( note that we are computing K calling it with xtilde first )
+    # K (ntilde, 1), dK_x (ntilde, 1, nx)
+    K, dK_x = acosker(theta, xtilde, x, C, get_dK_x=True) # (ntilde, 1) and (n1,n2,nx)=(ntilde,1,nx)
+
+    # New version to tet
+    K_vec, dK_vec_x = acosker(theta, x, x2=None, C=C, get_dK_x=True, diag=True) # (1,1) and (n1,nx)=(1,nx)
+
+    # Torch expects batch dimension as first 
+    dK_x = dK_x.permute(1,2,0) #( ntilde, 1, nx ) -> (1,nx,ntilde)
+
+    # Project dK_x onto eigenspace
+    dK_x_b = dK_x @ B #(1, nx, ntilde_b)
+    del dK_x
+
+    # for dsigma we also need K. Usually we dont transpose it cause we call acosker as K(x,xtilde), but im used to a=KKtilde_inv
+    K_b = K.T @ B #(1, ntilde_b)
+    del K
+
+    # KKtilde_inv_b 
+    a  = K_b @ K_tilde_inv_b #(1, ntilde_b)
+    da = dK_x_b @ K_tilde_inv_b # (1, nx, ntilde_b) 
+    del dK_x_b
+    del K_tilde_inv_b
+
+
+    # Compute mean gradient (da' * m in MATLAB)
+    dlambda = da @ m_b #(1, nx)
+    
+    dsecond_term = 2*(a@(V_b-K_tilde_b)@da.transpose(-1,-2)) #(1,1,nx)
+    # squeeze teh ntilde dimension ( first is batch, last is pixels)
+    dsecond_term = dsecond_term.squeeze(1) #(1,nx)
+
+    dsigma_lambda = dK_vec_x + dsecond_term #(1,nx)
+
+    # we return also the actual mean and variance for the given x
+
+    if lambda_m is None or lambda_var is None:
+        lambda_m, lambda_var = lambda_moments( x, K_tilde_b, a, K_vec, K_b, C, m_b, V_b, theta, kernfun=acosker)
+
+    # return dlambda, dsigma_lambda, dK_vec_x, dsecond_term 
+    return lambda_m, lambda_var, dlambda, dsigma_lambda
+
+
 ##################   Utility functions  ##################
 
-def nd_mean_noise_entropy(p_response, log_r2d_fact, sigma2, mu ):
-    # Computes the conditional noise entropy < H( r|f,x ) >_p(f|D) [eq 33 Paper PNAS]
-    # INPUTS:
-    # sigma2: 
-    #     - [nstar]
-    # mu:
-    #     - [nstar]
-    # p_response: set of probabilities p(r|x,D) for r that goes from 0 to a low number, set in utility(). Should go to infninty but the mean responses are low
-    #     - [r, nstar]
-    # log_r2d_fact: log(r!) argument of the sum, remember gamma(r+1) = r!
-    #     - [r, nstar]   
-    # In the nstar=1 case it was:  p_times_logr_sum = p_response@torch.lgamma(r+1) shape (1)
+# def nd_mean_noise_entropy(p_response, log_r2d_fact, sigma2, mu ):
+#     # Computes the conditional noise entropy < H( r|f,x ) >_p(f|D) [eq 33 Paper PNAS]
+#     # INPUTS:
+#     # sigma2: 
+#     #     - [nstar]
+#     # mu:
+#     #     - [nstar]
+#     # p_response: set of probabilities p(r|x,D) for r that goes from 0 to a low number, set in utility(). Should go to infninty but the mean responses are low
+#     #     - [r, nstar]
+#     # log_r2d_fact: log(r!) argument of the sum, remember gamma(r+1) = r!
+#     #     - [r, nstar]   
+#     # In the nstar=1 case it was:  p_times_logr_sum = p_response@torch.lgamma(r+1) shape (1)
     
-    p_times_logr_sum = torch.sum( p_response*log_r2d_fact, dim=0 ) # shape (nstar)
+#     p_times_logr_sum = torch.sum( p_response*log_r2d_fact, dim=0 ) # shape (nstar)
 
-    # TODO: check this formula. In the paper
-    H_mean = -torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + p_times_logr_sum
+#     # TODO: check this formula. In the paper
+#     H_mean = -torch.exp(mu + 0.5*sigma2)*(mu + sigma2 - 1) + p_times_logr_sum
 
-    return H_mean
+#     return H_mean
 
-def nd_lambda_r_mean(r, sigma2, mu):
-    # Computes the  argmax of the first row of the laplace approxmated logp(r|x,D) [eq 32 Paper PNAS] . Eq 33,34
-    # Its called lambda but its really representing log(f)
-    # this is NOT the lambda that we learn with the GP.
+# def nd_lambda_r_mean(r, sigma2, mu):
+#     # Computes the  argmax of the first row of the laplace approxmated logp(r|x,D) [eq 32 Paper PNAS] . Eq 33,34
+#     # Its called lambda but its really representing log(f)
+#     # this is NOT the lambda that we learn with the GP.
     
-    # r is a tensor of values from 0 to r_cutoff, its the max numver for the sum in eq 29 Paper PNAS
-    # sigma2: shape (nstar) 
+#     # r is a tensor of values from 0 to r_cutoff, its the max numver for the sum in eq 29 Paper PNAS
+#     # sigma2: shape (nstar) 
 
-    rsigma2 = torch.outer(r,sigma2)                          # shape (r, nstar): every column is r*sigma2[i] (columns zero is rsigma2[:,0])
-    z       = torch.exp( rsigma2 + mu) * sigma2.unsqueeze(0) # shape (r, nstar): we add a first (1) dimension and multiply each sigma[i] by the corresponding column    
+#     rsigma2 = torch.outer(r,sigma2)                          # shape (r, nstar): every column is r*sigma2[i] (columns zero is rsigma2[:,0])
+#     z       = torch.exp( rsigma2 + mu) * sigma2.unsqueeze(0) # shape (r, nstar): we add a first (1) dimension and multiply each sigma[i] by the corresponding column    
 
-    # Avoid overflowing in the exponential
-    sum_mask = z != torch.inf                                   # shape (r, nstar)
-    z        = torch.where(sum_mask, z, torch.tensor(0.))       # shape (r, nstar)
-    rsigma2  = torch.where(sum_mask, rsigma2, torch.tensor(0.)) # shape (r, nstar)
+#     # Avoid overflowing in the exponential
+#     sum_mask = z != torch.inf                                   # shape (r, nstar)
+#     z        = torch.where(sum_mask, z, torch.tensor(0.))       # shape (r, nstar)
+#     rsigma2  = torch.where(sum_mask, rsigma2, torch.tensor(0.)) # shape (r, nstar)
 
 
 
-    # TODO: I think its pretty important to avoid this copying to cpu and back to gpu. LambertW on the GPU would be great
-    '''
-    A little test gave
-    Elapsed time for the CPU copy: 0.000021
-    Elapsed time for the lambertw: 0.000082
-    Elapsed time for the GPU copy: 0.000041 
-    (results of this order)
-    So its not a bottleneck but it still doubles the time of the function
-    '''
+#     # TODO: I think its pretty important to avoid this copying to cpu and back to gpu. LambertW on the GPU would be great
+#     '''
+#     A little test gave
+#     Elapsed time for the CPU copy: 0.000021
+#     Elapsed time for the lambertw: 0.000082
+#     Elapsed time for the GPU copy: 0.000041 
+#     (results of this order)
+#     So its not a bottleneck but it still doubles the time of the function
+#     '''
 
-    z_cpu       = z.cpu()
-    lambertWcpu = scipy.special.lambertw( z=z_cpu, k=0, tol=1.e-8)
-    lambW       = rsigma2 + mu - torch.real(lambertWcpu.to(DEVICE)) # Take only the real part
+#     z_cpu       = z.cpu()
+#     lambertWcpu = scipy.special.lambertw( z=z_cpu, k=0, tol=1.e-8)
+#     lambW       = rsigma2 + mu - torch.real(lambertWcpu.to(DEVICE)) # Take only the real part
 
-    # print(f' Kept {z.shape[0]} values for the summation in the Utility function')
-    return lambW, sum_mask 
+#     # print(f' Kept {z.shape[0]} values for the summation in the Utility function')
+#     return lambW, sum_mask
+
+
+# ========================= CUSTOM LAMBERT W WITH STABLE GRADIENTS =========================
+
+# class LambertWFunction(torch.autograd.Function):
+#     """
+#     Custom autograd function for Lambert W with numerically stable gradient.
+
+#     Forward pass: Uses torchlambertw.special.lambertw (iterative solver)
+#     Backward pass: Uses analytical formula dW/dz = W / (z * (1 + W))
+
+#     The analytical gradient is more stable than differentiating through the
+#     iterative solver, especially for edge cases where z→0 or W→-1.
+#     """
+
+#     @staticmethod
+#     def forward(ctx, z, k=0):
+#         """
+#         Forward pass: Compute Lambert W function.
+
+#         Args:
+#             z: Input tensor
+#             k: Branch (0 for principal, -1 for non-principal)
+
+#         Returns:
+#             w: Lambert W function of z
+#         """
+#         w = torch_lambertw(z, k=k)
+#         ctx.save_for_backward(z, w)
+#         ctx.k = k
+#         return w
+
+#     @staticmethod
+#     def backward(ctx, grad_output):
+#         """
+#         Backward pass: Compute gradient using analytical formula.
+
+#         The derivative of Lambert W is: dW/dz = W / (z * (1 + W))
+
+#         This can be numerically unstable when:
+#         - z ≈ 0 (division by zero)
+#         - W ≈ -1 (division by zero, occurs at z = -1/e)
+
+#         We handle these cases by clamping the denominator and filtering non-finite values.
+#         """
+#         z, w = ctx.saved_tensors
+
+#         # Analytical gradient: dW/dz = W / (z * (1 + W))
+#         denominator = z * (1.0 + w)
+
+#         # Avoid division by zero - clamp denominator away from zero
+#         eps = 1e-10
+#         safe_denom = torch.where(
+#             torch.abs(denominator) > eps,
+#             denominator,
+#             torch.sign(denominator) * eps + (denominator == 0).float() * eps
+#         )
+
+#         grad_z = grad_output * w / safe_denom
+
+#         # Set gradient to zero for invalid values (inf, nan)
+#         grad_z = torch.where(
+#             torch.isfinite(grad_z),
+#             grad_z,
+#             torch.zeros_like(grad_z)
+#         )
+
+#         return grad_z, None  # None for k (not differentiable)
+
+
+# def lambertw_stable(z, k=0):
+#     """
+#     Lambert W function with stable gradients for backpropagation.
+
+#     Uses custom autograd implementation that computes gradients via the
+#     analytical formula dW/dz = W/(z(1+W)) rather than differentiating
+#     through the iterative solver.
+
+#     Args:
+#         z: Input tensor (real-valued)
+#         k: Branch selection (0 for principal, -1 for non-principal)
+
+#     Returns:
+#         W(z): Lambert W function of z
+#     """
+#     return LambertWFunction.apply(z, k)
+
+
+# def nd_lambda_r_mean_torch(r, sigma2, mu):
+#     """
+#     PyTorch-native version of nd_lambda_r_mean using torchlambertw with stable gradients.
+
+#     Computes the argmax of the first row of the laplace approximated logp(r|x,D) [eq 32 Paper PNAS].
+#     This version uses lambertw_stable() which provides numerically stable gradients via
+#     analytical formula dW/dz = W/(z(1+W)) rather than differentiating through the iterative solver.
+
+#     Args:
+#         r: tensor of values from 0 to r_cutoff (max number for the sum in eq 29 Paper PNAS)
+#         sigma2: tensor of shape (nstar)
+#         mu: tensor of shape (nstar)
+
+#     Returns:
+#         lambW: tensor of shape (r, nstar) - the computed lambda values
+#         sum_mask: tensor of shape (r, nstar) - mask indicating valid (non-infinite) values
+#     """
+#     # Ensure all inputs are on the same device
+#     device = r.device
+#     eps = 1e-10  # Small epsilon for numerical stability
+
+#     rsigma2 = torch.outer(r, sigma2)                          # shape (r, nstar)
+
+#     # Prevent overflow in exp() by clamping the exponent
+#     # exp(88) ≈ 1.65e38 (close to float32 max)
+#     # exp(709) ≈ 8.22e307 (close to float64 max)
+#     # We use 85 to be safe and allow some margin
+#     max_exp = 85.0
+#     exponent = rsigma2 + mu
+#     exponent_clamped = torch.clamp(exponent, max=max_exp)
+
+#     # Compute z with clamped exponent to prevent inf
+#     z = torch.exp(exponent_clamped) * sigma2.unsqueeze(0)     # shape (r, nstar)
+
+#     # Track which values would have overflowed (for masking in caller)
+#     # Note: We still compute with clamped values to maintain gradient flow
+#     would_overflow = exponent > max_exp
+#     sum_mask = ~would_overflow                                 # shape (r, nstar)
+
+#     # For values that would overflow, set them to a small value
+#     # This prevents numerical issues in Lambert W
+#     z = torch.where(sum_mask, z, torch.full_like(z, eps))
+
+#     # Also mask rsigma2 for consistency
+#     rsigma2 = torch.where(sum_mask, rsigma2, torch.tensor(0., device=device))  # shape (r, nstar)
+
+#     # Use stable Lambert W with custom gradient implementation
+#     lambertW_result = lambertw_stable(z, k=0)
+#     lambW = rsigma2 + mu - lambertW_result.real
+
+#     return lambW, sum_mask
 
 def nd_p_r_given_xD(r, sigma2, mu):
     # Computes p( r|x,D ) [eq 31 Paper PNAS]. It's the first term of I(r;f|x,D) [eq:27] 
@@ -1328,7 +2079,13 @@ def nd_p_r_given_xD(r, sigma2, mu):
     # Calculating lambda mean for different values of r
     # Note that the sum over r was already reduced by a r_cutoff set in the utility function
     # If despite this cutoff, the exponential still goes to infinity for certain r values, they are removed from the sum
-    lambda_mean, sum_mask = nd_lambda_r_mean(r, sigma2, mu)          # shape (r, nstar) , (r, nstar)
+    # lambda_mean, sum_mask = nd_lambda_r_mean(r, sigma2, mu)          # shape (r, nstar) , (r, nstar)
+    
+    lambda_mean, sum_mask = nd_lambda_r_mean_torch(r, sigma2, mu)    # shape (r, nstar) , (r, nstar)
+
+    # Mask lambda_mean to prevent overflow values from affecting probability calculations
+    lambda_mean = torch.where(sum_mask, lambda_mean, torch.tensor(0., device=lambda_mean.device))
+
     ex_lambda_mean = torch.exp(lambda_mean)                          # shape (r, nstar)
 
 
@@ -1343,16 +2100,16 @@ def nd_p_r_given_xD(r, sigma2, mu):
     log_r_fact = log_r_fact.unsqueeze(1)                              # shape (r) -> shape (r, 1) ( equivalent to [:,None])
     log_r_fact = log_r_fact.repeat(1, sigma2.shape[0])                # shape (r, 1) -> shape (r, nstar)
 
-    log_r_fact = torch.where(sum_mask, log_r_fact, torch.tensor(0.))  # shape (r, nstar)
-    r          = torch.where(sum_mask, r, torch.tensor(0.))           # shape (r, nstar)
+    log_r_fact = torch.where(sum_mask, log_r_fact, torch.tensor(0., device=log_r_fact.device))  # shape (r, nstar)
+    r          = torch.where(sum_mask, r, torch.tensor(0., device=r.device))           # shape (r, nstar)
 
     # We woulnd't need to unsqueeze / add an empty first dimension to sigma2. It's just to show that we are dividing each column of lambda_mean by the corresponding sigma2
     log_p = lambda_mean*r - ex_lambda_mean - ((lambda_mean-mu)**2)/(2*sigma2.unsqueeze(0)) - 0.5*safe_log( ex_lambda_mean*sigma2 + 1) - log_r_fact # TODO: is this factorial too slow?
 
     return torch.exp(log_p), log_p, r, log_r_fact
 
-@torch.no_grad()
-def nd_utility( sigma2, mu, r_masked):
+
+def nd_utility( mu, sigma2, r_masked):
     # Computes the utility function [eq 27 Paper PNAS]
 
     # mu, sigma2 are mean and variance of log(f) with f the firing rate. 
@@ -1485,7 +2242,666 @@ def get_utility(xstar, xtilde, C, mask, theta, m, V, K_tilde, K_tilde_inv, kernf
 
     return utility( sigma2=sigma2_star, mu=mu_star )
 
-def most_useful_remaining_idx( active_model, img_train, remaining_idx ):
+def batch_utility_w_grad(
+    model_active,
+    imgs_train,
+    remaining_active_idx,
+    max_r_cap=100,
+    test_rms_constraint=False,
+    test_L2norm_constraint=False,
+    n_steps=5,
+):
+    """
+    Compute Utility of all images, best image and gradient of utility w.r.t. the best image
+
+    Parameters:
+    -----------
+    model_active : GPModel
+        Current fitted GP model
+    imgs_train : torch.Tensor
+        Full training image dataset
+    remaining_active_idx : torch.Tensor
+        Indices of candidate images
+    max_r_cap : int
+        Maximum spike count for utility computation
+    test_gradient_ascent : bool
+        If True, perform 5 gradient ascent steps and return trajectory data
+
+    Returns:
+    --------
+    u2d : torch.Tensor
+        Utility values for all candidate images
+    x_idx_best : torch.Tensor
+        Index of best image in original dataset
+    dU_best : torch.Tensor
+        Gradient of utility w.r.t. best image
+    trajectory_data : dict or None
+        If test_gradient_ascent=True, returns dict with:
+            - 'initial_img': initial image tensor
+            - 'traj': list of image tensors at each step
+            - 'util_hist': list of utility values
+            - 'grad_norms': list of gradient norms
+        Otherwise returns None
+    """
+
+    r_masked = torch.arange(0, max_r_cap, dtype=TORCH_DTYPE, device=DEVICE)
+
+    X_remaining = imgs_train[remaining_active_idx]
+
+    kernfun     = model_active.kernfun
+    xtilde      = model_active.xtilde
+
+    theta = model_active.theta
+    m_b   = model_active.m_b
+    V_b   = model_active.V_b
+
+    A = torch.exp(model_active.f_params['logA'])
+    lambda0 = model_active.f_params['lambda0']
+
+    C, mask, K_tilde_b, K_tilde_inv_b, B = get_final_K_vals(model_active)
+
+    Kvec = kernfun(theta, X_remaining[:,mask], x2=None, C=C, dC=None, diag=True)
+
+    K   = kernfun(theta, X_remaining[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
+    K_b = K @ B
+    KKtilde_inv_b = K_b @ K_tilde_inv_b
+
+    # === Utility of all remaining images ===
+    lambda_m_batch, lambda_var_batch = lambda_moments( 
+        X_remaining[:,mask], K_tilde_b, KKtilde_inv_b, Kvec, K_b, C, m_b, V_b, theta)  
+
+    # NOTE: These are mean and variance of log_f = A*lambda + lambda0
+    #   - Not the log of mean and variance of f
+    #   - Not the mean and variance of lambda
+    logf_mean_batch = A*lambda_m_batch + lambda0
+    logf_var_batch  = A**2 * lambda_var_batch
+
+    # === Utility of all remaining images ===
+    # Keep gradient tracking enabled (minimal overhead) for potential gradient computation later
+    with torch.enable_grad():
+        logf_mean_batch_grad = logf_mean_batch.clone().requires_grad_(True)
+        logf_var_batch_grad  = logf_var_batch.clone().requires_grad_(True)
+
+        u2d = nd_utility(logf_mean_batch_grad, logf_var_batch_grad, r_masked)
+        i_best = u2d.argmax()  # Index of the best image in the utility vector
+        x_idx_best = remaining_active_idx[i_best]  # Index of the best image in the original dataset
+
+    # Initialize return variables (will be populated if test_rms_constraint=True)
+    dU_dx_init = None
+    trajectory_data = None
+
+    if test_rms_constraint:
+        # L-BFGS optimization with RMS constraint (mean + standard deviation)
+        # Key idea: Optimize unconstrained θ, transform to x_masked = μ_target + σ_target * (θ - mean(θ)) / std(θ)
+        # Constraints automatically satisfied by construction (no post-step projection needed!)
+        # This is more restrictive than L2 norm (2 constraints vs 1)
+        # Matches Walker et al. 2019 Nature Neuroscience "Inception loops" paper approach
+        print("\n=== Start L-BFGS Optimization (RMS reparameterization) ===")
+
+        # === 1. Define reparameterization variables (single definition) ===
+        assert imgs_train[x_idx_best].mean() == X_remaining[i_best].mean(), "Image means do not match!"
+
+        initial_img = imgs_train[x_idx_best].clone()
+        initial_unmasked = initial_img[~mask].clone()
+        initial_masked = initial_img[mask].clone()
+
+        # Target statistics from this specific image (not global across images)
+        μ_target = initial_masked.mean().item()
+        σ_target = initial_masked.std().item()
+        # print(f"  Target mean (luminance): {μ_target:.6f}")
+        # print(f"  Target std (RMS contrast): {σ_target:.6f}")
+
+        # REPARAMETERIZATION: Optimization variable is θ (unconstrained)
+        # We transform: x_masked = μ_target + σ_target * (θ - mean(θ)) / std(θ)
+        # This ensures mean(x_masked) = μ_target and std(x_masked) = σ_target automatically!
+        θ = initial_masked.clone().detach().requires_grad_(True)
+
+        # Numerical safety: prevent std(θ) from collapsing
+        θ_std_min = 0.01
+        # print(f"  θ std will be clamped to ≥ {θ_std_min}")
+
+        # === 2. Compute hybrid gradient (∂U/∂x via custom GP + torch autograd) ===
+        with torch.enable_grad():
+            # Compute the gradient of lambda moments wrt chosen x
+            lambda_m, lambda_var, dlambda, dvar_lambda = lambda_moments_and_gradient_wrt_x(
+                theta, xtilde[:,mask], X_remaining[i_best,mask][None,:], C, m_b, V_b, K_tilde_b, K_tilde_inv_b, B,
+                lambda_m=lambda_m_batch[i_best], lambda_var=lambda_var_batch[i_best])
+
+            # Get ∂U/∂logf_mean and ∂U/∂logf_var using torch autograd
+            grad_U_mean_full, grad_U_var_full = torch.autograd.grad(
+                u2d[i_best],
+                [logf_mean_batch_grad, logf_var_batch_grad],
+                retain_graph=False
+            )
+            grad_U_mean = grad_U_mean_full[i_best]
+            grad_U_var = grad_U_var_full[i_best]
+
+            dlogf_mean = A * dlambda
+            dlogf_var = A**2 * dvar_lambda
+
+            # Chain rule: ∂U/∂x = (∂U/∂logf_mean)(∂logf_mean/∂x) + (∂U/∂logf_var)(∂logf_var/∂x)
+            dU_dx_init = grad_U_mean * dlogf_mean + grad_U_var * dlogf_var  # Shape (1, nx)
+
+        print(f'\nU: {u2d[i_best].item():<8.8f}, ||∂U/∂x|| = {torch.linalg.vector_norm(dU_dx_init).item():<6.4e}, dU_dx_init mean: {torch.mean(dU_dx_init).item():<8.7f}')
+
+        # === 3. Compute torch gradients for tracking/comparison (∂U/∂θ and ∂U/∂x via torch) ===
+        with torch.enable_grad():
+            # Transform θ → x_masked for initial utility
+            θ_mean_init = θ.mean()
+            θ_std_init = θ.std()
+            x_masked_init = μ_target + σ_target * (θ - θ_mean_init) / θ_std_init
+
+            x_full_init = initial_img.clone()
+            x_full_init[mask] = x_masked_init  # Keep gradient flow through θ
+
+            U_init = compute_utility_single_image(model_active, x_full_init, max_r_cap)
+
+            dU_dtheta_init, dU_dx_init_torch = torch.autograd.grad(
+                U_init,
+                [θ, x_masked_init])
+
+        # DIAGNOSTIC: Print initial Utility and gradient norms
+        print(f"U: {U_init.item():<8.8f}, ||∂U/∂θ|| = {torch.linalg.vector_norm(dU_dtheta_init).item():<6.4e}, dU_dtheta_init mean: {torch.mean(dU_dtheta_init).item():<8.7f}")
+        print(f"||∂U/∂x|| (hybrid) = {torch.linalg.vector_norm(dU_dx_init).item():<6.4e}, ||∂U/∂x|| (torch) = {torch.linalg.vector_norm(dU_dx_init_torch).item():<6.4e}")
+
+        # === 4. Initialize tracking lists ===
+        x_traj = [initial_img.clone()]
+        util_hist = [u2d[i_best].item()]
+        grad_norms = [torch.linalg.vector_norm(dU_dtheta_init).item()]  # ||∂U/∂θ||
+        grad_hist = [dU_dtheta_init.detach().clone()]  # Store ∂U/∂θ
+
+        # === 5. Setup L-BFGS optimizer ===
+        history_size = 10
+
+        # Track NaN gradient occurrences
+        nan_grad_count = [0]
+        max_nan_grad_allowed = 50
+
+        # Create optimizer - Optimizes θ (not x_masked directly)
+        optimizer = torch.optim.LBFGS(
+            [θ],
+            lr=1.e4,
+            max_iter=500,
+            history_size=history_size,
+            line_search_fn='strong_wolfe',  # Changed from 'strong_wolfe' to 'armijo'
+            tolerance_grad=1e-7,
+            tolerance_change=1e-9,
+            verbose=True,  # Enable detailed line search debugging
+            # Armijo line search parameters - optimized for image optimization
+            armijo_c1=1e-3,              # Less strict than default 1e-4 (accepts 0.1% decrease)
+            armijo_rho=0.7,              # Gentler backtracking than default 0.5 (30% reduction per iter)
+            armijo_min_step_size=1e-5,   # Prevent microscopic steps in pixel space
+        )
+
+        # === 6. Run L-BFGS optimization loop ===
+        # DIAGNOSTIC: Track closure calls per step
+        closure_call_count = [0]
+
+        for step in range(n_steps):
+            # print(f"\n--- optimizer.step {step} ---")
+            def closure():
+                """
+                Closure for L-BFGS optimizer with RMS constraint via reparameterization.
+
+                KEY: Optimize θ, transform to x_masked = μ_target + σ_target * (θ - mean(θ)) / std(θ)
+                Constraints automatically satisfied by construction! Gradients flow: U → x_masked → θ
+                More restrictive than L2 norm: fixes both brightness and contrast.
+                """
+                # DIAGNOSTIC: Count closure calls
+                closure_call_count[0] += 1
+
+                # NUMERICAL SAFETY: Clamp std(θ) to prevent division by zero
+                with torch.no_grad():
+                    θ_std_current = θ.std()
+                    if θ_std_current < θ_std_min:
+                        print(f"    [Warning] C-call {closure_call_count[0]}] Clamping θ std from {θ_std_current.item():.6f} to {θ_std_min}")
+                        θ.data = (θ - θ.mean()) * (θ_std_min / θ_std_current) + θ.mean()
+
+                optimizer.zero_grad()
+
+                # REPARAMETERIZATION: Transform θ → x_masked (constraints satisfied by construction!)
+                # Gradients will flow through this transformation: ∂U/∂θ = ∂U/∂x_masked * ∂x_masked/∂θ
+                with torch.enable_grad():
+                    θ_mean = θ.mean()
+                    θ_std = θ.std()
+                    x_masked_constrained = μ_target + σ_target * (θ - θ_mean) / θ_std  # mean=μ_target, std=σ_target automatically!
+
+                    # Reconstruct full image
+                    x_full = torch.empty_like(initial_img)
+                    x_full[~mask] = initial_unmasked
+                    x_full[mask] = x_masked_constrained  # Gradients flow: x_full → x_masked → θ
+
+                    # Compute utility
+                    U = compute_utility_single_image(model_active, x_full, max_r_cap)
+
+                # Reject invalid utility values
+                if torch.isnan(U) or torch.isinf(U):
+                    print(f"    [Closure] U is {'NaN' if torch.isnan(U) else 'Inf'}, rejecting step")
+                    return torch.tensor(1e10, dtype=U.dtype, device=U.device, requires_grad=True)
+
+                # L-BFGS minimizes, so return negative utility
+                loss = -U
+
+
+                loss.backward()  # Computes ∂U/∂θ via chain rule through normalization
+
+                # Check if backward pass produced invalid gradients in θ
+                if θ.grad is not None:
+                    # DIAGNOSTIC: Print loss value and utility gradient for first few closure calls
+                    # if closure_call_count[0] <= 50:
+                        # print(f"      [Closure call {closure_call_count[0]}] U={U.item():.8f}, dU/dθ norm={torch.linalg.vector_norm(θ.grad).item():.8f}")
+                    if torch.isnan(θ.grad).any() or torch.isinf(θ.grad).any():
+                        nan_grad_count[0] += 1
+
+                        if nan_grad_count[0] <= max_nan_grad_allowed:
+                            print(f"    [Closure] Warning: Gradient is NaN/Inf (occurrence {nan_grad_count[0]}/{max_nan_grad_allowed}), clearing and rejecting step")
+                            optimizer.zero_grad()
+                            return torch.tensor(1e10, dtype=loss.dtype, device=loss.device, requires_grad=False)
+                        else:
+                            raise RuntimeError(
+                                f"Gradient contains NaN or Inf after backward pass (occurred {nan_grad_count[0]} times)! "
+                                f"U={U.item():.6f}, loss={loss.item():.6f}. "
+                                f"This indicates systematic numerical instability."
+                            )
+                else:
+                    raise Exception(f"    [Closure] Warning: Gradient is None after backward pass!")
+                return loss
+
+            # DIAGNOSTIC: Store θ before step for comparison
+            θ_before = θ.detach().clone()
+
+            # Perform one L-BFGS step (includes line search)
+            print(f"\n=== L-BFGS Step {step} ===")
+            optimizer.step(closure)
+            # DIAGNOSTIC: Print accepted step size t from line search
+            state = optimizer.state[optimizer._params[0]]
+            # print(f"    Accepted line-search step t = {state['t']:.3e}")
+            # NO POST-STEP PROJECTION NEEDED!
+            # Constraints are satisfied by construction via reparameterization
+
+            # DIAGNOSTIC: Compute θ changes after step
+            with torch.no_grad():
+                θ_diff = θ - θ_before
+                θ_max_change = torch.max(torch.abs(θ_diff)).item()
+                θ_mean_change = torch.mean(torch.abs(θ_diff)).item()
+                θ_std_after = θ.std().item()
+
+            # Reconstruct x_masked from θ for tracking
+            with torch.no_grad():
+                θ_mean_current = θ.mean()
+                θ_std_current = θ.std()
+                x_masked_current = μ_target + σ_target * (θ - θ_mean_current) / θ_std_current
+
+                x_full_current = torch.empty_like(initial_img)
+                x_full_current[~mask] = initial_unmasked
+                x_full_current[mask] = x_masked_current
+
+            # Compute utility and gradient for tracking (∂U/∂θ, not ∂U/∂x)
+            with torch.enable_grad():
+                # Recompute utility with gradient tracking for θ
+                θ_mean_t = θ.mean()
+                θ_std_t = θ.std()
+                x_masked_t = μ_target + σ_target * (θ - θ_mean_t) / θ_std_t
+
+                x_full_t = torch.empty_like(initial_img)
+                x_full_t[~mask] = initial_unmasked
+                x_full_t[mask] = x_masked_t
+
+                U_t = compute_utility_single_image(model_active, x_full_t, max_r_cap)
+                dU_dtheta_t = torch.autograd.grad(U_t, θ, retain_graph=False)[0]
+
+            # Verify constraints are satisfied (should be exact by reparameterization)
+            with torch.no_grad():
+                μ_actual = x_masked_current.mean().item()
+                σ_actual = x_masked_current.std().item()
+                μ_error = abs(μ_actual - μ_target) / abs(μ_target) if abs(μ_target) > 1e-8 else 0.0
+                σ_error = abs(σ_actual - σ_target) / σ_target if σ_target > 1e-8 else 0.0
+
+            # print(f"--- L-BFGS End step {step}: U={U_t.item():.6f}, ||∂U/∂θ||={torch.linalg.vector_norm(dU_dtheta_t).item():.6f}---")
+
+            # DIAGNOSTIC: Print line search and θ change statistics
+            # print(f"    Closure called {closure_call_count[0]} times ")
+            # print(f"    θ change: max={θ_max_change:.6e}, mean={θ_mean_change:.6e}")
+            # print(f"    θ_std: {θ_std_after:.6f}")
+            # DIAGNOSTIC: Print constraint verification
+            if μ_error > 1e-4 or σ_error > 1e-4:
+                print(f"   [Warning] Constraint errors: μ={μ_actual:.6f} (target: {μ_target:.6f}, error: {μ_error*100:.4f}%)")
+                print(f"                                σ={σ_actual:.6f} (target: {σ_target:.6f}, error: {σ_error*100:.4f}%)")
+
+            # Store trajectory data
+            util_hist.append(U_t.item())
+            grad_norms.append(torch.linalg.vector_norm(dU_dtheta_t).item())  # ||∂U/∂θ||
+            x_traj.append(x_full_current.clone())
+            grad_hist.append(dU_dtheta_t.detach().clone())  # Full ∂U/∂θ vector
+
+            # DIAGNOSTIC: Warn if minimal progress detected
+            # if θ_max_change < 1e-6:
+                # print(f"    [Warning]: θ changed less than 1e-6 everywhere.")
+
+            # DIAGNOSTIC: Reset closure counter for next step
+            closure_call_count[0] = 0
+
+        # === 7. Store trajectory data ===
+        trajectory_data = {
+            'initial_img': initial_img,
+            'x_traj': x_traj,
+            'util_hist': util_hist,
+            'grad_norms': grad_norms,
+            'grad_hist': grad_hist
+        }
+
+        # === 8. Print final diagnostics ===
+        # Verify monotonic utility increase
+        monotonic = all(util_hist[i] >= util_hist[i-1] for i in range(1, len(util_hist)))
+        utility_increase = util_hist[-1] - util_hist[0]
+        relative_increase = (utility_increase / util_hist[0] * 100) if util_hist[0] > 1e-8 else 0.0
+
+        print(f"=== L-BFGS Complete (RMS Constraint via Reparameterization) ===")
+        print(f"  Initial U: {util_hist[0]:.6f}")
+        print(f"  Final U:   {util_hist[-1]:.6f}")
+        print(f"  Change:    +{utility_increase:.6f} ({relative_increase:+.2f}%)")
+        print(f"  Monotonic: {'✓ Yes' if monotonic else '✗ No (WARNING!)'}")
+        # print(f"  Constraints: μ = {μ_target:.6f}, σ = {σ_target:.6f} (satisfied by construction)\n")
+
+        print(f"  ||∂U/∂θ||_2   = {torch.linalg.vector_norm(dU_dtheta_init).item():.6e}")
+        print(f"  ||∂U/∂θ||_∞   = {dU_dtheta_init.abs().max().item():.6e}")
+        # print(f"  n_masked_pixels = {dU_dtheta_init.numel()}")
+
+    elif test_L2norm_constraint:
+        # L-BFGS optimization with L2 norm constraint
+        # Key idea: Optimize unconstrained θ, transform to x_masked = (θ / ||θ||) * sqrt(n_pixels_in_mask)
+        # Constraint automatically satisfied by construction (no post-step projection needed!)
+        # This is less restrictive than RMS constraint (1 constraint vs 2)
+        # All images normalized to same L2 norm (no mean/std preservation)
+        print("\n=== Start L-BFGS Optimization (L2 norm constraint) ===")
+
+        # === 1. Define reparameterization variables (single definition) ===
+        assert imgs_train[x_idx_best].mean() == X_remaining[i_best].mean(), "Image means do not match!"
+
+        initial_img = imgs_train[x_idx_best].clone()
+        initial_unmasked = initial_img[~mask].clone()
+        initial_masked = initial_img[mask].clone()
+
+        # Target L2 norm: FIXED for all images (global constraint)
+        n_pixels_in_mask = initial_masked.numel()
+        L2_target = torch.sqrt(torch.tensor(n_pixels_in_mask, dtype=TORCH_DTYPE, device=DEVICE)).item()
+        print(f"  Target L2 norm: {L2_target:.6f} (= sqrt({n_pixels_in_mask}))")
+
+        # REPARAMETERIZATION: Optimization variable is θ (unconstrained)
+        # We transform: x = (θ / ||θ||) * L2_target
+        # This ensures ||x|| = L2_target automatically!
+        θ = initial_masked.clone().detach().requires_grad_(True)
+
+        # Numerical safety: prevent ||θ|| from collapsing to zero
+        θ_norm_min = 0.01
+
+        # Compute x₀: the STARTING POINT for optimization
+        # KEY DIFFERENCE from RMS: x₀ ≠ initial_masked for L2!
+        # - initial_masked = original pixels from pool (arbitrary ||x||)
+        # - x₀ = normalized version with ||x₀|| = sqrt(n)
+        # This is what the L2 reparameterization produces at initialization
+        with torch.no_grad():
+            initial_norm = torch.linalg.norm(initial_masked)
+            x0_masked = (initial_masked / initial_norm) * L2_target  # Starting point x₀
+
+        print(f"  ||initial_masked|| (original): {initial_norm:.6f}")
+        print(f"  ||x₀|| (starting point): {torch.linalg.norm(x0_masked).item():.6f} = {L2_target:.6f}")
+
+        # === 2. Compute hybrid gradient AT x₀ (∂U/∂x via custom GP + torch autograd) ===
+        # IMPORTANT: Both hybrid and torch gradients must be evaluated at x₀ (not original!)
+
+        with torch.enable_grad():
+            # Compute GP predictions at x₀ (starting point)
+            lambda_m_at_x0, lambda_var_at_x0, dlambda_dx, dvar_lambda_dx = lambda_moments_and_gradient_wrt_x(
+                theta, xtilde[:,mask], x0_masked[None,:], C, m_b, V_b, K_tilde_b, K_tilde_inv_b, B,
+                lambda_m=None, lambda_var=None)  # Don't use cached values from original image
+
+            # Transform to log-firing rate at x₀
+            logf_mean_at_x0 = (A * lambda_m_at_x0 + lambda0).requires_grad_(True)
+            logf_var_at_x0 = (A**2 * lambda_var_at_x0).requires_grad_(True)
+
+            # Compute utility at x₀
+            U_at_x0 = nd_utility(logf_mean_at_x0, logf_var_at_x0, r_masked)
+
+            # Get ∂U/∂logf_mean and ∂U/∂logf_var at x₀
+            grad_U_mean, grad_U_var = torch.autograd.grad(
+                U_at_x0,
+                [logf_mean_at_x0, logf_var_at_x0],
+                retain_graph=False
+            )
+
+            dlogf_mean_dx = A * dlambda_dx
+            dlogf_var_dx = A**2 * dvar_lambda_dx
+
+            # Chain rule: ∂U/∂x = (∂U/∂logf_mean)(∂logf_mean/∂x) + (∂U/∂logf_var)(∂logf_var/∂x)
+            dU_dx_init = grad_U_mean * dlogf_mean_dx + grad_U_var * dlogf_var_dx  # Shape (1, nx)
+
+        print(f'\nU (at x₀): {U_at_x0.item():<8.8f}, ||∂U/∂x|| = {torch.linalg.vector_norm(dU_dx_init).item():<6.4e}, dU_dx_init mean: {torch.mean(dU_dx_init).item():<8.7f}')
+
+        # === 3. Compute torch gradients AT x₀ for tracking/comparison (∂U/∂θ and ∂U/∂x via torch) ===
+        with torch.enable_grad():
+            # Apply L2 reparameterization: θ → x₀
+            # At initialization, θ = initial_masked, so this produces x₀
+            θ_norm_init = torch.linalg.norm(θ)
+            x0_from_theta = (θ / θ_norm_init) * L2_target  # This equals x₀!
+
+            assert torch.allclose(x0_from_theta, x0_masked, atol=1e-6), "x₀ from θ does not match precomputed x₀!"
+
+
+            # Reconstruct full image with x₀ in masked region
+            x_full_at_x0 = initial_img.clone()
+            x_full_at_x0[mask] = x0_from_theta  # Keep gradient flow through θ
+
+            # Compute utility at x₀ via torch
+            U_torch_at_x0 = compute_utility_single_image(model_active, x_full_at_x0, max_r_cap)
+
+            # Get gradients: ∂U/∂θ and ∂U/∂x both at x₀
+            dU_dtheta_init, dU_dx_torch_at_x0 = torch.autograd.grad(
+                U_torch_at_x0,
+                [θ, x0_from_theta])
+
+        # DIAGNOSTIC: Print initial utility and gradient norms
+        print(f"U (torch at x₀): {U_torch_at_x0.item():<8.8f}, ||∂U/∂θ|| = {torch.linalg.vector_norm(dU_dtheta_init).item():<6.4e}, dU_dtheta_init mean: {torch.mean(dU_dtheta_init).item():<8.7f}")
+        print(f"||∂U/∂x|| (hybrid at x₀) = {torch.linalg.vector_norm(dU_dx_init).item():<6.4e}, ||∂U/∂x|| (torch at x₀) = {torch.linalg.vector_norm(dU_dx_torch_at_x0).item():<6.4e}")
+        print(f"Utilities match: {abs(U_at_x0.item() - U_torch_at_x0.item()) < 1e-6}")
+
+        # === 4. Initialize tracking lists ===
+        # NOTE: We track the full image (11664 pixels) but optimization only affects masked region
+        x_traj = [initial_img.clone()]  # This still contains ORIGINAL pixels in masked region
+
+        # IMPORTANT: Track utility at x₀ (starting point), not at original image
+        util_hist = [U_at_x0.item()]  # Utility at x₀ (normalized version)
+        grad_norms = [torch.linalg.vector_norm(dU_dtheta_init).item()]  # ||∂U/∂θ|| at x₀
+        grad_hist = [dU_dtheta_init.detach().clone()]  # ∂U/∂θ at x₀
+
+        # === 5. Setup L-BFGS optimizer ===
+        history_size = 10
+
+        # Track NaN gradient occurrences
+        nan_grad_count = [0]
+        max_nan_grad_allowed = 50
+
+        # Create optimizer - Optimizes θ (not x_masked directly)
+        optimizer = torch.optim.LBFGS(
+            [θ],
+            lr=1.0,
+            max_iter=20,
+            history_size=history_size,
+            line_search_fn='strong_wolfe',
+            tolerance_grad=1e-7,
+            tolerance_change=1e-9,
+            verbose=False,
+        )
+
+        # === 6. Run L-BFGS optimization loop ===
+        # DIAGNOSTIC: Track closure calls per step
+        closure_call_count = [0]
+
+        for step in range(n_steps):
+            # print(f"\n--- optimizer.step {step} ---")
+            def closure():
+                """
+                Closure for L-BFGS optimizer with L2 norm constraint via reparameterization.
+
+                KEY: Optimize θ, transform to x_masked = (θ / ||θ||) * L2_target
+                Constraint automatically satisfied by construction! Gradients flow: U → x_masked → θ
+                Less restrictive than RMS constraint: fixes only L2 norm (not mean/std).
+                """
+                # DIAGNOSTIC: Count closure calls
+                closure_call_count[0] += 1
+
+                # NUMERICAL SAFETY: Clamp ||θ|| to prevent division by zero
+                with torch.no_grad():
+                    θ_norm_current = torch.linalg.norm(θ)
+                    if θ_norm_current < θ_norm_min:
+                        print(f"    [Warning] C-call {closure_call_count[0]}] Clamping ||θ|| from {θ_norm_current.item():.6f} to {θ_norm_min}")
+                        θ.data = (θ / θ_norm_current) * θ_norm_min
+
+                optimizer.zero_grad()
+
+                # REPARAMETERIZATION: Transform θ → x_masked (constraint satisfied by construction!)
+                # Gradients will flow through this transformation: ∂U/∂θ = ∂U/∂x_masked * ∂x_masked/∂θ
+                with torch.enable_grad():
+                    θ_norm = torch.linalg.norm(θ)
+                    x_masked_constrained = (θ / θ_norm) * L2_target  # ||x|| = L2_target automatically!
+
+                    # Reconstruct full image
+                    x_full = torch.empty_like(initial_img)
+                    x_full[~mask] = initial_unmasked
+                    x_full[mask] = x_masked_constrained  # Gradients flow: x_full → x_masked → θ
+
+                    # Compute utility
+                    U = compute_utility_single_image(model_active, x_full, max_r_cap)
+
+                # Reject invalid utility values
+                if torch.isnan(U) or torch.isinf(U):
+                    print(f"    [Closure] U is {'NaN' if torch.isnan(U) else 'Inf'}, rejecting step")
+                    return torch.tensor(1e10, dtype=U.dtype, device=U.device, requires_grad=True)
+
+                # L-BFGS minimizes, so return negative utility
+                loss = -U
+
+                loss.backward()  # Computes ∂U/∂θ via chain rule through normalization
+
+                # Check if backward pass produced invalid gradients in θ
+                if θ.grad is not None:
+                    if torch.isnan(θ.grad).any() or torch.isinf(θ.grad).any():
+                        nan_grad_count[0] += 1
+
+                        if nan_grad_count[0] <= max_nan_grad_allowed:
+                            print(f"    [Closure] Warning: Gradient is NaN/Inf (occurrence {nan_grad_count[0]}/{max_nan_grad_allowed}), clearing and rejecting step")
+                            optimizer.zero_grad()
+                            return torch.tensor(1e10, dtype=loss.dtype, device=loss.device, requires_grad=False)
+                        else:
+                            raise RuntimeError(
+                                f"Gradient contains NaN or Inf after backward pass (occurred {nan_grad_count[0]} times)! "
+                                f"U={U.item():.6f}, loss={loss.item():.6f}. "
+                                f"This indicates systematic numerical instability."
+                            )
+                else:
+                    raise Exception(f"    [Closure] Warning: Gradient is None after backward pass!")
+                return loss
+
+            # DIAGNOSTIC: Store θ before step for comparison
+            θ_before = θ.detach().clone()
+
+            # Perform one L-BFGS step (includes line search)
+            optimizer.step(closure)
+            # NO POST-STEP PROJECTION NEEDED!
+            # Constraint is satisfied by construction via reparameterization
+
+            # DIAGNOSTIC: Compute θ changes after step
+            with torch.no_grad():
+                θ_diff = θ - θ_before
+                θ_max_change = torch.max(torch.abs(θ_diff)).item()
+                θ_mean_change = torch.mean(torch.abs(θ_diff)).item()
+                θ_norm_after = torch.linalg.norm(θ).item()
+
+            # Reconstruct x_masked from θ for tracking
+            with torch.no_grad():
+                θ_norm_current = torch.linalg.norm(θ)
+                x_masked_current = (θ / θ_norm_current) * L2_target
+
+                x_full_current = torch.empty_like(initial_img)
+                x_full_current[~mask] = initial_unmasked
+                x_full_current[mask] = x_masked_current
+
+            # Compute utility and gradient for tracking (∂U/∂θ, not ∂U/∂x)
+            with torch.enable_grad():
+                # Recompute utility with gradient tracking for θ
+                θ_norm_t = torch.linalg.norm(θ)
+                x_masked_t = (θ / θ_norm_t) * L2_target
+
+                x_full_t = torch.empty_like(initial_img)
+                x_full_t[~mask] = initial_unmasked
+                x_full_t[mask] = x_masked_t
+
+                U_t = compute_utility_single_image(model_active, x_full_t, max_r_cap)
+                dU_dtheta_t = torch.autograd.grad(U_t, θ, retain_graph=False)[0]
+
+            # Verify constraint is satisfied (should be exact by reparameterization)
+            with torch.no_grad():
+                L2_actual = torch.linalg.norm(x_masked_current).item()
+                L2_error = abs(L2_actual - L2_target) / L2_target if L2_target > 1e-8 else 0.0
+
+            # DIAGNOSTIC: Print constraint verification
+            if L2_error > 1e-4:
+                print(f"   [Warning] L2 norm error: ||x||={L2_actual:.6f} (target: {L2_target:.6f}, error: {L2_error*100:.4f}%)")
+
+            # Store trajectory data
+            util_hist.append(U_t.item())
+            grad_norms.append(torch.linalg.vector_norm(dU_dtheta_t).item())  # ||∂U/∂θ||
+            x_traj.append(x_full_current.clone())
+            grad_hist.append(dU_dtheta_t.detach().clone())  # Full ∂U/∂θ vector
+
+            # DIAGNOSTIC: Reset closure counter for next step
+            closure_call_count[0] = 0
+
+        # === 7. Store trajectory data ===
+        trajectory_data = {
+            'initial_img': initial_img,
+            'x_traj': x_traj,
+            'util_hist': util_hist,
+            'grad_norms': grad_norms,
+            'grad_hist': grad_hist
+        }
+
+        # === 8. Print final diagnostics ===
+        # Verify monotonic utility increase
+        monotonic = all(util_hist[i] >= util_hist[i-1] for i in range(1, len(util_hist)))
+        utility_increase = util_hist[-1] - util_hist[0]
+        relative_increase = (utility_increase / util_hist[0] * 100) if util_hist[0] > 1e-8 else 0.0
+
+        print(f"=== L-BFGS Complete (L2 Norm Constraint) ===")
+        print(f"  Target L2 norm: {L2_target:.6f} (= sqrt({n_pixels_in_mask}))")
+        print(f"  Initial U: {util_hist[0]:.6f}")
+        print(f"  Final U:   {util_hist[-1]:.6f}")
+        print(f"  Change:    +{utility_increase:.6f} ({relative_increase:+.2f}%)")
+        print(f"  Monotonic: {'✓ Yes' if monotonic else '✗ No (WARNING!)'}")
+        print(f"  L2 norm constraint: ||x_masked||₂ = {L2_target:.6f} (satisfied by construction)\n")
+
+        print(f"  ||∂U/∂θ||_2   = {torch.linalg.vector_norm(dU_dtheta_init).item():.6e}")
+        print(f"  ||∂U/∂θ||_∞   = {dU_dtheta_init.abs().max().item():.6e}")
+
+    # Determine the optimized image to return
+    # If optimization was performed (trajectory_data exists), use the final optimized image
+    # Otherwise, return the initial (unoptimized) best image
+    if trajectory_data is not None:
+        optimized_img = trajectory_data['x_traj'][-1].clone().detach()
+    else:
+        optimized_img = imgs_train[x_idx_best].clone().detach()
+
+    # NOTE: x_idx_best is the index of the INITIAL best image in the original dataset img_train
+    # The optimized_img is a modified version of imgs_train[x_idx_best] after gradient ascent
+    return {
+        'optimized_img': optimized_img,                              # Final optimized image (shape: [11664] or [108,108])
+        'img_idx': x_idx_best[None],                                 # Original image index (shape: [1])
+        'utility_batch': u2d,                                        # Utility values for all candidate images
+        'gradient': dU_dx_init.squeeze(0) if dU_dx_init is not None else None,  # Gradient (only if test_rms_constraint=True)
+        'trajectory': trajectory_data                                # Full optimization trajectory (dict or None)
+    }
+
+def most_useful_remaining_idx( active_model, img_train, remaining_idx, verbose=True ):
 
     '''
     Works with active model instance of the GPModel class
@@ -1519,23 +2935,318 @@ def most_useful_remaining_idx( active_model, img_train, remaining_idx ):
     K_star    = kernfun(theta, X_remaining[:,mask], x2=xtilde[:,mask], C=C, dC=None, diag=False)
     K_star_b  = K_star @ B 
 
-    lambda_m_t, lambda_var_t = lambda_moments( 
+    lambda_m, lambda_var = lambda_moments( 
         X_remaining[:,mask], K_tilde_b, K_star_b@K_tilde_inv_b, Kvec_star, K_star_b, C, m_b, V_b, theta)  
 
-    logf_mean = A*lambda_m_t + lambda0
-    logf_var  = A**2 * lambda_var_t
+    # We write the Utility function in terms of the expectation values of g(lambda) = A*lambda + lambda_0 
+    # This is indeed equal to log(f) with f the firing rate but note that  we do not need the distribution of
+    # log(f)
+    logf_mean = A*lambda_m + lambda0
+    logf_var  = A**2 * lambda_var
 
     # Estimate the utility and cap the maximum r ( used in a summation to infinity )
     r_masked = torch.arange(0, max_r_cap, dtype=TORCH_DTYPE, device=DEVICE)
-    u2d      = nd_utility(logf_var, logf_mean, r_masked )
+    u2d      = nd_utility(logf_mean, logf_var, r_masked )
+
+    if torch.any( torch.isnan(u2d) ):
+        print('W - NaN U')
+    if torch.any( torch.isinf(u2d) ):
+        print('W - Inf U')
 
     i_best     = u2d.argmax()             # Index of the best image in the utility vector
     x_idx_best = remaining_idx[i_best]    # Index of the best image in the image dataset indices
-    print(f'Utility: {u2d[i_best].item():<8.6f} |  Best image ID: {i_best}  | Best image index: {x_idx_best}')
+    if verbose:
+        print(f'Utility: {u2d[i_best].item():<8.6f} |  Best image ID: {i_best}  | Best image index: {x_idx_best}')
 
     assert x_idx_best not in active_model.in_use_idx, 'The best image idx is already in use. This shoudld not be possible for now'
 
     return x_idx_best[None]
+
+
+    
+def plot_optimization_trajectory(initial_img, x_traj, util_hist, grad_norms, grad_hist, model_active,
+                                 img_idx, n_images, save_path, constraint_name, n_frames=5):
+    """
+    Create comprehensive visualization of image optimization trajectory.
+
+    Creates a single figure with:
+    - Utility curve over iterations (with best marked)
+    - Gradient norm curve over iterations
+    - Selected image frames including best image (highlighted)
+    - Gradient of utility (∂U/∂X) for each frame
+
+    All images are zoomed to show only the masked region with a small margin.
+
+    Parameters:
+    -----------
+    initial_img : torch.Tensor
+        Initial image (108*108,)
+    traj : list
+        List of images during optimization
+    util_hist : list
+        Utility values at each iteration
+    grad_norms : list
+        Gradient norms at each iteration
+    mask : torch.Tensor
+        Boolean mask for receptive field
+    img_idx : int
+        Image index
+    n_images : int
+        Current training iteration
+    save_path : Path
+        Directory to save figures
+    n_frames : int
+        Maximum number of image frames to plot (will include best + first + final)
+
+    Note:
+    -----
+    The best image (highest utility) is always included in the frame selection
+    and is highlighted with a red border and ★ marker.
+    
+    Gradients are computed from trajectory differences (masked pixels only).
+    """
+    import matplotlib.gridspec as gridspec
+
+    n_px_side = 108
+    n_iters = len(x_traj)
+
+    # Find best iteration (maximum utility)
+    best_iter = np.argmax(util_hist)
+    best_utility = util_hist[best_iter]
+    final_utility = util_hist[-1]
+
+    # Smart frame selection: always include first, best, final
+    mandatory_frames = {0, best_iter, n_iters - 1}
+
+    if n_iters <= n_frames:
+        frame_indices = list(range(n_iters))
+    else:
+        # Add evenly spaced middle frames
+        n_middle = max(0, n_frames - 3)  # Reserve space for mandatory frames
+        if n_middle > 0:
+            middle_frames = set(np.linspace(1, n_iters-2, n_middle, dtype=int))
+            all_frames = mandatory_frames | middle_frames
+        else:
+            all_frames = mandatory_frames
+
+        # Sort and limit to n_frames
+        frame_indices = sorted(list(all_frames))[:n_frames]
+
+    # Prepare mask for plotting
+    C, mask, K_tilde_b, K_tilde_inv_b, B = get_final_K_vals(model_active)
+
+    mask_2d = torch.zeros((n_px_side * n_px_side), device=mask.device)
+    mask_2d[mask] = 1.0
+    mask_2d = mask_2d.reshape(n_px_side, n_px_side).cpu().numpy()
+
+    # === COMPUTE ZOOM REGION FROM MASK ===
+    # Find bounding box of masked region
+    rows, cols = np.where(mask_2d == 1)
+    if rows.size > 0 and cols.size > 0:
+        ymin, ymax = np.min(rows), np.max(rows)
+        xmin, xmax = np.min(cols), np.max(cols)
+        
+        # Add margin (10 pixels on each side, clamped to image bounds)
+        margin = 10
+        ymin_zoom = max(0, ymin - margin)
+        ymax_zoom = min(n_px_side - 1, ymax + margin)
+        xmin_zoom = max(0, xmin - margin)
+        xmax_zoom = min(n_px_side - 1, xmax + margin)
+    else:
+        # Fallback: show entire image if mask is empty
+        ymin_zoom, ymax_zoom = 0, n_px_side - 1
+        xmin_zoom, xmax_zoom = 0, n_px_side - 1
+
+    # Image normalization will be done independently per frame (see plotting loop below)
+    # This ensures each frame uses its full dynamic range
+
+    # === NEW: Compute gradients for visualization ===
+    # Compute gradient direction from trajectory differences (MASKED PIXELS ONLY)
+
+    # Find consistent gradient vmin/vmax for all frames
+    all_grads_masked = torch.stack([grad_hist[i] for i in frame_indices])
+    grad_vmax = torch.max(torch.abs(all_grads_masked)).item()
+
+    # Create single figure with GridSpec for precise layout
+    # Now 4 rows: utility curve, gradient norm, images, gradient images
+    fig = plt.figure(figsize=(max(16, 3*len(frame_indices)), 16))
+    gs = gridspec.GridSpec(4, len(frame_indices),
+                          height_ratios=[2, 2, 3, 3],
+                          hspace=0.3, wspace=0.05,
+                          figure=fig)
+
+    # Row 1: Utility curve (spans all columns)
+    ax_util = fig.add_subplot(gs[0, :])
+
+    # Row 2: Gradient curve (spans all columns)
+    ax_grad = fig.add_subplot(gs[1, :], sharex=ax_util)
+
+    # Row 3: Image frames (one per column)
+    ax_imgs = [fig.add_subplot(gs[2, i]) for i in range(len(frame_indices))]
+    
+    # Row 4: Gradient images (one per column)
+    ax_grads = [fig.add_subplot(gs[3, i]) for i in range(len(frame_indices))]
+
+    # ===== Plot utility curve with best marker =====
+    iterations = np.arange(len(util_hist))
+    ax_util.plot(iterations, util_hist, 'b-', linewidth=2, label='Utility', zorder=2)
+
+    # Mark best iteration
+    ax_util.axvline(best_iter, color='red', linestyle='--', linewidth=2,
+                   alpha=0.7, label=f'Best (iter {best_iter})', zorder=3)
+    ax_util.scatter([best_iter], [best_utility], c='red', s=300,
+                   marker='*', zorder=5, edgecolors='darkred', linewidths=2,
+                   label=f'★ Max U={best_utility:.4f}')
+
+    # Mark plotted frames
+    ax_util.scatter(frame_indices, [util_hist[i] for i in frame_indices],
+                   c='orange', s=80, zorder=4, alpha=0.7, edgecolors='darkorange',
+                   linewidths=1.5, label='Plotted frames')
+
+    ax_util.set_ylabel('Utility U', fontsize=14)
+    ax_util.set_title(f'Optimization Trajectory: Image {img_idx} (n_images={n_images})',
+                     fontsize=16, fontweight='bold')
+    ax_util.grid(True, alpha=0.3)
+    ax_util.legend(loc='best', fontsize=11)
+
+    ax_util.xaxis.set_major_locator(MaxNLocator(integer=True)) 
+
+    # ===== Plot gradient norm with best marker =====
+    ax_grad.plot(iterations, grad_norms, 'g-', linewidth=2,
+                    label='||∇U||', zorder=2)
+
+    # Mark best iteration
+    ax_grad.axvline(best_iter, color='red', linestyle='--', linewidth=2,
+                   alpha=0.7, zorder=3)
+
+    # Mark plotted frames
+    ax_grad.scatter([i for i in frame_indices if i > 0],
+                   [grad_norms[i] for i in frame_indices if i > 0],
+                   c='orange', s=80, zorder=4, alpha=0.7, edgecolors='darkorange',
+                   linewidths=1.5)
+
+    ax_grad.set_ylabel('||∇U|| ', fontsize=14)
+    # ax_grad.set_xlabel('Iteration', fontsize=14)
+    ax_grad.grid(True, alpha=0.3)
+
+    ax_grad.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    # ===== Plot image frames and gradient frames =====
+    for plot_idx, iter_idx in enumerate(frame_indices):
+        # === Image row ===
+        ax_img = ax_imgs[plot_idx]
+        img = x_traj[iter_idx].reshape(n_px_side, n_px_side).cpu().numpy()
+
+        assert ~np.isnan(img).any(), f"NaN detected in image at iter {iter_idx}"
+
+        # Compute normalization for THIS frame independently
+        vmin_frame = img.min()
+        vmax_frame = img.max()
+
+        # Show image with per-frame normalization
+        im = ax_img.imshow(img, cmap='gray', vmin=vmin_frame, vmax=vmax_frame)
+        ax_img.contour(mask_2d, levels=[0.5], colors='yellow',
+                      linewidths=1.5, alpha=0.7)
+
+        # === APPLY ZOOM ===
+        ax_img.set_xlim(xmin_zoom, xmax_zoom)
+        ax_img.set_ylim(ymax_zoom, ymin_zoom)  # Inverted for imshow convention
+
+        # Build title with markers
+        title_parts = []
+
+        if iter_idx == best_iter:
+            # BEST image - special highlighting
+
+            # Add red border
+            for spine in ax_img.spines.values():
+                spine.set_edgecolor('red')
+                spine.set_linewidth(4)
+
+            # Background color
+            ax_img.patch.set_facecolor('#ffe6e6')
+            ax_img.patch.set_alpha(0.3)
+
+        title_parts.append(f"Iter {iter_idx}")
+
+        title = "\n".join(title_parts)
+
+        title += f"\nU={util_hist[iter_idx]:.4f}"
+
+        # if iter_idx > 0:
+        # title += f"\n|Mask|={np.linalg.norm(img).item():.2e}"
+
+        ax_img.set_title(title, fontsize=10,
+                        fontweight='bold' if iter_idx == best_iter else 'normal',
+                        color='darkred' if iter_idx == best_iter else 'black')
+        ax_img.axis('off')
+
+        # === Gradient row ===
+        ax_grad_img = ax_grads[plot_idx]
+        
+        # Reconstruct gradient image: create full image with zeros, fill masked region
+        grad_full = torch.zeros((n_px_side * n_px_side), device=all_grads_masked[plot_idx].device)
+        grad_full[mask] = all_grads_masked[plot_idx]
+        grad_2d = grad_full.reshape(n_px_side, n_px_side).cpu().numpy()
+
+        # Show gradient with diverging colormap
+        im_grad = ax_grad_img.imshow(grad_2d, cmap='RdBu_r', 
+                                     vmin=-grad_vmax, vmax=grad_vmax)
+        ax_grad_img.contour(mask_2d, levels=[0.5], colors='yellow',
+                           linewidths=1.5, alpha=0.7)
+        
+        # === APPLY ZOOM ===
+        ax_grad_img.set_xlim(xmin_zoom, xmax_zoom)
+        ax_grad_img.set_ylim(ymax_zoom, ymin_zoom)  # Inverted for imshow convention
+        
+        # Add colorbar
+        # plt.colorbar(im_grad, ax=ax_grad_img, fraction=0.046)
+        
+        grad_title = f"∂U"
+        grad_title += f"\n||∂U||={np.linalg.matrix_norm(grad_2d):.2e}"
+
+        
+        ax_grad_img.set_title(grad_title, fontsize=10)
+        ax_grad_img.axis('off')
+
+        # Highlight best iteration in gradient row too
+        if iter_idx == best_iter:
+            for spine in ax_grad_img.spines.values():
+                spine.set_edgecolor('red')
+                spine.set_linewidth(4)
+            ax_grad_img.patch.set_facecolor('#ffe6e6')
+            ax_grad_img.patch.set_alpha(0.3)
+
+    # ===== Add statistics text box =====
+    stats_text = (
+        f"Initial U: {util_hist[0]:.4f}\n"
+        f"Best U: {best_utility:.4f} at iter {best_iter}\n"
+        f"Final U: {final_utility:.4f}\n"
+        f"Improvement: {best_utility - util_hist[0]:.4f} "
+        f"({100*(best_utility-util_hist[0])/abs(util_hist[0]):.1f}%)\n"
+        f"Zoom: [{ymin_zoom}:{ymax_zoom}, {xmin_zoom}:{xmax_zoom}]"
+    )
+
+    if best_iter != len(util_hist) - 1:
+        diff = best_utility - final_utility
+        stats_text += f"\n[!] Best != Final (diff: {diff:.4f}, {100*diff/final_utility:.1f}%)"
+
+    # Add text box to figure
+    fig.text(0.02, 0.98, stats_text, transform=fig.transFigure,
+            fontsize=11, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.9),
+            family='monospace')
+
+    # Suppress tight_layout warning (text box placed manually with fig.text)
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', message='This figure includes Axes that are not compatible with tight_layout')
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Leave space for text box
+
+    # Save single comprehensive figure
+    save_name = f'{constraint_name}_optimization_traj_n{n_images:03d}_img{img_idx:04d}.png'
+    fig.savefig(save_path / save_name, dpi=150, bbox_inches='tight')
+    plt.close(fig)
 
 #################   Numerical estimation / problems functions  ####################
 
@@ -1854,8 +3565,8 @@ def gen_hyp_tuple(theta, freeze_list, display_hyper=True):
         if key in freeze_list:
             continue
         theta[key] = value.requires_grad_()
-    if display_hyper: 
-        print(f'{key} is {value.cpu().item():.4f}')
+        if display_hyper: 
+            print(f'{key} is {value.cpu().item():.4f}')
 
     return ( theta, theta_lower_lims, theta_higher_lims )
 
@@ -1865,6 +3576,7 @@ def localker(theta, theta_higher_lims, theta_lower_lims, n_px_side, grad=False):
     # Compute C, the part of the kernel responsible for implementing the receptive field and smoothness
 
     # Check that theta is inside the limits
+    
     for key, value in theta.items():
         if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
             raise ValueError(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}")
@@ -1916,6 +3628,12 @@ def localker(theta, theta_higher_lims, theta_lower_lims, n_px_side, grad=False):
     else:
         return C, mask
 
+
+# NOTE: C_gradients_hyp, LocalkerCleanFunction, and localker_clean have been moved to
+# gaussian_processes.Spatial_GP_repo.kernels.kernels
+# They are imported at the top of this file for backward compatibility.
+
+
 def linker(x1, x2, C, theta, xtilde_case, scalar_case=False):
     # For the moment this does not work, it needs implementation as acosker_samu
     # Compute and return the kernel function given by marix elements k(xi, xj) = xi * C * xj
@@ -1933,13 +3651,14 @@ def linker(x1, x2, C, theta, xtilde_case, scalar_case=False):
         return  K
     
     K = torch.matmul(x1,  Cx2) #  (n, ntilde)
-    
+    # note : n1=n2 DOES NOT mean  xtilde = x, we might be doing inference
     if xtilde_case:
         return  (K + K.T)/2 + 1.e-9*torch.eye(K.shape[0]) # make sure it's simmetric  BUG put it on the right device
     if not xtilde_case:
         return  K 
 
-def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
+
+def acosker(theta, x1, x2=None, C=None, dC=None, diag=False, get_dK_x=False):
     """
     arc cosine covariance function
 
@@ -1968,16 +3687,16 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
 
     # Inputs are transposed because this function came from a translation of Samuele's code 
 
-    x1 = x1.T
-    if x2 is not None : x2 = x2.T
+    x1 = x1.T # shape (nx, n1)
+    if x2 is not None: x2 = x2.T # shape (nx, n2)
     n1 = x1.shape[-1]  # Take the shape given by the mask
     sigma_0 = theta['sigma_0']
 
     if C is None: C = torch.eye(n1, device=DEVICE, dtype=TORCH_DTYPE)
 
     if not diag:
-        n2 = x2.shape[1]
-        
+        # n2 = x2.shape[1]
+
         X1 = torch.sqrt(torch.sum(x1*(C @ x1), dim=0) + sigma_0 ** 2) # torch.sum(x1*(C@x1), dim=0) is the same as Diag(x1.T @ C @ x1) #shape(n1)
         X2 = torch.sqrt(torch.sum(x2*(C @ x2), dim=0) + sigma_0 ** 2) # shape(n2,)
 
@@ -1993,6 +3712,8 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
         K = X1X2 * J       #shape(n1, n2) ( in case of x1=x and x2=xtilde -> shape (nt,ntilde) )
 
         if dC is not None:
+            if get_dK_x:
+                raise NotImplementedError("dK_x not implemented if dC is passed")
             # Define the gradient of K with respect to the hyperparameters ( including sigma_0 )
             dK = {}
 
@@ -2012,22 +3733,53 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
                 if key == 'sigma_0':
                     continue
 
-                dX1 = 0.5*torch.sum(x1*torch.matmul(  dC[key]  , x1), dim=0)/X1  #shape(n1,)
-                dX2 = 0.5*torch.sum(x2*torch.matmul(  dC[key]  , x2), dim=0)/X2  #shape(n2,)
+                dX1 = 0.5*torch.sum(x1*torch.matmul(dC[key], x1), dim=0)/X1  #shape(n1,)
+                dX2 = 0.5*torch.sum(x2*torch.matmul(dC[key], x2), dim=0)/X2  #shape(n2,)
                 
                 dX1X2 = dX1[:, None]*X2 + X1[:, None]*dX2
 
                 dcosdelta = (torch.matmul(x1.T, torch.matmul(dC[key], x2)) - cosdelta*dX1X2)/X1X2
 
-                dJ =  -(delta-torch.pi)*dcosdelta/torch.pi
+                dJ = -(delta-torch.pi)*dcosdelta/torch.pi
 
                 dK[key] = X1X2*dJ + dX1X2*J
 
-        # make sure that K is simmetric
-        if n1==n2:
-            K = (K+K.T)/2 #+ 1e-7*torch.eye(n1)
 
+        if get_dK_x and dC is None:
+            
+            if x1.shape[0] < x2.shape[0]:
+                raise NotImplementedError("dK_x needs to be called with xtilde as first argument")
+            if x2.ndim == 1:
+                # in case we want gradient of more than one img at the time
+                x2 = x2[:, None] # unsqueeze to make it a matrix of shape (nx,1)
+  
+            
+            # Derivative of X2 with respect to x2
+            # MATLAB: dX2 = x2'*C./X2 ( x2 transpose, matrix multiplied by C, element wise divided by X2)
+            dX2 = torch.matmul(x2.T, C) / X2[:, None]  # shape (n2, nx)<=(n2, nx)/(n2,1) ( each row of x2.T*C divided by the corresponding X2 element)
+            # Derivative of X1X2 with respect to x2
+            # MATLAB: dX1X2 = X1'*dX2 ( no matrix multiplication despite * , its broadcasting as: )
+            dX1X2 = X1[:, None, None] * dX2[None, :, :]  # shape (n1, n2, nx)
+            
+            # Derivative of cosdelta with respect to x2
+            # MATLAB: darg = (x1'*C - arg.*dX1X2)./X1X2
+            darg = (torch.matmul(x1.T, C)[:, None, :] - cosdelta[:, :, None] * dX1X2) / X1X2[:, :, None]  # shape (n1, n2, nx)
+            
+            # Derivative of J with respect to x2
+            # MATLAB: dJ = -(theta-pi).*darg/pi
+            dJ = -(delta - torch.pi)[:, :, None] * darg / torch.pi  # shape (n1, n2, nx)
+            
+            # Derivative of kernel K with respect to x2
+            # MATLAB: dK_x = X1X2.*dJ + dX1X2.*J
+            dK_x = X1X2[:, :, None] * dJ + dX1X2 * J[:, :, None]  # shape (n1, n2, nx)
+            
+            # NOTE we are returning the derivative of K with respect to x2, 
+            # so you should call this function as K ( ntilde, n -> the x to be derived for)
+            # IN THE OTHER TWO CASES WE USUALLY CALL K (n, ntilde)
+            return K, dK_x # the K being returned is the same (n1,n2), dK_x is (n1,n2,nx)
+        
     else: # In the diagonal case only the complete dataset passed as x1 is considered
+
         # return just diagonal of kernel
         K = torch.sum(x1*torch.matmul(C, x1), dim=0)[:, None]+sigma_0**2
         K = K.squeeze() # To return a vector of shape (n1,)
@@ -2047,14 +3799,22 @@ def acosker(theta, x1, x2=None, C=None, dC=None, diag=False):
 
             #K += 1e-7 * torch.eye(n1, 1)
 
+        if get_dK_x and dC is None:
+            # Derivative of x1^t@C@x1 with respect to x1
+            dK_x = 2 * torch.matmul(C, x1)  # shape (nx, n1)
+            return K, dK_x.T # K shape (n1,), dK_x shape (n1,nx)
+
     # Returns
-    if dC is not None: 
-        return K, dK    #shape(n1,n2), shape(n1,n2,6) 
-    else: 
+    if dC is not None:
+        return K, dK    #shape(n1,n2), shape(n1,n2,6)
+    else:
         return K    #shape (n1,n2)
 
 
-##################   Other functions   ####################
+# NOTE: acosker_clean, AcoskerCleanFunction, and acosker_with_grad have been moved to
+# gaussian_processes.Spatial_GP_repo.kernels.kernels
+# They are imported at the top of this file for backward compatibility.
+
 
 def get_model_at_iteration(fit_model, iteration):
     """
@@ -2139,8 +3899,8 @@ def get_model_at_iteration(fit_model, iteration):
     return model_at_iteration
 
 ##################   X-Steps and Quantities   ####################
-
-@torch.no_grad()
+# NOTE: @torch.no_grad() decorator removed to allow PyTorch autograd for image optimization
+# This function is called from compute_utility_single_image() which needs gradient flow
 def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=None, dK=None , dK_tilde=None, dK_vec=None, K_tilde_inv=None):
             # Calculate the mean and variance (diagonal of covariance matrix ) of (vec)lambda(of the training points) over the distribution given by:
             # p_cond(lambda|lambda_tilde,X,theta)*(N/q)_posterior(lambda_tilde|m,V) as ini eq (56)(57) of Notes for Pietro
@@ -2167,8 +3927,7 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=No
 
             # vector of variances of the target function for every training point
 
-            # wrong formula
-            # lambda_var = Kvec + torch.einsum( 'ij,ji->i', a, torch.matmul(V-K_tilde, a.T) ) # This is the same as doing Diag(a.T @ (V-K_tilde) @ a
+
             lambda_var = Kvec + torch.sum(-K.T*a.T + a.T*(V@a.T), 0)
 
             # TODO check that this method with einsum is actually faster than torch.sum(a*(V-K_tilde)@a, dim=1)
@@ -2194,6 +3953,7 @@ def lambda_moments( x, K_tilde, KKtilde_inv, Kvec, K, C, m, V, theta, kernfun=No
             else :
                 return lambda_m, lambda_var
 
+
 def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var,):
         '''Compute the expectation value of the vector of firing rates for every training point: 
                         <f> = exp(A*<lambda> + 0.5*A^2*Var(lambda) + lambda0)
@@ -2210,9 +3970,26 @@ def mean_f_given_lambda_moments( f_params, lambda_m, lambda_var,):
 
         # return torch.min( f_mean, torch.tensor(1000.))
         return f_mean
+
+def mean_f_gradients_wrt_x_given_lambda_moments( f_params, lambda_m, lambda_var, dlambda, dvar_lambda):
+        '''Compute the gradients of the expectation value of the vector of firing rates for every given point x wrt x:
+                        d<f>/x = <f> * ( A*d<lambda>/dx + 0.5*A^2*dVar(lambda)/dx )
+
+        
+        '''
+        A       = torch.exp(f_params['logA'])
+
+        lambda0 = torch.exp(f_params['loglambda0']) if 'loglambda0' in f_params else f_params['lambda0']
+
+        f_mean = torch.exp(A*lambda_m + 0.5*A*A*lambda_var + lambda0 )
+
+        df = f_mean * ( A*dlambda + 0.5*A*A*dvar_lambda )
+        
+        return f_mean, df
         
 def mean_f( f_params, calculate_moments, lambda_m=None, lambda_var=None,  x=None, K_tilde=None, KKtilde_inv=None, 
-           Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, dK_vec=None, K_tilde_inv=None, r=None):
+           Kvec=None, K=None, C=None, m=None, V=None, V_inv=None, theta=None, kernfun=None, dK=None, dK_tilde=None, 
+           dK_vec=None, K_tilde_inv=None, r=None):
         
         # Compute the mean of the firing rate f for every training point (a vector) as in (52) Notes for Pietro, 
         # It calls lambda_moments to calculate mean and variance of lambda [ eq (56)(57) of Notes for Pietro ] if they are not known.
@@ -2610,28 +4387,40 @@ def plot_fit(R_predicted, rtst, r2, sigma_r2, cellid):
     R_predicted = R_predicted.cpu().numpy()
     rtst = rtst.cpu().numpy()
 
-    fig = plt.figure(figsize=(12, 8))
+    # fig = plt.figure(figsize=(12, 8))
+
+    # plot wothout using plt.
+    fig = plt.figure(figsize=(6, 9),)  
     gs = fig.add_gridspec(5, 5,
                 left=0.1, right=0.9, bottom=0.1, top=0.9,
                 wspace=0.3, hspace=0.7)
     dt = 0.05
     time_values = dt * np.arange( len(R_predicted) )
     ax = fig.add_subplot(gs[3:, :])
-    ax.plot(time_values, np.mean(rtst, axis=0) , 'k', linewidth=1)
 
-    ax.plot(time_values, R_predicted , color='red', label='GP')
+    ax.plot(time_values, np.mean(rtst, axis=0) , 'k', label='Neural Activity', linewidth=1)
+    ax.plot(time_values, R_predicted , color='red', label='GP Prediction')
     
-    # ax.errorbar(time_values, R_predicted / 0.05, yerr=np.sqrt(sigma2_f[:,0].cpu()) / 0.05, color='red')
+    ax.legend(['data', 'GP'], loc='upper right', fontsize=14)
+
+    # ax.errorbar(time_values, R_predicted / 0.05, yerr=np.sqrt(sigma_r2[:,0].cpu()) / 0.05, color='red')
+
+    # ax.errorbar(time_values, R_predicted  , yerr=np.sqrt(sigma_r2.cpu()), color='red')
+
+    ax.errorbar(time_values, R_predicted  , yerr=np.sqrt(R_predicted), color='red')
+
     # ax.legend(['data', 'GP'], loc='upper right', fontsize=14)
     txt = f'Pietro adjusted r^2 = {r2:.2f} ± {sigma_r2:.2f} Cell: {cellid}'
     ax.set_title(f'{txt}')
-    # ax.set_ylabel('Firing rate (Hz)')
+    ax.grid()
+    ax.set_ylabel('Spike count')
+    ax.set_xlabel('Test images')
     # plt.show()
     # plt.close()
     return fig
 
 @torch.no_grad()
-def test(X_test, R_test_cell, xtilde, X_train=None, at_iteration=None, **kwargs):
+def test(X_test, R_test_cell, xtilde, X_train=None, at_iteration=None, print_expl_var=True, **kwargs):
 
     # X_test # shape (30,108,108,1) # nimages, npx, npx
 
@@ -2699,20 +4488,22 @@ def test(X_test, R_test_cell, xtilde, X_train=None, at_iteration=None, **kwargs)
         kernfun = 'acosker'
         mu_star, sigma_star2 = lambda_moments_star(xstar[:,mask], xtilde[:,mask], C, theta, K_tilde, K_tilde_inv, m, V, B, kernfun)
 
-        rate_star = torch.exp( A*mu_star + 0.5*A*A*sigma_star2 + lambda0 )
+        rate_star = torch.exp( A*mu_star + 0.5*A*A*sigma_star2 + lambda0 ) 
 
         R_predicted[i] = rate_star #ends up being of shape 30
         # print(f'rate_star: {rate_star.item():.4f}')
 
 
-    r2, sigma_r2 = explained_variance( R_test_cell, R_predicted, sigma=True)
+    expl_var, sigma_expl_var = explained_variance( R_test_cell, R_predicted, sigma=True)
 
     # Print the results
     R_pred_cell = R_predicted
 
-    print(f"\n\n Pietro's model: R2 = {r2:.2f} ± {sigma_r2:.2f} Cell: {cellid} maxiter = {maxiter}, nEstep = {nEstep}, nMstep = {nMstep} \n")
+    if print_expl_var:
+        print(f"\n Explained variance: R2 = {expl_var:.2f} ± {sigma_expl_var:.2f} Cell: {cellid} maxiter = {maxiter}, nEstep = {nEstep}, nMstep = {nMstep} ")
 
-    return R_test_cell, R_pred_cell, r2, sigma_r2
+
+    return R_test_cell, R_pred_cell, expl_var, sigma_expl_var
 
 def calculate_correlation(observed, predicted, return_r2=False):
     """Calculate Pearson correlation between observed and predicted values"""
@@ -3164,6 +4955,7 @@ def varGP_original(x, r, **kwargs):
             values_track['variation_par_track']['V_b'] += (V_b.clone(),)
             values_track['variation_par_track']['m_b'] += (m_b.clone(),)
 
+
             print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
 
             # region _________ Check loss stabilization __________
@@ -3573,10 +5365,25 @@ def varGP(x, r, **kwargs):
         lr_Fparamstep = fit_parameters.get('lr_Fparamstep', 0.1)
         display_hyper = fit_parameters.get('display_hyper', True)
         n_px_side     = fit_parameters.get('n_px_side', None)
-        kernfun       = fit_parameters.get('kernfun', 'acosker')
-        if   kernfun == acosker:   pass
-        elif kernfun == 'acosker': kernfun = acosker
-        else: raise Exception('Kernel function not recognized')
+
+        verbose       = kwargs.get('verbose', True)
+        silent        = kwargs.get('silent', False)
+
+        kernfun_arg       = fit_parameters.get('kernfun', None)
+
+        if hasattr(kernfun_arg, '__name__') and \
+            kernfun_arg.__name__ == 'acosker':
+                kernfun = acosker
+        else:
+            raise Exception('Kernel function in varGP should be acosker for now')
+
+        # assert fit_parameters['kernfun'] == acosker
+
+        # if   kernfun ==  acosker:   pass
+        # elif kernfun == 'acosker': kernfun = acosker
+        # else: 
+        #     print('Provided kernel function: ', kernfun)
+        #     raise Exception('Kernel function not recognized')
         
 
         # Initialize hyperparameters of Kernel and parameters of the firing rate
@@ -3594,6 +5401,9 @@ def varGP(x, r, **kwargs):
             theta_higher_lims = copy.deepcopy(hyperparams_tuple[2])
         else:
             raise Exception('Hyperparameters not provided')
+        
+
+
         if 'f_params' in kwargs.keys():
             f_params = copy.deepcopy(kwargs['f_params']) 
         else:
@@ -3618,7 +5428,8 @@ def varGP(x, r, **kwargs):
             Kvec    = kernfun(theta, x[:,mask], x2=None, C=C, dC=None, diag=True)
             if ntilde != nt:
                 K   = kernfun(theta, x[:,mask], xtilde[:,mask], C=C, dC=None, diag=False)
-            K = K_tilde
+            else:
+                K = K_tilde
             eigvals, eigvecs = torch.linalg.eigh(K_tilde, UPLO='L')                                # calculates the eigenvals for an assumed symmetric matrix, eigenvalues  are returned in ascending order. Uplo=L uses the lower triangular part of the matrix. Eigenvectors are columns
             ikeep = eigvals > max(eigvals.max() * EIGVAL_TOL, EIGVAL_TOL)                          # Keep only the largest eigenvectors
             B = eigvecs[:, ikeep]
@@ -3629,13 +5440,15 @@ def varGP(x, r, **kwargs):
                 KKtilde_inv_b = K_b @ K_tilde_inv_b
             else:
                 KKtilde_inv_b = B
+
         else: 
             C, mask = (kwargs['init_kernel']['C'], kwargs['init_kernel']['mask'])
             K_tilde = kwargs['init_kernel']['K_tilde']
             Kvec    = kwargs['init_kernel']['Kvec']
             if ntilde != nt:  
                 K   = kwargs['init_kernel']['K']
-            K = K_tilde
+            else:
+                K = K_tilde
             B = kwargs['init_kernel']['B']
             # make K_tilde_b and K_b a projection of K_tilde and K into the eigenspace of the largest eigenvectors
             K_tilde_b = kwargs['init_kernel']['K_tilde_b']  # shape (n_eigen, n_eigen)
@@ -3730,9 +5543,11 @@ def varGP(x, r, **kwargs):
         values_track['loss_track']['logmarginal'][0].copy_(loglikelihood-KL_div)
         
         initial_loss = -(loglikelihood-KL_div)
-        print(f'Initial Loss: {initial_loss:.4f}')
+        if not silent:
+            print(f'Initial Loss: {initial_loss:.4f}')
         if initial_loss == torch.inf or initial_loss == -torch.inf or initial_loss == torch.nan:
-            raise Exception('Initial loss is inf or nan')
+            raise LossInfError('Initial loss is infinite or NaN')
+
 
         # Theta before the Mstep of 0 "i" is the one used to build the kernel of the E-step of 0 "i+1". 
         # The theta we are saving here is the one we just used.
@@ -3847,6 +5662,12 @@ def varGP(x, r, **kwargs):
 
                             #region ____________ Update m, V ______________
                             for _ in range(nEstep):
+                                # print(f'estep {_} of {nEstep} in iteration {iteration}')
+
+                                m_b_prev = m_b.clone()
+                                V_b_prev = V_b.clone()
+                                f_mean_prev = f_mean.clone()
+
                                 m_b, V_b = Estep( r=r, KKtilde_inv=KKtilde_inv_b, m=m_b, f_params=f_params, f_mean=f_mean, 
                                                     K_tilde=K_tilde_b, K_tilde_inv=K_tilde_inv_b, update_V_inv=False, alpha=1  ) # Do not change udpate_V_inv or alpha, read Estep docs
 
@@ -3856,15 +5677,47 @@ def varGP(x, r, **kwargs):
                                                                         K=K_b, C=C, m=m_b, V=V_b, theta=theta, kernfun=kernfun, 
                                                                         lambda_m=None, lambda_var=None  )
                             
-                            #endregion
+                                # avoid numerical instability, revert if needed
+                                if f_mean.mean() > 1000:
+                                    if verbose:
+                                        print(f'f_mean mean = {f_mean.mean():.1f} after Estep iteration {iteration}, back to prev m_b and V_b')
+                                    m_b = m_b_prev
+                                    V_b = V_b_prev
+                                    f_mean = f_mean_prev
+
+                                    while f_mean.mean() > 1000:
+                                        print(f'Warning: f_mean still very large taking previous values of m and V, lowering A and lambda0')
+
+                                        f_params['logA'] -= 0.1
+                                        f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
+
+                                        f_mean = mean_f( f_params=f_params, calculate_moments=True, lambda_m=lambda_m, 
+                                                        lambda_var=lambda_var, x=x[:,mask], K_tilde=K_tilde_b, 
+                                                        KKtilde_inv=KKtilde_inv_b, Kvec=Kvec, K=K_b, C=C, 
+                                                        m=m_b, V=V_b, theta=theta, kernfun=kernfun, )
+
+                                    break
+
+                                # Check convergence ( early stopping )
+                                if _ > 0: # skip first iteration
+                                    # We implement norm based earlystopping on f_mean
+                                    # - f_mean integrates all the parameters we are optimizing
+                                    # - if it was element wise, small firing rate increase of 100% would count 
+                                    #   the same 
+                                    rel_change = torch.norm(f_mean - f_mean_prev) / (torch.norm(f_mean_prev) + 1e-6)           
+
+                                    if rel_change < 1.e-5:
+                                        # if verbose:
+                                            # print(f'Estep converged after {_+1} iterations, (relative change: {rel_change:.8f})')
+                                        break    
+                                #endregion
 
                             #region ____________ Update f_params ______________ 
                             # if i_estep > 0:
                             f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
 
-                            # lr_f_params = 0.01 # learning rate
-                        #lr_Fparamstep = 0.1  # what we use usually
-                            # lr_f_params = 1
+
+                            #lr_Fparamstep = 0.1  # what we use usually
                             optimizer_f_params = torch.optim.LBFGS([f_params['logA']], lr=lr_Fparamstep, max_iter=nFparamstep, 
                                                                     tolerance_change=1.e-9, tolerance_grad=1.e-7,
                                                                     history_size=nFparamstep, line_search_fn='strong_wolfe')
@@ -3877,8 +5730,10 @@ def varGP(x, r, **kwargs):
                                 nonlocal f_mean          # Update f_mean of the outer scope each time the closure is called
                                 # Lambda0 feature 3
 
-                                # Each time the closure is called the optimizer expects the value of the loss. It might be using it to explore how big of a step to take (line search) or actually updating the parameters ( logA)
-                                # We need the optimizer to evaluate the loss with the optimal lambda0 parameter given logA, so we update it here, before computing all the other things that depend on it.
+                                # Each time the closure is called the optimizer expects the value of the loss. 
+                                # It might be using it to explore how big of a step to take (line search) or actually updating the parameters ( logA)
+                                # We need the optimizer to evaluate the loss with the optimal lambda0 parameter given logA, 
+                                # so we update it here, before computing all the other things that depend on it.
 
                                 f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var)
                                 f_mean = mean_f_given_lambda_moments( f_params, lambda_m, lambda_var)   
@@ -3901,8 +5756,12 @@ def varGP(x, r, **kwargs):
                                 # if  torch.any( f_mean > 1.e4):
                                     # raise ValueError(f'f_mean is too large in Estep, closure has been called {CLOSURE2_COUNTER[0]} times in estep {i_estep} iteration')
 
+
+                                # If the optimizer is exploring values of A that make the firing rate too large, 
+                                # signal the loss is too big so that it goes back on its step
                                 if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
-                                    print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}, returning infinite loss')
+                                    if verbose:
+                                        print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} at closure call {CLOSURE2_COUNTER[0]}, returning infinite loss')
                                     return torch.tensor(float('inf'))
                                 
                                 return -loglikelihood
@@ -3912,12 +5771,15 @@ def varGP(x, r, **kwargs):
                             f_params['lambda0'] = lambda0_given_logA( f_params['logA'], r, lambda_m, lambda_var) # the optimal logA value found by the optimizer might not be the one used in the last closure call. We need to make sure lambda0 is updated.
 
                             if f_mean.mean() > 100:
-                                print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
+                                if verbose:
+                                    print(f'f_mean mean is {f_mean.mean()} at i_step {i_estep} iteration {iteration} after closure .step')
 
 
                             time_f_params_total += time.time()-start_time_f_params
                             #endregion
-                    else: print('No E-step')
+                    else: 
+                        if verbose:
+                            print('No E-step')
 
                     time_estep = time.time()-start_time_estep
                     time_estep_total += time_estep 
@@ -3968,7 +5830,13 @@ def varGP(x, r, **kwargs):
                     values_track['variation_par_track']['V_b'] += (V_b.clone(),)
                     values_track['variation_par_track']['m_b'] += (m_b.clone(),)
 
-                    print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
+                    if verbose:
+                        print(f'Loss iter {iteration}: {-(loglikelihood-KL_div):.4f}')
+                    if loglikelihood == torch.inf or loglikelihood == -torch.inf or loglikelihood == torch.nan:
+                        raise LossInfError(f'loglikelihood is infinite or NaN at iteration {iteration}')
+                    if KL_div == torch.inf or KL_div == -torch.inf or KL_div == torch.nan:
+                        raise LossInfError(f'KL_div is infinite or NaN at iteration {iteration}')
+                            
 
                     # region _________ Check loss stabilization __________
                     # If loss hasn't changed in the last 5 iterations, break the loop
@@ -3978,7 +5846,8 @@ def varGP(x, r, **kwargs):
                         recent_losses_tensor = torch.tensor(recent_losses)
                         loss_range = torch.abs(recent_losses_tensor.max() - recent_losses_tensor.min())
                         if loss_range < LOSS_STOP_TOL:
-                            print(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
+                            if verbose:
+                                print(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
                             raise LossStagnationError(f'Loss stabilization detected (loss range {loss_range.item():.2e} < tolerance {LOSS_STOP_TOL:.2e}). Stopping training.')
                     # endregion
 
@@ -3989,8 +5858,8 @@ def varGP(x, r, **kwargs):
                     start_time_mstep = time.time()
                     if nMstep > 0 and iteration < maxiter-1: 
                         # Skip the M-step in the last iteration to avoid generating a new eigenspace that will not be used by V and m
-
-                        print(f' Mstep of iteration {iteration}')
+                        if verbose:
+                            print(f' Mstep of iteration {iteration}')
                         if iteration > 1:
                             del optimizer_hyperparams
                         optimizer_hyperparams = torch.optim.LBFGS(theta.values(), lr=lr_Mstep, max_iter=nMstep, line_search_fn='strong_wolfe', 
@@ -4006,7 +5875,8 @@ def varGP(x, r, **kwargs):
                             for key, value in theta.items():
                                 if not (theta_lower_lims[key] <= value <= theta_higher_lims[key]):
                                     return_infinite_loss = True
-                                    print(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}, returning infinite loss in closure call {CLOSURE2_COUNTER[0]}")
+                                    if verbose:
+                                        print(f"{key} = {value:.4f} is not within the limits of {theta_lower_lims[key]} and {theta_higher_lims[key]}, returning infinite loss in closure call {CLOSURE2_COUNTER[0]}")
                                     if theta[key].requires_grad:
                                         theta[key].grad = torch.tensor(float('inf'), device=DEVICE)
                             if return_infinite_loss: return torch.tensor(float('inf'), device=DEVICE)
@@ -4093,7 +5963,9 @@ def varGP(x, r, **kwargs):
                         # print(f'\r*Iteration*: {iteration:>3} E-step took: {time_estep:.4f}s, M-step took: {mstep_time:.4f}s', end= '\n')
 
                     else: 
-                        if iteration < maxiter-1: print(' No M-step')
+                        if iteration < maxiter-1: 
+                            if verbose:
+                                print(' No M-step')
                     time_mstep        = time.time()-start_time_mstep
                     time_mstep_total += time_mstep
                     #endregion __________________________________________
@@ -4136,8 +6008,9 @@ def varGP(x, r, **kwargs):
             except Exception as e: # Handle any other exception in the same way as KeyboardInterrupt
                 
                 if isinstance( e, LossStagnationError):
-                    print(f' ===================  Loss stagnating at iteration: {iteration} =================== \n')
-                    print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
+                    if not silent:
+                        print(f' ===================  Loss stagnating at iteration: {iteration} =================== \n')
+                        print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
                 else:            
                     print(f' ===================  Error During iteration: {iteration} =================== \n')
                     print(f'During iteration: {iteration}, there should be {iteration} completed iterations')
@@ -4169,7 +6042,8 @@ def varGP(x, r, **kwargs):
                 err_dict['error'] = e 
 
     finally: 
-        print('Startig finally block')
+        if verbose:
+            print('Startig finally block')
         final_start_time = time.time()
 
         if not err_dict['during_init']:
@@ -4232,18 +6106,19 @@ def varGP(x, r, **kwargs):
 
             # print(f'Final Loss: {-logmarginal.item():.4f}' ) 
 
-            print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
-            print(f'Time spent for f params:      {time_f_params_total:.3f}s')
-            # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
-            print(f'Time spent for m / V update:  {time_estep_total-time_f_params_total:.3f}s')
-            print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
-            print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
-            print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
-            print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
-            print(f'\nTime total after init:        {time.time()-start_time_loop:.3f}s')
-            print(f"Time total before init:       {time.time()-start_time_before_init:.3f}s")
-
-            print(f'Final Loss: {-logmarginal.item():.4f}' )
+            if verbose:
+                print(f'\nTime spent for E-steps:       {time_estep_total:.3f}s,') 
+                print(f'Time spent for f params:      {time_f_params_total:.3f}s')
+                # print(f'Time spent computing Lambda0: {time_lambda0_estimation:.3f}s')
+                print(f'Time spent for m / V update:  {time_estep_total-time_f_params_total:.3f}s')
+                print(f'Time spent for M-steps:       {time_mstep_total:.3f}s')
+                print(f'Time spent for All-steps:     {time_estep_total+time_mstep_total:.3f}s')
+                print(f'Time spent computing Kernels: {time_computing_kernels:.3f}s')
+                print(f'Time spent computing Loss:    {time_computing_loss:.3f}s')
+                print(f'\nTime total after init:        {time.time()-start_time_loop:.3f}s')
+                print(f"Time total before init:       {time.time()-start_time_before_init:.3f}s")
+            if not silent:
+                print(f'Final Loss: {-logmarginal.item():.4f}' )
             # Reduce values_track dictionary to the first 'iteration' elements`
             for key in values_track.keys():
                 for subkey in values_track[key].keys():

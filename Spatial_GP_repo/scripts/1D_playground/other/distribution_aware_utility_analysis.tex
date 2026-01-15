@@ -1,0 +1,164 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+\newcommand{\Hmarg}{H_{\mathrm{marg}}}
+\newcommand{\Hcond}{H_{\mathrm{cond}}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\D}{\mathcal{D}}
+
+\title{Why Distribution-Aware Utility Peaks Outside the Stimulus Distribution:\\
+A Resolution of the Apparent Paradox}
+\author{Analysis Notes}
+\date{December 2024}
+
+\begin{document}
+
+\maketitle
+
+\section{Problem Statement}
+
+When computing the distribution-aware acquisition function for active learning with a Gaussian process, we observed that the utility $U(x^*)$ peaks at query locations $x^*$ that lie \emph{outside} the stimulus distribution $p(x)$, rather than inside it. This initially appeared counterintuitive.
+
+For example, with $p(x) = \mathcal{N}(0.7, 0.15^2)$, the utility showed peaks at $x^* \approx 0$ and $x^* \approx 1.3$, both outside the main support of $p(x)$.
+
+\section{The Distribution-Aware Utility Formula}
+
+The utility at query point $x^*$ is defined as:
+\begin{equation}
+U(x^*) = \Hmarg(x^*) - \Hcond(x^*)
+\end{equation}
+
+where:
+\begin{align}
+\Hmarg(x^*) &= H(R \mid x^*, \D) \\
+\Hcond(x^*) &= \E_{x \sim p(x)} \E_{\lambda(x) \mid \D} \left[ H(R \mid x^*, \lambda(x), \D) \right]
+\end{align}
+
+Here:
+\begin{itemize}
+    \item $\Hmarg(x^*)$ is the \textbf{marginal entropy} of the response $R$ at the query point
+    \item $\Hcond(x^*)$ is the \textbf{expected conditional entropy} after observing $\lambda(x)$ for $x \sim p(x)$
+    \item The utility measures how much information about $f(X)$ for natural stimuli $X \sim p(x)$ we gain by observing the response $R$ at query point $x^*$
+\end{itemize}
+
+\section{Initial (Incorrect) Intuition}
+
+The naive reasoning was:
+\begin{enumerate}
+    \item If $x^*$ is \textbf{inside} $p(x)$: Samples $x \sim p(x)$ are close to $x^*$, so observing $\lambda(x)$ is highly informative about $\lambda(x^*)$, leading to low $\Hcond$ and high utility.
+    \item If $x^*$ is \textbf{outside} $p(x)$: Samples $x \sim p(x)$ are far from $x^*$, so conditioning doesn't help much, leading to $\Hcond \approx \Hmarg$ and near-zero utility.
+\end{enumerate}
+
+This intuition is \textbf{wrong} because it focuses on the \emph{ratio} $\Hcond/\Hmarg$ rather than the \emph{absolute difference} $\Hmarg - \Hcond$.
+
+\section{The Correct Analysis}
+
+\subsection{Conditional Variance Reduction}
+
+When we condition on observing $\lambda(x)$, the conditional variance of $\lambda(x^*)$ is:
+\begin{equation}
+\sigma^2_{\mathrm{cond}} = \Sigma_{**} - \frac{\Sigma_{x*}^2}{\Sigma_{xx}}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\Sigma_{**} = \Var[\lambda(x^*) \mid \D]$ is the marginal variance at $x^*$
+    \item $\Sigma_{xx} = \Var[\lambda(x) \mid \D]$ is the marginal variance at $x$
+    \item $\Sigma_{x*} = \mathrm{Cov}[\lambda(x), \lambda(x^*) \mid \D]$ is the cross-covariance
+\end{itemize}
+
+The \textbf{variance reduction ratio} is:
+\begin{equation}
+\rho = \frac{\sigma^2_{\mathrm{cond}}}{\Sigma_{**}} = 1 - \frac{\Sigma_{x*}^2}{\Sigma_{xx} \cdot \Sigma_{**}}
+\end{equation}
+
+Note that $\Sigma_{x*}^2$ appears---both positive \emph{and} negative correlations reduce the conditional variance.
+
+\subsection{Empirical Results}
+
+Diagnostic analysis revealed the following statistics:
+
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Region} & $\Hmarg$ & $\Hcond$ & \textbf{Var.\ Red.} & $\Hcond/\Hmarg$ & $U(x^*)$ \\
+\midrule
+Inside $p(x)$ & 1.48 & 1.39 & 58\% & 0.94 & \textbf{0.09} \\
+Outside $p(x)$ & 3.66 & 3.41 & 25\% & 0.93 & \textbf{0.24} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Key Observation}
+
+Although the variance reduction is \emph{greater} inside $p(x)$ (58\% vs 25\%), the \emph{absolute utility} is \textbf{higher outside} because $\Hmarg$ is much larger there:
+
+\begin{equation}
+U_{\mathrm{inside}} = 1.48 - 1.39 = 0.09 \quad \text{vs} \quad U_{\mathrm{outside}} = 3.66 - 3.41 = 0.24
+\end{equation}
+
+\section{Why This Makes Sense}
+
+\subsection{Information-Theoretic Interpretation}
+
+The utility $U(x^*) = I(f(X); R \mid X \sim p(x), x^*, \D)$ measures the \textbf{mutual information} between:
+\begin{itemize}
+    \item The firing rate $f(X)$ at natural stimuli $X \sim p(x)$
+    \item The response $R$ we would observe at query point $x^*$
+\end{itemize}
+
+Regions with high $\Hmarg$ (high GP uncertainty) have more ``room'' for information gain. Even a modest reduction in uncertainty (25\%) from a high baseline (3.66 nats) yields substantial absolute information gain.
+
+\subsection{Active Learning Perspective}
+
+This behavior is consistent with standard active learning principles:
+\begin{itemize}
+    \item \textbf{Exploration}: Query uncertain regions to reduce model uncertainty
+    \item \textbf{Exploitation}: Query regions relevant to the target distribution $p(x)$
+\end{itemize}
+
+The distribution-aware utility balances both: it values queries at uncertain points ($\Hmarg$ high) that are \emph{correlated} with points in $p(x)$ (so conditioning helps).
+
+\subsection{The Role of Negative Cross-Covariance}
+
+Interestingly, the GP posterior can exhibit \textbf{negative correlations} between some regions:
+\begin{equation}
+\Sigma_{x*} < 0 \quad \text{for certain } (x, x^*) \text{ pairs}
+\end{equation}
+
+This occurs due to the posterior structure after conditioning on training data. Since the variance reduction formula uses $\Sigma_{x*}^2$, negative correlations \emph{also} reduce conditional variance, contributing to utility.
+
+\section{Conclusion}
+
+The distribution-aware utility peaking outside the stimulus distribution $p(x)$ is \textbf{correct behavior}, not a bug. The apparent paradox arises from confusing:
+\begin{itemize}
+    \item The \emph{relative} benefit of conditioning (variance reduction ratio)
+    \item The \emph{absolute} information gain (utility = $\Hmarg - \Hcond$)
+\end{itemize}
+
+Points outside $p(x)$ can have high utility because:
+\begin{enumerate}
+    \item They have high marginal entropy $\Hmarg$ (GP uncertainty is high far from training data)
+    \item They maintain some correlation with points inside $p(x)$ (due to the GP kernel)
+    \item Even modest relative reduction from a high baseline gives substantial absolute gain
+\end{enumerate}
+
+The algorithm correctly identifies that \textbf{exploring uncertain regions that are correlated with the target distribution} provides the most information about the neuron's response to natural stimuli.
+
+\section{Diagnostic Scripts}
+
+Two diagnostic scripts were created to analyze this behavior:
+\begin{itemize}
+    \item \texttt{diagnose\_single\_sample.py}: Traces the computation step-by-step for single $(x, x^*)$ pairs
+    \item \texttt{diagnose\_utility\_decomposition.py}: Visualizes $\Hmarg$, $\Hcond$, cross-covariance, and variance reduction across all $x^*$
+\end{itemize}
+
+\end{document}

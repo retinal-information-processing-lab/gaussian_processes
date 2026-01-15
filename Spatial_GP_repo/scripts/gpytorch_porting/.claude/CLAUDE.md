@@ -1,0 +1,1033 @@
+# GPyTorch Porting Project - Development Tracking
+
+This document tracks the porting effort from the custom variational GP implementation (`utils.py:varGP()`) to GPyTorch. It serves as both a mathematical reference and a decision log.
+
+**Session started**: January 2025
+**Goal**: Create a GPyTorch-based implementation that produces qualitatively similar results to the custom implementation, with cleaner code structure.
+
+---
+
+## Quick Start for New Sessions
+
+| Item | Value |
+|------|-------|
+| **Current status** | Stage 2 + Masking COMPLETE, validated against reference |
+| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `tests/` |
+| **Run test** | `python test_fit.py --cell 8` (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
+| **Deferred** | Test D (multi-cell), custom E-step (Section 6) |
+| **Known limitation** | RF center (eps_0) needs reasonable init - doesn't learn from corners (Q20) |
+| **Read first** | WORKING_GUIDELINES.md (process), then this file |
+
+---
+
+## Table of Contents
+
+1. [Mathematical Foundation](#1-mathematical-foundation)
+2. [Current Custom Implementation](#2-current-custom-implementation)
+3. [Porting Strategy](#3-porting-strategy)
+4. [Decision Log](#4-decision-log)
+5. [Implementation Stages](#5-implementation-stages)
+6. [Deferred Items](#6-deferred-items)
+7. [Key Files Reference](#7-key-files-reference)
+8. [Codebase Structure](#8-codebase-structure)
+9. [Data Format](#9-data-format)
+10. [Preprocessing Steps](#10-preprocessing-steps)
+11. [Working GPyTorch Patterns](#11-working-gpytorch-patterns)
+
+---
+
+## 1. Mathematical Foundation
+
+### 1.1 The Model
+
+**Observation model** (Poisson likelihood with exponential link):
+```
+r(x) ~ Poisson(f(x))
+f(x) = exp(A·λ(x) + λ₀)
+```
+where:
+- `r(x)` = observed spike count for stimulus x
+- `f(x)` = firing rate (Poisson rate parameter)
+- `λ(x)` = latent GP function
+- `A` = gain parameter
+- `λ₀` = bias parameter (baseline log-firing rate)
+
+**Latent GP prior**:
+```
+λ ~ GP(0, K_θ)
+```
+where K_θ is the kernel with hyperparameters θ.
+
+### 1.2 Variational Inference (Sparse GP)
+
+Since the Poisson likelihood makes the posterior intractable, we use variational inference with inducing points.
+
+**Inducing points**: A set of M << N pseudo-inputs {z̃₁, ..., z̃_M} with corresponding latent values λ̃ = {λ(z̃₁), ..., λ(z̃_M)}.
+
+**Variational approximation**:
+```
+q(λ̃) = N(m, V)
+```
+where m ∈ ℝᴹ and V ∈ ℝᴹˣᴹ are variational parameters.
+
+**Approximate posterior** for any point x:
+```
+q(λ(x)) = ∫ p(λ(x)|λ̃) q(λ̃) dλ̃
+
+Mean:     μ(x) = k(x)ᵀ K̃⁻¹ m
+Variance: σ²(x) = k(x,x) + k(x)ᵀ K̃⁻¹ (V - K̃) K̃⁻¹ k(x)
+```
+where:
+- k(x) = [K(x, z̃₁), ..., K(x, z̃_M)]ᵀ  (cross-covariance vector)
+- K̃ = K(Z̃, Z̃)  (inducing point kernel matrix)
+
+### 1.3 Evidence Lower Bound (ELBO)
+
+The objective to maximize:
+```
+L = E_q[log p(Y|λ)] - KL(q(λ̃) || p(λ̃))
+```
+
+**KL divergence term** (between two Gaussians):
+```
+-KL = ½ log|V| - ½ log|K̃| - ½ mᵀK̃⁻¹m - ½ Tr(K̃⁻¹V) + const
+```
+
+**Expected log-likelihood term** (for Poisson with exponential link):
+```
+E_q[log p(rᵢ|λᵢ)] = rᵢ(A·μᵢ + λ₀) - exp(A·μᵢ + ½A²σᵢ² + λ₀) + const
+```
+
+### 1.4 EM Algorithm
+
+**E-step**: Update variational parameters (m, V) for fixed hyperparameters.
+
+Newton update (closed-form when α=1):
+```
+g = A · (K·K̃⁻¹)ᵀ @ (r - f_mean)
+G = A² · (K·K̃⁻¹)ᵀ @ diag(f_mean) @ (K·K̃⁻¹)
+
+V_new = solve(I + K̃·G, K̃)
+m_new = V_new @ (G·m + g)
+```
+
+**M-step**: Update kernel hyperparameters θ for fixed (m, V).
+- Gradient-based optimization of ELBO w.r.t. θ
+
+**F-step**: Update firing rate parameters (A, λ₀).
+- Can be done with E-step (same loop) since no kernel recomputation needed
+
+### 1.5 Arc-Cosine Kernel
+
+Non-stationary kernel derived from infinite-width 2-layer ReLU network:
+```
+K(x, x') = (1/π) · M · J(θ)
+
+where:
+  v_x = xᵀCx + σ₀²
+  v_x' = x'ᵀCx' + σ₀²
+  M = √(v_x · v_x')
+  cos(θ) = (xᵀCx' + σ₀²) / M
+  J(θ) = sin(θ) + (π - θ)cos(θ)
+```
+
+**Structured covariance C** (encodes receptive field properties):
+```
+C_ij = α_i^local · α_j^local · C_ij^smooth
+
+α_i^local = exp(-‖ξ_i - ξ₀‖² / 4β²)     [locality/RF size]
+C_ij^smooth = exp(-‖ξ_i - ξ_j‖² / 2ρ²)  [smoothness]
+```
+
+Hyperparameters:
+- ξ₀ = (eps_0x, eps_0y): RF center position
+- β: RF size
+- ρ: smoothness scale
+- σ₀: bias variance
+- Amp: amplitude
+
+**Pixel coordinate grid** (from `localker_clean()`):
+```python
+# Normalized grid on [-1, 1] × [-1, 1]
+ycord, xcord = torch.meshgrid(
+    torch.linspace(-1, 1, n_px_side),  # n_px_side = 108 for PNAS
+    torch.linspace(-1, 1, n_px_side),
+    indexing='ij'
+)
+xcord = xcord.flatten()  # (n_px_side², ) = (11664,)
+ycord = ycord.flatten()
+```
+- Center of image: (eps_0x, eps_0y) = (0, 0)
+- Corners: (±1, ±1)
+
+**Log-space parameterization** (for numerical stability):
+```
+Code parameter        →  Math symbol  →  Transform
+-2log2beta            →  β            →  β = exp(-2log2beta) / 2
+-log2rho2             →  ρ²           →  ρ² = exp(-log2rho2) / 2
+
+Example: beta=0.1, rho=0.1
+  -2log2beta = -2 * log(2 * 0.1) = -2 * log(0.2) ≈ 3.22
+  -log2rho2  = -log(2 * 0.1²)    = -log(0.02)    ≈ 3.91
+```
+
+**Implementation details** (from `kernels/kernels.py:localker_clean()`):
+
+1. **Mask computation with detached theta**:
+   ```python
+   # Mask computed with DETACHED hyperparameters
+   # This keeps mask topology fixed during backprop (structural stability)
+   dist_sq = (xcord - eps_0x.detach())**2 + (ycord - eps_0y.detach())**2
+   alpha_for_mask = torch.exp(-beta.detach() * dist_sq)
+   mask = alpha_for_mask >= 0.001  # Threshold: include if α ≥ 0.001
+   ```
+   Rationale: Prevents the set of active pixels from changing during optimization.
+
+2. **C matrix assembly**:
+   ```python
+   # Locality weights (using NON-detached theta for gradients)
+   dist_sq_center = (xcord - eps_0x)**2 + (ycord - eps_0y)**2
+   logalpha = -beta * dist_sq_center
+   alpha = torch.exp(logalpha)  # (n_px,)
+
+   # Smoothness kernel (pairwise distances)
+   dx = xcord[:, None] - xcord[None, :]
+   dy = ycord[:, None] - ycord[None, :]
+   dist_sq_pairwise = dx**2 + dy**2
+   C_smooth = torch.exp(-rho2 * dist_sq_pairwise)  # (n_px, n_px)
+
+   # Full C matrix
+   C = alpha[:, None] * C_smooth * alpha[None, :]
+   ```
+
+3. **Symmetrization** (numerical stability):
+   ```python
+   C = (C + C.T) / 2  # Enforce exact symmetry
+   ```
+
+### 1.6 Eigenspace Projection (Numerical Stability)
+
+The custom implementation projects all quantities into the eigenspace of K̃ for stability:
+```
+K̃ = B · Λ · Bᵀ  (eigendecomposition)
+Keep only eigenvalues > threshold
+
+Projected quantities:
+  K̃_b = Λ_kept  (diagonal!)
+  m_b = Bᵀ @ m
+  V_b = Bᵀ @ V @ B
+  K_b = K @ B
+```
+
+This avoids explicit K̃⁻¹ computation - uses element-wise division with diagonal K̃_b.
+
+---
+
+## 2. Current Custom Implementation
+
+### 2.1 Main Function: `varGP()` (utils.py:5291)
+
+**Inputs**:
+- x: stimuli (nt, nx)
+- r: spike counts (nt,)
+- xtilde: inducing points (ntilde, nx)
+- hyperparams_tuple: (theta, theta_lower_lims, theta_higher_lims)
+- f_params: {'logA': ..., 'lambda0': ...}
+- fit_parameters: {ntilde, maxiter, nEstep, nMstep, nFparamstep, kernfun, ...}
+
+**Outputs**:
+- fit_model dict containing: m_b, V_b, B, K_tilde_b, C, mask, hyperparams_tuple, f_params, etc.
+
+### 2.2 Supporting Functions
+
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `Estep()` | utils.py:4215 | Newton update for (m, V) |
+| `localker()` | utils.py | Compute C matrix with RF structure |
+| `acosker()` | utils.py | Arc-cosine kernel computation |
+| `lambda_moments()` | utils.py | Compute posterior mean/var at test points |
+
+### 2.3 Test Script: `one_cell_fit.py`
+
+Location: `scripts/one_cell_fit.py`
+
+Uses PNAS dataset, fits single cell with:
+- ntilde = 2100 inducing points
+- nEstep = 10, nMstep = 0, nFparamstep = 10
+- acosker kernel
+
+---
+
+## 3. Porting Strategy
+
+### 3.1 Chosen Approach: GPyTorch-Native (Staged)
+
+Start with GPyTorch's built-in variational inference, then progressively add custom components.
+
+**Why this approach**:
+- Leverages GPyTorch's numerical stability and auto-differentiation
+- Validates model structure before adding complexity
+- Clean separation between model and optimization allows hybrid later
+
+### 3.2 Alternative Approaches Considered
+
+| Approach | Description | Why Not Chosen |
+|----------|-------------|----------------|
+| **Hybrid from start** | GPyTorch for kernels, custom E-step | More complex initial debugging |
+| **Kernels only** | Replace kernels in existing varGP | Doesn't leverage GPyTorch's variational framework |
+| **Full custom** | Rewrite everything with better structure | Loses GPyTorch benefits, more work |
+
+### 3.3 Key Architectural Decision
+
+GPyTorch separates **model architecture** from **optimization**:
+- Model: `ApproximateGP` with `VariationalStrategy`
+- Optimization: standard PyTorch optimizer loop
+
+This means we can:
+1. Start with GPyTorch's Adam-based training
+2. Later replace with custom E-step (just change the optimizer loop, not the model)
+3. Access variational parameters via `model.variational_strategy.variational_distribution`
+
+---
+
+## 4. Decision Log
+
+### Session 1: Initial Planning (January 2025)
+
+**Q1: How close do results need to match?**
+> A: Qualitative match is sufficient. Exact numerical match not required.
+
+**Q2: Should GPyTorch handle M-step (hyperparameter optimization)?**
+> A: Yes, for initial implementation. Let GPyTorch's Adam optimize the ELBO w.r.t. hyperparameters. Custom analytical gradients deferred to later.
+
+**Q3: What test data to use?**
+> A: PNAS data from `one_cell_fit.py` - same dataset as current implementation.
+
+**Q4: Should utility functions be ported?**
+> A: NO. Utility functions (active learning, information gain) are explicitly OUT OF SCOPE for this effort.
+
+**Q5: Should custom E-step be implemented now?**
+> A: Deferred to later. Start with GPyTorch's variational inference.
+>
+> **Rationale**:
+> - Custom E-step is a closed-form Newton update (faster than iterative)
+> - But adding it later is straightforward (just replace optimizer loop)
+> - Starting simple validates model structure first
+> - GPyTorch's natural gradient optimizer is decent baseline
+
+**Q6: Is hybrid approach practical to add later?**
+> A: Yes, very practical. GPyTorch exposes `variational_mean` and `chol_variational_covar`. We can:
+> 1. Read current parameters from GPyTorch model
+> 2. Apply custom E-step update
+> 3. Write back to GPyTorch model
+>
+> Only complexity: convert between Cholesky (GPyTorch) and full V (custom).
+
+**Q7: Should we start with RBF kernel or arc-cosine with C=I?**
+> A: **Arc-cosine with C=I** (identity covariance matrix, no RF structure).
+>
+> **Rationale**: RBF kernel is stationary (depends on distance), while arc-cosine is non-stationary (depends on actual input values via xᵀCx'). If RBF works but arc-cosine fails, we wouldn't know if the issue is:
+> 1. The kernel implementation
+> 2. The GPyTorch integration
+> 3. Something inherent to arc-cosine with high-dimensional data
+>
+> Starting with arc-cosine (C=I) keeps the kernel math the same while removing RF complexity. This is a better stepping stone than RBF.
+
+### Session 2: Stage 1 Validation and Debugging (January 2025)
+
+**Q8: How to add amplitude scaling to the kernel?**
+> A: Use GPyTorch's `ScaleKernel` wrapper rather than building amplitude into ArcCosineKernel.
+>
+> **Rationale**:
+> - `ScaleKernel` is GPyTorch's standard pattern: `K_scaled = outputscale × K_base`
+> - Equivalent to `Amp` parameter in original implementation
+> - Keeps ArcCosineKernel simple and matching reference implementation
+> - Can verify kernel correctness independent of scaling
+>
+> **Alternative considered**: Add `Amp` parameter directly to ArcCosineKernel
+> - Rejected because: complicates kernel unit test (must match reference exactly)
+
+**Q9: What precision (dtype) is required?**
+> A: **float64 is required** for numerical stability.
+>
+> **Problem**: Arc-cosine kernel values are ~10,000 for PNAS data (11,664 pixels per image). With float32:
+> - Cholesky decomposition fails with NaN
+> - Precision loss in kernel matrix computations
+>
+> **Solution**: Use `model.double()` and load data with `dtype=torch.float64`
+>
+> **Note**: Order matters - call `.double()` BEFORE `.to(device)`
+
+**Q10: Why does arc-cosine with C=I perform poorly on PNAS data?**
+> A: **C=I is fundamentally unsuited** for image data without receptive field structure.
+>
+> **Experimental findings**:
+> | Test | RBF Kernel | Arc-Cosine (C=I) |
+> |------|-----------|------------------|
+> | Synthetic (linear) | r = 0.94 | r = 0.43 |
+> | PNAS real data | (not tested) | r ≈ 0.2 |
+>
+> **Root cause**: Arc-cosine with C=I captures only:
+> - Input norms: `||x||²`
+> - Angles between inputs: `x·x' / (||x|| ||x'||)`
+>
+> For random Gaussian inputs (or images with similar total energy), all points have similar norms → similar kernel values → constant predictions.
+>
+> **The original implementation works because C matrix encodes**:
+> - Locality (β, eps_0x, eps_0y): which pixels matter
+> - Smoothness (ρ): how nearby pixels correlate
+>
+> **Conclusion**: Stage 2 (structured C) is essential for PNAS data, not optional.
+
+**Q11: Should we fix the GPyTorch deprecation warnings?**
+> A: **No**. These warnings come from `linear_operator` package internals, not our code.
+>
+> - Location: `linear_operator/utils/interpolation.py:71`
+> - Cause: Deprecated PyTorch sparse tensor API
+> - Impact: None (cosmetic only)
+> - Fix: Wait for GPyTorch/linear_operator maintainers to update
+>
+> **Alternative considered**: Suppress with `warnings.filterwarnings`
+> - Rejected because: hides potential issues, warnings are harmless
+
+**Q12: Should we rename kernels.py to avoid import ambiguity?**
+> A: **Deferred** to later cleanup.
+>
+> **Issue**: Two files named `kernels.py`:
+> 1. `Spatial_GP_repo/kernels/kernels.py` - reference implementation
+> 2. `Spatial_GP_repo/scripts/gpytorch_porting/kernels.py` - GPyTorch version
+>
+> Current import `from kernels import ArcCosineKernel` works because Python searches current directory first.
+>
+> **Potential fix**: Rename to `arccosine_kernel.py` or use explicit path handling
+> - Deferred because: not causing current problems, focus on Stage 2
+
+**Q13: Will C=I in Stage 2 reproduce Stage 1 results?**
+> A: **Yes, exactly.** This is a key validation check.
+>
+> Mathematically:
+> - C=None: `V = ||x||² + σ₀²`, cross = `x·x' + σ₀²`
+> - C=I: `V = xᵀIx + σ₀² = ||x||² + σ₀²`, cross = `xᵀIx' + σ₀² = x·x' + σ₀²`
+>
+> Only difference: C=None avoids unnecessary `x @ I` matrix multiply (efficiency).
+> Kernel values are identical.
+
+### Session 3: Stage 2 Planning (January 2025)
+
+**Q14: Should we implement pixel masking in Stage 2?**
+> A: **NO - defer to later.**
+>
+> **Rationale**:
+> - Masking adds complexity (dynamic tensor sizes, mask management)
+> - First version should work without masking to validate C matrix computation
+> - Full 108×108 = 11,664 pixels is manageable for testing
+> - Can add masking later if performance requires it
+>
+> **Alternative considered**: Implement masking from start (matches reference)
+> - Rejected because: adds debugging surface, not essential for correctness
+
+**Q15: Should C matrix computation be in a separate class?**
+> A: **NO - integrate into ArcCosineKernel.**
+>
+> **Rationale**:
+> - Keeps all kernel logic in one place
+> - Matches user preference for "simple, scientist-friendly" code
+> - C is only used by the arc-cosine kernel, not shared
+> - Avoids indirection and extra files
+>
+> **Alternative considered**: Separate `RFCovarianceMatrix` class
+> - Rejected because: over-engineering for single use case
+
+**Q16: How should amplitude (Amp) be handled?**
+> A: **Keep using ScaleKernel wrapper** (same as Stage 1).
+>
+> **Rationale**:
+> - Consistent with Stage 1 approach
+> - ScaleKernel is GPyTorch's standard pattern
+> - Keeps ArcCosineKernel focused on the kernel math
+> - Amplitude is conceptually separate from RF structure
+>
+> **Alternative considered**: Add Amp parameter directly to ArcCosineKernel
+> - Rejected because: breaks Stage 1 compatibility, complicates unit tests
+
+**Q17: How to validate Stage 2 implementation?**
+> A: **Two-step validation**:
+> 1. **C=I equivalence test**: When β→∞ (very large) and ρ→∞, C→I, so results should match Stage 1 exactly
+> 2. **Performance test**: With proper RF parameters (small β, ρ), Pearson r should improve significantly (target: r > 0.5 vs r ≈ 0.2 for C=I)
+>
+> This confirms both correctness (step 1) and that RF structure matters (step 2).
+
+### Session 4: Validation Tests (January 2025)
+
+**Q18: How does GPyTorch compare to reference implementation?**
+> A: **Excellent match.** Test A ran both implementations on same data with proper hyperparameter learning.
+>
+> | Metric | Reference (varGP) | GPyTorch | Diff |
+> |--------|-------------------|----------|------|
+> | Pearson r | **0.8697** | **0.8433** | 0.0264 |
+> | Final beta | 0.0606 | 0.1038 | 0.0432 |
+> | Final rho | 0.0655 | 0.0797 | 0.0142 |
+> | Final A | 0.0169 | 0.9489 | 0.9320 |
+>
+> **Settings**: ntilde=200, n_train=2000, maxiter=300 (ref) / iterations=500 (GPyTorch)
+>
+> **Success criterion**: Pearson r within 0.1 ✓
+
+**Q19: Does A initialization matter?**
+> A: **NO - model is robust to A initialization.**
+>
+> | A_init | Pearson r | Final beta | Final rho |
+> |--------|-----------|------------|-----------|
+> | 1.0 | 0.8714 | 0.1001 | 0.0851 |
+> | 0.01 | 0.8715 | 0.0781 | 0.0696 |
+>
+> Both converge to same Pearson r (diff = 0.0001).
+> Lower A_init (0.01) achieves better ELBO (1577 vs 1641) and learns smaller RF (beta closer to reference).
+
+**Q20: Can RF center learn from bad initialization?**
+> A: **NO - this is a limitation.** RF center barely moves from bad initialization.
+>
+> | Init eps_0 | Final eps_0 | Pearson r |
+> |------------|-------------|-----------|
+> | (0.0, 0.0) | (0.11, -0.04) | **0.87** |
+> | (0.5, 0.5) | (0.53, 0.43) | **0.35** |
+>
+> **Root cause**: Adam struggles to move RF center far from initial position. The loss landscape may have local minima.
+>
+> **Practical implication**: Start with eps_0 near (0,0) or use prior knowledge about RF location.
+
+### Session 5: Evaluation Metrics (January 2025)
+
+**Q21: Which evaluation metric should we use?**
+> A: **Explained variance** (Pearson r / reliability), matching `utils.py:explained_variance()`.
+> Added `compute_explained_variance()` to `train.py` and `--plot`/`--save-plot` to `test_fit.py`.
+
+### Session 6: Pixel Masking (January 2025)
+
+**Q22: How should pixel masking be implemented?**
+> A: Match reference implementation in `kernels/kernels.py:localker_clean()`.
+>
+> **Key design choices:**
+> - Mask computed with **detached** theta parameters (structural stability during backprop)
+> - Mask applied internally in `forward()` - user passes full images, kernel handles masking
+> - `use_mask=True` by default when `n_px_side` is set
+>
+> **Hard-coded values:**
+> - `MASK_THRESHOLD = 0.001` - pixels with locality weight α >= 0.001 included (matches reference)
+> - Typical mask size: ~2400-2500 pixels (out of 11664) for beta=0.1, eps_0=(0,0)
+>
+> **Validation test tolerances** (`tests/test_mask_validation.py`):
+> - Mask equivalence: exact match required
+> - C matrix equivalence: max diff < 1e-6 (absolute)
+> - Kernel equivalence: relative diff < 1e-5
+> - End-to-end fit: Pearson r difference < 0.05 between masked and full
+>
+> **Memory reduction**: 11664×11664 (~1GB) → ~2480×2480 (~50MB) = ~20x reduction
+
+---
+
+## 5. Implementation Stages
+
+### Stage 1: Arc-Cosine Kernel with C=I (Identity Covariance)
+**Status**: COMPLETE (January 2025)
+
+**Goal**: GPyTorch model with arc-cosine kernel (C=I) that fits PNAS data.
+
+**Tasks**:
+- [x] Create `ArcCosineKernel` extending `gpytorch.kernels.Kernel`
+- [x] Implement `forward()` method using math from `kernels/kernels.py:acosker_clean()`
+- [x] Implement Poisson likelihood with (A, λ₀) parameters
+- [x] Load PNAS data (same preprocessing as one_cell_fit.py)
+- [x] Train and evaluate R² on test set
+- [x] Verify kernel output matches `acosker_clean()` with C=None
+
+**Results**:
+- Model trains successfully on PNAS data
+- Loss decreases (40 → 23 with 50 inducing points, 100 iterations)
+- Test Pearson r ≈ 0.2 (modest correlation - expected without RF structure)
+- Kernel unit test passes (exact match with reference implementation)
+
+**Key implementation notes**:
+1. Must use `float64` for numerical stability (kernel values ~10000)
+2. Wrap kernel with `ScaleKernel` to add amplitude (prevents exp() overflow)
+3. Order matters: call `.double()` before `.to(device)`
+
+**Files created**:
+- `kernels.py` - ArcCosineKernel class (verified against reference)
+- `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
+- `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
+- `train.py` - Training and evaluation utilities
+- `test_fit.py` - Main test script for PNAS data
+
+### Stage 2: Structured Covariance Matrix C
+**Status**: COMPLETE (January 2025)
+
+**Goal**: Add locality and smoothness structure to kernel via RF parameters.
+
+**Mathematical reference**: See Section 1.5 for C matrix formula, pixel grid, and implementation details.
+
+**Design decisions**: See Q14-Q17 in Section 4 (Session 3).
+
+**Tasks**:
+- [x] Add RF parameters to `ArcCosineKernel.__init__()`:
+  - `n_px_side`: image dimension (108 for PNAS)
+  - `eps_0x`, `eps_0y`: RF center (unconstrained, range [-1, 1])
+  - `raw_m2log2beta`: locality decay (log-space)
+  - `raw_mlog2rho2`: smoothness decay (log-space)
+- [x] Implement `_setup_pixel_coords()`: create normalized grid as buffer
+- [x] Implement `_compute_C_matrix()`: compute C from RF parameters
+- [x] Update `forward()` to use computed C when `n_px_side` is set
+- [x] Add `--use-rf` flag to `test_fit.py`
+- [x] **Validation 1**: C=I equivalence test - PASSED (large β + small ρ gives C≈I)
+- [x] **Validation 2**: Gradient flow test - PASSED (all RF params receive gradients)
+- [x] **Validation 3**: Performance test - PASSED (r = 0.75 vs Stage 1's r = 0.53)
+- [x] **Pixel masking** - COMPLETE (see Q22)
+
+**Results** (initial quick tests):
+
+| Configuration | Training | Inducing | Pearson r | R² |
+|--------------|----------|----------|-----------|-----|
+| Stage 1 (C=I) | 500 | 100 | 0.53 | 0.22 |
+| Stage 2 (RF) | 500 | 100 | **0.75** | **0.49** |
+
+**Results** (full validation with proper settings):
+
+| Configuration | Training | Inducing | Iterations | Pearson r |
+|--------------|----------|----------|------------|-----------|
+| Reference (varGP) | 2000 | 200 | 300 | **0.87** |
+| GPyTorch (Stage 2) | 2000 | 200 | 500 | **0.84** |
+
+**Final RF parameters** (cell 8, GPyTorch with n_train=2000, ntilde=200):
+- beta: 0.10 → 0.10 (minimal change)
+- rho: 0.10 → 0.08 (learned smaller)
+- eps_0: (0.0, 0.0) → (0.11, -0.04) - RF center learned reasonable location
+
+**Key implementation notes**:
+1. C matrix is 11,664 × 11,664 (~1GB float64) - works but slow on CPU
+2. Use `--device cuda` for reasonable performance
+3. Must use `outputscale=1e-4` to prevent exp() overflow in likelihood
+4. Log-space parameterization:
+   - `raw = -2*log(2*beta)` → `beta = exp(-raw/2) / 2`
+   - `raw = -log(2*rho²)` → `rho = sqrt(exp(-raw) / 2)`
+
+**Files modified**:
+- `kernels.py` - added RF parameters, `_setup_pixel_coords()`, `_compute_C_matrix()`
+- `test_fit.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags
+
+### Stage 3: Custom E-step (Deferred)
+**Status**: DEFERRED
+
+**Goal**: Replace GPyTorch's iterative optimization with closed-form Newton update.
+
+**Tasks**:
+- [ ] Extract variational parameters from GPyTorch model
+- [ ] Implement E-step update (from utils.py)
+- [ ] Convert between Cholesky and full V representations
+- [ ] Write updated parameters back to model
+- [ ] Benchmark speed improvement
+
+### Stage 4: Custom M-step Gradients (Deferred)
+**Status**: DEFERRED
+
+**Goal**: Implement analytical gradients for kernel hyperparameters.
+
+**Tasks**:
+- [ ] Port gradient formulas from LaTeX documents
+- [ ] Create custom `backward()` methods
+- [ ] Benchmark vs autograd
+
+---
+
+## 6. Deferred Items
+
+### 6.1 Utility Functions
+**Status**: EXPLICITLY OUT OF SCOPE
+
+The utility/acquisition functions in `utility.py` are NOT part of this porting effort:
+- `nd_utility_new()`
+- `distribution_aware_utility_gpytorch()`
+- `conditioned_utility_clean()`
+- Any active learning functionality
+
+### 6.2 Custom E-step
+**Reason for deferral**: Start simple, validate structure first.
+
+**Implementation notes for later**:
+```python
+# E-step update (from utils.py:Estep)
+# When alpha=1, this is a single matrix solve:
+g = A * (K @ K_tilde_inv).T @ (r - f_mean)
+G = A**2 * (K @ K_tilde_inv).T @ (diag(f_mean) @ (K @ K_tilde_inv))
+V_new = torch.linalg.solve(I + K_tilde @ G, K_tilde)
+m_new = V_new @ (G @ m + g)
+```
+
+**Cholesky conversion**:
+- GPyTorch stores: L where V = LLᵀ
+- Custom code uses: V directly
+- Conversion: `V = L @ L.T` and `L = torch.linalg.cholesky(V)`
+
+### 6.3 Custom M-step Gradients
+**Reason for deferral**: Autograd works, optimization later.
+
+**Gradient formulas available in**:
+- `latex_summaries/acosker_kernel_def_and_gradients.tex`
+- `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
+
+### 6.4 Eigenspace Projection
+**Reason for deferral**: GPyTorch has its own numerical stability mechanisms.
+
+**May be needed if**: GPyTorch's Cholesky-based approach fails on ill-conditioned K̃.
+
+### 6.5 Pixel Masking
+**Status**: COMPLETE (January 2025)
+
+**Implementation** (see Q22 for details):
+- Added `compute_mask()` and updated `_compute_C_matrix(apply_mask=True)` in `kernels.py`
+- Mask computed with detached theta (structural stability)
+- `use_mask=True` by default, `--no-mask` CLI flag to disable
+- Validated with 4 tests in `tests/test_mask_validation.py`
+
+**Result**: C reduced from 11664×11664 to ~2480×2480 (~20x memory reduction).
+
+### 6.6 Multi-Cell Validation (Test D)
+**Reason for deferral**: Cell 8 validation sufficient for initial implementation.
+
+**Plan**: Run on cells 0, 4, 8, 12 to verify robustness across different neurons.
+
+**Success criteria**: All cells achieve r > 0.3, no NaN/crashes.
+
+---
+
+## 7. Key Files Reference
+
+### Source LaTeX Documents
+| File | Content |
+|------|---------|
+| `latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation |
+| `latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math |
+| `latex_summaries/distribution_aware_utility_pietro.tex` | Utility functions (OUT OF SCOPE) |
+
+### Existing Code to Reference
+| File | Content |
+|------|---------|
+| `utils.py` | varGP(), Estep(), acosker(), localker() |
+| `kernels/kernels.py` | Clean kernel implementations with autograd |
+| `scripts/one_cell_fit.py` | Test script with PNAS data |
+| `scripts/1D_playground/gp_utility_playground.py` | GPyTorch example with Poisson likelihood |
+
+### Data
+| File | Content |
+|------|---------|
+| `notebooks/PNAS_paper_sorted_data.npz` | Test dataset (images + neural responses) |
+
+### GPyTorch Porting Files (this project)
+| File | Content |
+|------|---------|
+| `kernels.py` | ArcCosineKernel with RF structure and masking |
+| `likelihoods.py` | PoissonLikelihood with A, λ₀ |
+| `model.py` | VariationalGPModel |
+| `train.py` | Training and evaluation utilities |
+| `test_fit.py` | Main test script (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
+| `tests/test_mask_validation.py` | 4 validation tests for pixel masking |
+| `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
+
+---
+
+## Appendix A: GPyTorch Key Classes
+
+```python
+# Variational GP model structure
+class MyGP(gpytorch.models.ApproximateGP):
+    def __init__(self, inducing_points):
+        # Variational distribution q(u) = N(m, V)
+        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
+            inducing_points.size(0)
+        )
+        # Strategy for computing q(f) from q(u)
+        variational_strategy = gpytorch.variational.VariationalStrategy(
+            self, inducing_points, variational_distribution,
+            learn_inducing_locations=False
+        )
+        super().__init__(variational_strategy)
+
+        self.mean_module = gpytorch.means.ZeroMean()
+        self.covar_module = MyKernel()
+
+    def forward(self, x):
+        mean = self.mean_module(x)
+        covar = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean, covar)
+
+# Custom likelihood
+class PoissonLikelihood(gpytorch.likelihoods.Likelihood):
+    def expected_log_prob(self, target, input):
+        # E_q[log p(y|f)] = y*mu - exp(mu + sigma²/2)
+        mean, var = input.mean, input.variance
+        return (target * mean - torch.exp(mean + var / 2)).sum(-1)
+
+    def forward(self, function_samples):
+        return torch.distributions.Poisson(rate=torch.exp(function_samples))
+```
+
+---
+
+## 8. Codebase Structure
+
+```
+Spatial_GP_repo/
+├── utils.py                 (301 KB) - Main GP: varGP(), Estep(), acosker(), localker()
+├── utility.py               (290 KB) - Active learning (OUT OF SCOPE)
+├── model.py                 - Backward compat shim for GPModel
+│
+├── GP_model/
+│   └── model.py             - GPModel class (structured model storage)
+│
+├── kernels/
+│   ├── kernels.py           (15.9 KB) - Clean kernel implementations
+│   │   ├── localker_clean() - Locality/RF covariance C
+│   │   ├── acosker_clean()  - Arc-cosine kernel (the one we're porting)
+│   │   └── acosker_with_grad() - Autograd wrapper
+│   └── __init__.py
+│
+├── notebooks/
+│   ├── one_cell_fit.ipynb   - Basic GP fitting workflow (REFERENCE)
+│   └── PNAS_paper_sorted_data.npz - Dataset
+│
+├── scripts/
+│   ├── one_cell_fit.py      - Standalone fitting script (REFERENCE)
+│   ├── 1D_playground/
+│   │   └── gp_utility_playground.py - GPyTorch example (REFERENCE)
+│   └── gpytorch_porting/    - THIS PROJECT
+│       ├── .claude/CLAUDE.md - This file
+│       └── (new files to create)
+│
+└── tests/
+    └── test_acosker_clean.py - Kernel unit tests
+```
+
+**Key insight**: 90% of the GP logic is in `utils.py:varGP()`. The kernels are in `kernels/kernels.py`.
+
+---
+
+## 9. Data Format
+
+**File**: `notebooks/PNAS_paper_sorted_data.npz`
+
+| Key | Shape | Dtype | Range | Description |
+|-----|-------|-------|-------|-------------|
+| `images_train` | (2910, 108, 108, 1) | float32 | [-2.4, 2.5] | Training images (normalized) |
+| `images_val` | (250, 108, 108, 1) | float32 | [-2.4, 2.5] | Validation images |
+| `images_test` | (30, 108, 108, 1) | float32 | [-2.4, 2.5] | Test images |
+| `responses_train` | (2910, 41) | float64 | [0, ~25] | Spike counts (41 neurons) |
+| `responses_val` | (250, 41) | float64 | [0, ~26] | Validation responses |
+| `responses_test` | **(30, 30, 41)** | float64 | [0, ~27] | **30 repeats × 30 images × 41 neurons** |
+
+**Important notes**:
+- Images are already normalized (mean ~0, std ~1)
+- Responses are non-negative spike counts
+- Test set has 30 repetitions per image for reliability estimates
+- We fit **one neuron at a time** (cellid selects which)
+
+---
+
+## 10. Preprocessing Steps
+
+From `scripts/one_cell_fit.py`:
+
+```python
+# 1. Load data
+data = np.load('notebooks/PNAS_paper_sorted_data.npz')
+X_train = torch.tensor(data['images_train'], dtype=torch.float32, device=device)
+R_train = torch.tensor(data['responses_train'], dtype=torch.float32, device=device)
+
+# 2. Flatten images: (n_samples, 108, 108, 1) → (n_samples, 11664)
+X_train = X_train.reshape(X_train.shape[0], -1)  # (2910, 11664)
+
+# 3. Select single neuron
+cellid = 0
+r = R_train[:, cellid]  # (2910,)
+
+# 4. Select inducing points (random subset)
+ntilde = 100  # or up to 2100
+indices = torch.randperm(X_train.shape[0])[:ntilde]
+xtilde = X_train[indices]  # (ntilde, 11664)
+
+# 5. Initialize hyperparameters
+theta = {
+    'sigma_0': torch.tensor(1.0),
+    'Amp': torch.tensor(1.0),
+    'eps_0x': torch.tensor(0.0),
+    'eps_0y': torch.tensor(0.0),
+    '-2log2beta': torch.tensor(-2 * np.log(2 * 0.1)),  # beta=0.1
+    '-log2rho2': torch.tensor(-np.log(2 * 0.1**2)),    # rho=0.1
+}
+
+# 6. Initialize firing rate parameters
+f_params = {
+    'logA': torch.log(torch.tensor(0.01)),  # A = 0.01
+    'lambda0': torch.tensor(1.0),
+}
+```
+
+---
+
+## 11. Working GPyTorch Patterns
+
+From `scripts/1D_playground/gp_utility_playground.py`:
+
+### 11.1 Poisson Likelihood
+
+```python
+class PoissonLikelihood(gpytorch.likelihoods.Likelihood):
+    """Poisson likelihood with log-link: r ~ Poisson(exp(f))
+
+    For our model: f = A·λ + λ₀, so rate = exp(A·λ + λ₀)
+
+    Expected log-likelihood under q(λ) = N(μ, σ²):
+        E[r·f - exp(f)] = r·(A·μ + λ₀) - exp(A·μ + A²σ²/2 + λ₀)
+    """
+
+    def __init__(self, A_init=1.0, lambda0_init=0.0):
+        super().__init__()
+        # Learnable parameters
+        self.register_parameter('raw_A', torch.nn.Parameter(torch.tensor(A_init)))
+        self.register_parameter('lambda0', torch.nn.Parameter(torch.tensor(lambda0_init)))
+
+    @property
+    def A(self):
+        # Ensure A > 0 via softplus or exp
+        return torch.nn.functional.softplus(self.raw_A)
+
+    def expected_log_prob(self, target, input):
+        """
+        Args:
+            target: Observed spike counts (n_samples,)
+            input: GP output MultivariateNormal with mean, variance
+        Returns:
+            Expected log probability (summed over samples)
+        """
+        mu = input.mean      # (n_samples,)
+        var = input.variance # (n_samples,)
+        A = self.A
+        lambda0 = self.lambda0
+
+        # E[r·(A·λ + λ₀) - exp(A·λ + λ₀)]
+        # = r·(A·μ + λ₀) - exp(A·μ + A²·σ²/2 + λ₀)
+        log_prob = target * (A * mu + lambda0) - torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
+        return log_prob.sum(-1)
+
+    def forward(self, function_samples):
+        """For sampling: return Poisson distribution given function samples."""
+        A = self.A
+        lambda0 = self.lambda0
+        rate = torch.exp(A * function_samples + lambda0)
+        return torch.distributions.Poisson(rate=rate)
+```
+
+### 11.2 Variational GP Model
+
+```python
+class VariationalGPModel(gpytorch.models.ApproximateGP):
+    def __init__(self, inducing_points, kernel):
+        # Variational distribution q(u) = N(m, LLᵀ)
+        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
+            inducing_points.size(0)
+        )
+        # Strategy for computing q(f) from q(u)
+        variational_strategy = gpytorch.variational.VariationalStrategy(
+            self,
+            inducing_points,
+            variational_distribution,
+            learn_inducing_locations=False  # Keep inducing points fixed
+        )
+        super().__init__(variational_strategy)
+
+        self.mean_module = gpytorch.means.ZeroMean()
+        self.covar_module = kernel
+
+    def forward(self, x):
+        mean = self.mean_module(x)
+        covar = self.covar_module(x)
+        return gpytorch.distributions.MultivariateNormal(mean, covar)
+```
+
+### 11.3 Training Loop
+
+```python
+def train_model(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
+    model.train()
+
+    # Optimize both model and likelihood parameters
+    optimizer = torch.optim.Adam([
+        {'params': model.parameters()},
+        {'params': likelihood.parameters()}
+    ], lr=lr)
+
+    with torch.enable_grad():  # Important: utility.py disables grad globally
+        for i in range(n_iterations):
+            optimizer.zero_grad()
+
+            # Forward pass
+            output = model(train_x)
+
+            # ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
+            expected_log_lik = likelihood.expected_log_prob(train_y, output)
+            kl_div = model.variational_strategy.kl_divergence()
+
+            # Minimize negative ELBO
+            loss = -expected_log_lik + kl_div
+
+            loss.backward()
+            optimizer.step()
+
+            if (i + 1) % 100 == 0:
+                print(f"Iter {i+1}/{n_iterations}, Loss: {loss.item():.2f}")
+
+    return model, likelihood
+```
+
+### 11.4 Prediction
+
+```python
+def predict(model, likelihood, test_x):
+    model.eval()
+    with torch.no_grad():
+        # Get posterior q(λ*) at test points
+        posterior = model(test_x)
+        mu = posterior.mean
+        var = posterior.variance
+
+        # Predicted firing rate: E[exp(A·λ + λ₀)] = exp(A·μ + A²σ²/2 + λ₀)
+        A = likelihood.A
+        lambda0 = likelihood.lambda0
+        f_pred = torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
+
+    return f_pred, mu, var
+```
+
+---
+
+## Appendix B: Mathematical Notation Reference
+
+| Symbol | Meaning | Shape |
+|--------|---------|-------|
+| x | Input stimulus (image) | (n_pixels,) |
+| r | Observed spike count | scalar |
+| λ(x) | Latent GP function value | scalar |
+| f(x) | Firing rate = exp(A·λ + λ₀) | scalar |
+| K̃ | Inducing point kernel matrix | (M, M) |
+| K | Cross-kernel (data to inducing) | (N, M) |
+| m | Variational mean | (M,) |
+| V | Variational covariance | (M, M) |
+| C | Structured covariance (RF) | (n_px, n_px) |
+| A | Gain parameter | scalar |
+| λ₀ | Bias parameter | scalar |
+| β | RF size parameter | scalar |
+| ρ | Smoothness parameter | scalar |
+| ξ₀ | RF center (eps_0x, eps_0y) | (2,) |
+| σ₀ | Kernel bias variance | scalar |
+
+---
+
+*Last updated: January 2025 (Session 6 - Pixel masking complete)*

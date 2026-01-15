@@ -1,0 +1,178 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{xcolor}
+
+\newcommand{\E}{\mathbb{E}}
+
+\title{Why the Analytical Poisson Entropy Formula Avoids Truncation Errors}
+\author{Explanation for Monte Carlo vs Analytical Comparison}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{The Standard Entropy Formula}
+
+For a Poisson distribution with rate $f$, the probability mass function is:
+\begin{equation}
+p(r \mid f) = \frac{f^r e^{-f}}{r!}, \quad r = 0, 1, 2, \ldots
+\end{equation}
+
+The entropy is defined as:
+\begin{equation}
+H(f) = -\sum_{r=0}^{\infty} p(r \mid f) \log p(r \mid f)
+\label{eq:entropy_def}
+\end{equation}
+
+\section{Expanding the Log-Probability}
+
+First, we expand the log of the Poisson probability:
+\begin{align}
+\log p(r \mid f) &= \log\left( \frac{f^r e^{-f}}{r!} \right) \\
+&= r \log(f) - f - \log(r!)
+\end{align}
+
+\section{Substituting into the Entropy Formula}
+
+Substituting this into \eqref{eq:entropy_def}:
+\begin{align}
+H(f) &= -\sum_{r=0}^{\infty} p(r) \left[ r \log(f) - f - \log(r!) \right] \\
+&= -\log(f) \sum_{r=0}^{\infty} r \cdot p(r) + f \sum_{r=0}^{\infty} p(r) + \sum_{r=0}^{\infty} p(r) \log(r!)
+\label{eq:entropy_expanded}
+\end{align}
+
+\section{Using Known Properties of the Poisson Distribution}
+
+We know two fundamental properties of any probability distribution:
+
+\begin{enumerate}
+\item \textbf{Normalization:} $\displaystyle\sum_{r=0}^{\infty} p(r) = 1$
+
+\item \textbf{Poisson mean:} $\displaystyle\sum_{r=0}^{\infty} r \cdot p(r) = f$
+\end{enumerate}
+
+These are \textbf{exact identities} that hold for the infinite sum. We don't need to compute them numerically.
+
+\section{The Decomposed Entropy Formula}
+
+Substituting these known values into \eqref{eq:entropy_expanded}:
+\begin{align}
+H(f) &= -\log(f) \cdot f + f \cdot 1 + \sum_{r=0}^{\infty} p(r) \log(r!) \\
+&= f - f\log(f) + \E_r[\log(r!)] \\
+&= \boxed{f(1 - \log f) + \E_r[\log(r!)]}
+\label{eq:decomposed}
+\end{align}
+
+\textbf{Key insight:} The first term $f(1 - \log f)$ is \textbf{exact} --- it uses the analytical values 1 and $f$, not truncated sums.
+
+\section{What Happens with Truncation}
+
+In practice, we truncate the sum at some $R_{\max}$ (e.g., 100). Consider what the \textbf{naive approach} computes:
+\begin{equation}
+H_{\text{trunc}}(f) = -\sum_{r=0}^{R_{\max}-1} p(r) \log p(r)
+\end{equation}
+
+Expanding as before:
+\begin{align}
+H_{\text{trunc}}(f) &= -\log(f) \underbrace{\sum_{r < R_{\max}} r \cdot p(r)}_{M_{\text{trunc}}} + f \underbrace{\sum_{r < R_{\max}} p(r)}_{S_{\text{trunc}}} + \sum_{r < R_{\max}} p(r) \log(r!)
+\end{align}
+
+\subsection{The Problem: Truncated Sums Are Wrong}
+
+For large $f$ (e.g., $f = 150$), significant probability mass lies beyond $r = 100$.
+
+\begin{center}
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Quantity} & \textbf{True Value} & \textbf{Truncated Value ($R_{\max}=100$)} \\
+\hline
+$\sum p(r)$ & 1 & $S_{\text{trunc}} \approx 0.0001$ \\
+$\sum r \cdot p(r)$ & 150 & $M_{\text{trunc}} \approx 0.01$ \\
+\hline
+\end{tabular}
+\end{center}
+
+The truncated formula gives:
+\begin{equation}
+H_{\text{trunc}} = -\log(f) \cdot M_{\text{trunc}} + f \cdot S_{\text{trunc}} + \ldots \neq f(1 - \log f) + \ldots
+\end{equation}
+
+\textcolor{red}{\textbf{This is completely wrong!}} The truncation corrupts the $f(1-\log f)$ term.
+
+\section{The Correct Approach}
+
+Use the decomposed formula \eqref{eq:decomposed}:
+\begin{equation}
+H(f) = \underbrace{f(1 - \log f)}_{\text{compute exactly}} + \underbrace{\sum_{r=0}^{R_{\max}-1} p(r) \log(r!)}_{\text{truncated sum (unavoidable)}}
+\end{equation}
+
+\begin{itemize}
+\item The first term uses $f$ directly --- \textbf{no summation needed, no truncation error}.
+\item The second term still has truncation, but this is the \textbf{same truncation} used in the analytical formula.
+\end{itemize}
+
+\section{Application to the Monte Carlo Test}
+
+\subsection{What \texttt{nd\_utility} Does (Analytical)}
+
+The expected noise entropy is:
+\begin{equation}
+\E_{\lambda}[H(\exp(\lambda))] = \E[f(1 - \log f)] + \E[\E_r[\log(r!)]]
+\end{equation}
+
+where $\lambda \sim \mathcal{N}(\mu, \sigma^2)$ and $f = e^\lambda$.
+
+Using the moment generating function of the normal distribution:
+\begin{align}
+\E[e^\lambda] &= e^{\mu + \sigma^2/2} \\
+\E[\lambda \cdot e^\lambda] &= (\mu + \sigma^2) e^{\mu + \sigma^2/2}
+\end{align}
+
+Therefore:
+\begin{align}
+\E[f(1 - \log f)] &= \E[e^\lambda(1 - \lambda)] \\
+&= \E[e^\lambda] - \E[\lambda \cdot e^\lambda] \\
+&= e^{\mu + \sigma^2/2} - (\mu + \sigma^2) e^{\mu + \sigma^2/2} \\
+&= \boxed{e^{\mu + \sigma^2/2}(1 - \mu - \sigma^2)}
+\end{align}
+
+This is \textbf{exact} --- computed in closed form, no infinite sums.
+
+\subsection{What the Original Monte Carlo Did (Wrong)}
+
+For each sample $\lambda_j$:
+\begin{equation}
+H_j = -\sum_{r=0}^{99} p(r \mid e^{\lambda_j}) \log p(r \mid e^{\lambda_j})
+\end{equation}
+
+When $e^{\lambda_j}$ is large, this gives the \textbf{wrong} entropy due to truncation.
+
+\subsection{What the Fixed Monte Carlo Should Do}
+
+For each sample $\lambda_j$, compute:
+\begin{equation}
+H_j = \underbrace{e^{\lambda_j}(1 - \lambda_j)}_{\text{exact}} + \underbrace{\sum_{r=0}^{99} p(r \mid e^{\lambda_j}) \log(r!)}_{\text{truncated, same as analytical}}
+\end{equation}
+
+Then average: $H_{\text{cond}} = \frac{1}{N}\sum_j H_j$.
+
+This should match the analytical formula.
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Method} & \textbf{$f(1-\log f)$ term} & \textbf{$\E[\log(r!)]$ term} \\
+\hline
+Analytical (\texttt{nd\_utility}) & Exact (closed form) & Truncated sum \\
+Original Monte Carlo & \textcolor{red}{Wrong (truncated)} & Truncated sum \\
+Fixed Monte Carlo & Exact ($e^\lambda(1-\lambda)$) & Truncated sum \\
+\hline
+\end{tabular}
+\end{center}
+
+The original Monte Carlo had 8\% error because the truncation corrupted the $f(1-\log f)$ term. The fix computes this term exactly.
+
+\end{document}
