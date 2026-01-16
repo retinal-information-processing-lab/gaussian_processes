@@ -719,29 +719,53 @@ This produces Pearson r ≈ 0.07 vs **r ≈ 0.62** with the correct formula abov
 ### 6.4 Eigenspace Projection
 **Status**: DEFERRED (January 2025) - needed for M>25 support
 
-**Analysis (January 2025)**: We investigated why E-step fails with M≥50.
+**Deep Analysis (January 2025)**: We thoroughly investigated why E-step fails with M≥50. All tests on cell 8.
 
-**K̃ conditioning is NOT the issue**:
+#### Finding 1: K̃ Conditioning is NOT the Issue
 ```
 M= 25: cond=3.0e+03, eigval=[4.3e-03, 1.3e+01]
 M= 50: cond=1.3e+04, eigval=[1.9e-03, 2.6e+01]
 M=100: cond=1.4e+05, eigval=[3.7e-04, 5.1e+01]
 M=200: cond=4.4e+05, eigval=[2.0e-04, 9.0e+01]
 ```
-These condition numbers are acceptable for float64. No eigenvalues below 1e-6.
+These condition numbers are acceptable for float64. G and (K̃+G) are also well-conditioned.
 
-**G and (K̃+G) conditioning**:
-- G is poorly conditioned (cond ~1e7-1e8) but has small eigenvalues
-- K̃+G is well-conditioned because K̃ dominates
+#### Finding 2: Effective Dimensionality is ~10-11 Regardless of M
+```
+M= 25: 11 eigenvalues > 1% of max (44% significant)
+M= 50: 10 eigenvalues > 1% of max (20% significant)
+M=100: 11 eigenvalues > 1% of max (11% significant)
+```
+With M=50, there are ~40 "noise" dimensions with small eigenvalues.
 
-**Unclear root cause**: With M≥50, loss decreases but predictions don't generalize. The issue appears related to how the variational approximation behaves with more inducing points, not pure numerical conditioning.
+#### Finding 3: Predictions Collapse to Constant with M≥50
+| Metric | M=25 (works) | M=50 (fails) |
+|--------|--------------|--------------|
+| Test mu std | 12.89 | **4.14** |
+| Test pred std | 0.32 | **0.07** |
+| Pred range | [0.74, 2.05] | **[0.91, 1.15]** |
+| Train r | 0.25 | **0.07** |
+| Test r | 0.62 | -0.00 |
 
-**What eigenspace projection does** (from original `utils.py:Estep()`):
-- Projects K̃ = B Λ Bᵀ, keeps only eigenvalues > threshold
-- Makes K̃_b diagonal → K̃⁻¹ is trivial element-wise division
-- May provide implicit regularization that helps generalization
+**Root cause**: With M=50, the model learns to predict ~1.0 for everything. Even train r is poor (0.07), so it's not overfitting - the model learns something fundamentally wrong.
 
-**Implementation needed**: Port eigenspace projection from `utils.py:Estep()` to enable M>25.
+#### Finding 4: Simple Eigenvalue Truncation is INSUFFICIENT
+Tested E-step with eigenvalue truncation (keep only >1% of max):
+```
+M=25 truncated: kept 10/25 → r = 0.62 ✓
+M=50 truncated: kept 10/50 → r = -0.00 ✗
+```
+Both keep ~10 eigenvalues, but M=50 still fails!
+
+**Possible root cause**: We truncate during E-step but project back to full M-dimensional space. The original code stores m_b, V_b **permanently in reduced eigenspace**, not just during updates. This architectural difference may be critical.
+
+#### What Full Eigenspace Projection Does (from `utils.py:Estep()`):
+1. Projects K̃ = B Λ Bᵀ, keeps only eigenvalues > threshold
+2. Stores m_b, V_b in reduced n_b-dimensional space **permanently**
+3. All predictions use the reduced representation
+4. Never projects back to full M-dimensional space
+
+**Implementation needed**: Store variational parameters in reduced eigenspace throughout (not just during E-step), matching original `utils.py` architecture.
 
 ### 6.5 Pixel Masking
 **Status**: COMPLETE (January 2025)
