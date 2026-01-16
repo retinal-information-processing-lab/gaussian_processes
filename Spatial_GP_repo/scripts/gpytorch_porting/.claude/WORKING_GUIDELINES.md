@@ -134,6 +134,39 @@
 - Mark items complete immediately when done
 - Keep the list current - remove stale items
 
+### 5.4 Reproducibility Rule for Documented Results
+
+**Core Rule**: If experimental results are important enough to document in CLAUDE.md, they MUST be reproducible via a script.
+
+**When this applies**:
+- Validation results with specific numbers (e.g., "Pearson r = 0.62 with M=25")
+- Comparison tables between implementations
+- Debugging findings that inform design decisions
+- Any quantitative claim that future sessions might need to verify
+
+**When this does NOT apply**:
+- Quick exploratory tests during debugging (not documented)
+- Results that are immediately superseded
+- Conceptual observations without specific numbers
+
+**Required actions**:
+1. **Create a test script** in the project directory (e.g., `test_estep_pnas.py`)
+2. **Reference the script in CLAUDE.md** next to the documented results:
+   ```
+   **Validation results** (from `test_estep_pnas.py --ntilde 25`):
+   | M | Pearson r |
+   | 25 | 0.62 |
+   ```
+3. **Include reproduction command** in the script's docstring or in CLAUDE.md
+
+**Script requirements**:
+- Self-contained (loads data, runs test, prints results)
+- Configurable via command-line args for key parameters
+- Prints the metrics that are documented
+- Does NOT need to be a formal unit test - just reproducible
+
+**Rationale**: Future sessions must be able to verify documented claims. Results without reproduction steps are technical debt that compounds across sessions.
+
 ---
 
 ## 6. Data Handling (General Rule)
@@ -155,6 +188,28 @@ When starting a new session on this project:
 3. Check the "Implementation Stages" section for what's done/pending
 4. Check the "Decision Log" for past design choices
 5. Ask clarifying questions before implementing
+
+---
+
+## 8. Git Hygiene (Gentle Reminders)
+
+The user is new to git. Provide occasional nudges, but don't make version control the focus.
+
+### 8.1 When to Prompt About Git
+- **After completing a milestone** (e.g., feature works, tests pass): "This might be a good point to commit"
+- **Before major changes**: "Consider committing current working state first"
+- **At session end** (if there's uncommitted work): Mention it briefly
+
+### 8.2 Keep It Simple
+- Don't lecture about git - just suggest the action
+- Use simple commands: `git add -A && git commit -m "message"` then `git push`
+- Offer to help with the commit message
+- If something goes wrong with git, fix it without lengthy explanations
+
+### 8.3 Don't Overdo It
+- One reminder per natural milestone is enough
+- If the user ignores the suggestion, move on
+- Git is a tool, not the goal
 
 ---
 

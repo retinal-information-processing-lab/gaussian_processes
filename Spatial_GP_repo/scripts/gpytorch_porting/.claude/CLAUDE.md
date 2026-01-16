@@ -11,11 +11,11 @@ This document tracks the porting effort from the custom variational GP implement
 
 | Item | Value |
 |------|-------|
-| **Current status** | Stage 2 + Masking COMPLETE, E-step IMPLEMENTED (limited to M≤25) |
-| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `tests/` |
-| **Run test** | `python test_fit.py --cell 8` (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
-| **Deferred** | Test D (multi-cell), eigenspace projection for E-step M>25 (Section 6.4) |
-| **Known limitations** | RF center needs reasonable init (Q20); E-step only works with M≤25 (Section 6.2) |
+| **Current status** | Stage 2 + Masking COMPLETE, E-step IMPLEMENTED (performance degrades for M>50) |
+| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `test_estep_pnas.py`, `tests/` |
+| **Run test** | `python test_fit.py --cell 8` (Adam) or `python test_estep_pnas.py --ntilde 50` (E-step) |
+| **Deferred** | Test D (multi-cell), eigenspace projection (Section 6.4) |
+| **Known limitations** | RF center needs reasonable init (Q20); E-step performance degrades for large M (Section 6.2) |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
 ---
@@ -580,9 +580,11 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 - Any active learning functionality
 
 ### 6.2 Custom E-step
-**Status**: IMPLEMENTED with limitations (January 2025)
+**Status**: IMPLEMENTED (January 2025)
 
 **File**: `estep.py` - Contains `e_step()`, `update_variational_parameters()`, `train_with_estep()`
+
+**Test script**: `test_estep_pnas.py` - Runs E-step on real PNAS data with configurable M
 
 **IMPORTANT**: See `.claude/ESTEP_MATH_ANALYSIS.md` for full derivation and formula comparison.
 
@@ -607,27 +609,23 @@ V_new = (V_new + V_new.T) / 2
 # Original code formula (has discrepancy)
 m_new = V_new @ (G_t @ m + g_t)  # where g_t, G_t are transformed
 ```
-This produces Pearson r ≈ 0.07 vs **r ≈ 0.62** with the correct formula above.
+The GPyTorch E-step uses the mathematically correct Newton step formula.
 
-**Validation results**:
+**Validation results** (from `test_estep_pnas.py`, cell 8, n_train=500, 50 iterations):
 
-| n_train | n_inducing | Formula | Pearson r |
-|---------|------------|---------|-----------|
-| 1000 | 25 | Old (code) | 0.07 |
-| 1000 | 100 | Old (code) | -0.02 |
-| 500 | 25 | **Correct** | **0.62** |
-| 1000 | 50 | **Correct** | 0.02 |
+| M | Train r | Test r | Pred std | Notes |
+|---|---------|--------|----------|-------|
+| 25 | 0.44 | **0.71** | 0.66 | Good |
+| 50 | 0.43 | **0.86** | 0.79 | Best |
+| 100 | 0.44 | **0.60** | 0.76 | Degraded |
 
-**Known limitation**: E-step works only with M≤25 inducing points. With M≥50, Pearson r drops to ~0 despite loss decreasing. See Section 6.4 for analysis.
+**Observations**:
+- E-step works across all M values (no collapse to r≈0)
+- Best performance at M=50 (test r = 0.86)
+- Performance degrades for M=100 (test r = 0.60 vs Adam's ~0.84)
+- KL divergence increases with M (50→99→186), as expected
 
-| n_train | M | Pearson r |
-|---------|---|-----------|
-| 500 | 25 | **0.62** |
-| 500 | 50 | -0.00 |
-| 1000 | 25 | **0.59** |
-| 1000 | 50 | -0.04 |
-
-**Key finding**: It's M (inducing points) that matters, NOT n_train. Eigenspace projection (Section 6.4) may help.
+**Known limitation**: E-step performance degrades for large M (≥100). Eigenspace projection (Section 6.4) may help but has not been confirmed as necessary.
 
 **Cholesky conversion**:
 - GPyTorch stores: L where V = LLᵀ
@@ -642,55 +640,34 @@ This produces Pearson r ≈ 0.07 vs **r ≈ 0.62** with the correct formula abov
 - `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
 
 ### 6.4 Eigenspace Projection
-**Status**: DEFERRED (January 2025) - needed for M>25 support
+**Status**: DEFERRED (January 2025) - potential improvement for large M
 
-**Deep Analysis (January 2025)**: We thoroughly investigated why E-step fails with M≥50. All tests on cell 8.
+**Context**: The original `utils.py:varGP()` stores variational parameters (m_b, V_b) permanently in a reduced eigenspace of K̃. The GPyTorch E-step currently works in full M-dimensional space.
 
-#### Finding 1: K̃ Conditioning is NOT the Issue
+#### K̃ Eigenvalue Analysis
 ```
 M= 25: cond=3.0e+03, eigval=[4.3e-03, 1.3e+01]
 M= 50: cond=1.3e+04, eigval=[1.9e-03, 2.6e+01]
 M=100: cond=1.4e+05, eigval=[3.7e-04, 5.1e+01]
-M=200: cond=4.4e+05, eigval=[2.0e-04, 9.0e+01]
 ```
-These condition numbers are acceptable for float64. G and (K̃+G) are also well-conditioned.
-
-#### Finding 2: Effective Dimensionality is ~10-11 Regardless of M
-```
-M= 25: 11 eigenvalues > 1% of max (44% significant)
-M= 50: 10 eigenvalues > 1% of max (20% significant)
-M=100: 11 eigenvalues > 1% of max (11% significant)
-```
-With M=50, there are ~40 "noise" dimensions with small eigenvalues.
-
-#### Finding 3: Predictions Collapse to Constant with M≥50
-| Metric | M=25 (works) | M=50 (fails) |
-|--------|--------------|--------------|
-| Test mu std | 12.89 | **4.14** |
-| Test pred std | 0.32 | **0.07** |
-| Pred range | [0.74, 2.05] | **[0.91, 1.15]** |
-| Train r | 0.25 | **0.07** |
-| Test r | 0.62 | -0.00 |
-
-**Root cause**: With M=50, the model learns to predict ~1.0 for everything. Even train r is poor (0.07), so it's not overfitting - the model learns something fundamentally wrong.
-
-#### Finding 4: Simple Eigenvalue Truncation is INSUFFICIENT
-Tested E-step with eigenvalue truncation (keep only >1% of max):
-```
-M=25 truncated: kept 10/25 → r = 0.62 ✓
-M=50 truncated: kept 10/50 → r = -0.00 ✗
-```
-Both keep ~10 eigenvalues, but M=50 still fails!
-
-**Possible root cause**: We truncate during E-step but project back to full M-dimensional space. The original code stores m_b, V_b **permanently in reduced eigenspace**, not just during updates. This architectural difference may be critical.
+Condition numbers are acceptable for float64. Effective dimensionality is ~10-11 regardless of M.
 
 #### What Full Eigenspace Projection Does (from `utils.py:Estep()`):
 1. Projects K̃ = B Λ Bᵀ, keeps only eigenvalues > threshold
 2. Stores m_b, V_b in reduced n_b-dimensional space **permanently**
 3. All predictions use the reduced representation
-4. Never projects back to full M-dimensional space
+4. K̃_b becomes diagonal, simplifying computations
 
-**Implementation needed**: Store variational parameters in reduced eigenspace throughout (not just during E-step), matching original `utils.py` architecture.
+#### Why It Might Help
+- Constrains variational distribution to principal subspace
+- Acts as implicit regularization
+- Reduces noise from small-eigenvalue directions
+- Matches the original implementation architecture
+
+#### Current Status
+E-step works without eigenspace projection (see Section 6.2), but performance degrades for M≥100. Eigenspace projection may improve this, but has not been implemented or tested.
+
+**Implementation would require**: Storing variational parameters in reduced eigenspace throughout, not just during E-step updates.
 
 ### 6.5 Pixel Masking
 **Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.
@@ -734,9 +711,10 @@ Both keep ~10 eigenvalues, but M=50 still fails!
 | `kernels.py` | ArcCosineKernel with RF structure and masking |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
-| `train.py` | Training and evaluation utilities |
-| `estep.py` | Custom E-step Newton update (works for M≤25) |
-| `test_fit.py` | Main test script (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
+| `train.py` | Training and evaluation utilities (Adam-based) |
+| `estep.py` | Custom E-step Newton update |
+| `test_fit.py` | Main test script for Adam training |
+| `test_estep_pnas.py` | E-step validation on PNAS data (Section 6.2 results) |
 | `tests/test_mask_validation.py` | 4 validation tests for pixel masking |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
 
