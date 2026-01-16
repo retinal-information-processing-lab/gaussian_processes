@@ -379,28 +379,9 @@ This means we can:
 >
 > **Conclusion**: Stage 2 (structured C) is essential for PNAS data, not optional.
 
-**Q11: Should we fix the GPyTorch deprecation warnings?**
-> A: **No**. These warnings come from `linear_operator` package internals, not our code.
->
-> - Location: `linear_operator/utils/interpolation.py:71`
-> - Cause: Deprecated PyTorch sparse tensor API
-> - Impact: None (cosmetic only)
-> - Fix: Wait for GPyTorch/linear_operator maintainers to update
->
-> **Alternative considered**: Suppress with `warnings.filterwarnings`
-> - Rejected because: hides potential issues, warnings are harmless
+**Q11**: GPyTorch deprecation warnings? → **No action** - cosmetic, from `linear_operator` internals.
 
-**Q12: Should we rename kernels.py to avoid import ambiguity?**
-> A: **Deferred** to later cleanup.
->
-> **Issue**: Two files named `kernels.py`:
-> 1. `Spatial_GP_repo/kernels/kernels.py` - reference implementation
-> 2. `Spatial_GP_repo/scripts/gpytorch_porting/kernels.py` - GPyTorch version
->
-> Current import `from kernels import ArcCosineKernel` works because Python searches current directory first.
->
-> **Potential fix**: Rename to `arccosine_kernel.py` or use explicit path handling
-> - Deferred because: not causing current problems, focus on Stage 2
+**Q12**: Rename `kernels.py` to avoid ambiguity? → **Deferred**. Two files share name but Python's search order works.
 
 **Q13: Will C=I in Stage 2 reproduce Stage 1 results?**
 > A: **Yes, exactly.** This is a key validation check.
@@ -414,48 +395,13 @@ This means we can:
 
 ### Session 3: Stage 2 Planning (January 2025)
 
-**Q14: Should we implement pixel masking in Stage 2?**
-> A: **NO - defer to later.**
->
-> **Rationale**:
-> - Masking adds complexity (dynamic tensor sizes, mask management)
-> - First version should work without masking to validate C matrix computation
-> - Full 108×108 = 11,664 pixels is manageable for testing
-> - Can add masking later if performance requires it
->
-> **Alternative considered**: Implement masking from start (matches reference)
-> - Rejected because: adds debugging surface, not essential for correctness
+**Q14**: Pixel masking in Stage 2? → **Deferred initially** (adds complexity). Later implemented - see Q22.
 
-**Q15: Should C matrix computation be in a separate class?**
-> A: **NO - integrate into ArcCosineKernel.**
->
-> **Rationale**:
-> - Keeps all kernel logic in one place
-> - Matches user preference for "simple, scientist-friendly" code
-> - C is only used by the arc-cosine kernel, not shared
-> - Avoids indirection and extra files
->
-> **Alternative considered**: Separate `RFCovarianceMatrix` class
-> - Rejected because: over-engineering for single use case
+**Q15**: C matrix in separate class? → **No** - integrate into ArcCosineKernel. Keeps kernel logic in one place, avoids over-engineering.
 
-**Q16: How should amplitude (Amp) be handled?**
-> A: **Keep using ScaleKernel wrapper** (same as Stage 1).
->
-> **Rationale**:
-> - Consistent with Stage 1 approach
-> - ScaleKernel is GPyTorch's standard pattern
-> - Keeps ArcCosineKernel focused on the kernel math
-> - Amplitude is conceptually separate from RF structure
->
-> **Alternative considered**: Add Amp parameter directly to ArcCosineKernel
-> - Rejected because: breaks Stage 1 compatibility, complicates unit tests
+**Q16**: Amplitude handling? → **Keep using ScaleKernel wrapper** (GPyTorch standard pattern, consistent with Stage 1). Alternative rejected: adding Amp directly to ArcCosineKernel would break Stage 1 compatibility.
 
-**Q17: How to validate Stage 2 implementation?**
-> A: **Two-step validation**:
-> 1. **C=I equivalence test**: When β→∞ (very large) and ρ→∞, C→I, so results should match Stage 1 exactly
-> 2. **Performance test**: With proper RF parameters (small β, ρ), Pearson r should improve significantly (target: r > 0.5 vs r ≈ 0.2 for C=I)
->
-> This confirms both correctness (step 1) and that RF structure matters (step 2).
+**Q17**: Stage 2 validation approach? → **Two-step**: (1) C=I equivalence test (large β,ρ → C≈I), (2) Performance test (proper RF params → r > 0.5).
 
 ### Session 4: Validation Tests (January 2025)
 
@@ -531,15 +477,7 @@ This means we can:
 ### Stage 1: Arc-Cosine Kernel with C=I (Identity Covariance)
 **Status**: COMPLETE (January 2025)
 
-**Goal**: GPyTorch model with arc-cosine kernel (C=I) that fits PNAS data.
-
-**Tasks**:
-- [x] Create `ArcCosineKernel` extending `gpytorch.kernels.Kernel`
-- [x] Implement `forward()` method using math from `kernels/kernels.py:acosker_clean()`
-- [x] Implement Poisson likelihood with (A, λ₀) parameters
-- [x] Load PNAS data (same preprocessing as one_cell_fit.py)
-- [x] Train and evaluate R² on test set
-- [x] Verify kernel output matches `acosker_clean()` with C=None
+**Goal**: GPyTorch model with arc-cosine kernel (C=I) that fits PNAS data. All tasks completed.
 
 **Results**:
 - Model trains successfully on PNAS data
@@ -568,20 +506,7 @@ This means we can:
 
 **Design decisions**: See Q14-Q17 in Section 4 (Session 3).
 
-**Tasks**:
-- [x] Add RF parameters to `ArcCosineKernel.__init__()`:
-  - `n_px_side`: image dimension (108 for PNAS)
-  - `eps_0x`, `eps_0y`: RF center (unconstrained, range [-1, 1])
-  - `raw_m2log2beta`: locality decay (log-space)
-  - `raw_mlog2rho2`: smoothness decay (log-space)
-- [x] Implement `_setup_pixel_coords()`: create normalized grid as buffer
-- [x] Implement `_compute_C_matrix()`: compute C from RF parameters
-- [x] Update `forward()` to use computed C when `n_px_side` is set
-- [x] Add `--use-rf` flag to `test_fit.py`
-- [x] **Validation 1**: C=I equivalence test - PASSED (large β + small ρ gives C≈I)
-- [x] **Validation 2**: Gradient flow test - PASSED (all RF params receive gradients)
-- [x] **Validation 3**: Performance test - PASSED (r = 0.75 vs Stage 1's r = 0.53)
-- [x] **Pixel masking** - COMPLETE (see Q22)
+All tasks completed. Validations passed: C=I equivalence, gradient flow, performance (r=0.75 vs 0.53), pixel masking.
 
 **Results** (initial quick tests):
 
@@ -768,13 +693,7 @@ Both keep ~10 eigenvalues, but M=50 still fails!
 **Implementation needed**: Store variational parameters in reduced eigenspace throughout (not just during E-step), matching original `utils.py` architecture.
 
 ### 6.5 Pixel Masking
-**Status**: COMPLETE (January 2025)
-
-**Implementation** (see Q22 for details):
-- Added `compute_mask()` and updated `_compute_C_matrix(apply_mask=True)` in `kernels.py`
-- Mask computed with detached theta (structural stability)
-- `use_mask=True` by default, `--no-mask` CLI flag to disable
-- Validated with 4 tests in `tests/test_mask_validation.py`
+**Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.
 
 **Result**: C reduced from 11664×11664 to ~2480×2480 (~20x memory reduction).
 
@@ -820,44 +739,6 @@ Both keep ~10 eigenvalues, but M=50 still fails!
 | `test_fit.py` | Main test script (defaults: `--use-rf`, `--ntilde 200`, `--use-mask`) |
 | `tests/test_mask_validation.py` | 4 validation tests for pixel masking |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
-
----
-
-## Appendix A: GPyTorch Key Classes
-
-```python
-# Variational GP model structure
-class MyGP(gpytorch.models.ApproximateGP):
-    def __init__(self, inducing_points):
-        # Variational distribution q(u) = N(m, V)
-        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
-            inducing_points.size(0)
-        )
-        # Strategy for computing q(f) from q(u)
-        variational_strategy = gpytorch.variational.VariationalStrategy(
-            self, inducing_points, variational_distribution,
-            learn_inducing_locations=False
-        )
-        super().__init__(variational_strategy)
-
-        self.mean_module = gpytorch.means.ZeroMean()
-        self.covar_module = MyKernel()
-
-    def forward(self, x):
-        mean = self.mean_module(x)
-        covar = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean, covar)
-
-# Custom likelihood
-class PoissonLikelihood(gpytorch.likelihoods.Likelihood):
-    def expected_log_prob(self, target, input):
-        # E_q[log p(y|f)] = y*mu - exp(mu + sigma²/2)
-        mean, var = input.mean, input.variance
-        return (target * mean - torch.exp(mean + var / 2)).sum(-1)
-
-    def forward(self, function_samples):
-        return torch.distributions.Poisson(rate=torch.exp(function_samples))
-```
 
 ---
 
