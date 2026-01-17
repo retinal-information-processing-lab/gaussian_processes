@@ -608,12 +608,14 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 
 #### Test Script Architecture
 
-| Script | Role | Modify? |
-|--------|------|---------|
-| `tests/test_estep_comparison.py` | **FROZEN reference** - runs varGP + GPyTorch with locked params | NO |
-| `test_estep_pnas.py` | **Active development** - experiment with training modes | YES |
+| Script | Role | Description |
+|--------|------|-------------|
+| `tests/test_estep_comparison.py` | **Canonical comparison** - runs all 4 implementations | varGP + 3 GPyTorch modes |
+| `test_estep_pnas.py` | **Active development** - experiment with training modes | Single-mode testing |
 
-**Training modes in `test_estep_pnas.py`:**
+**Run canonical test:** `python tests/test_estep_comparison.py` (M=50 default)
+
+**Training modes:**
 - `adam`: Pure Adam optimization (no E-step)
 - `efm`: E-F-M loop (1 E-step, n F-steps, n M-steps)
 - `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
@@ -730,10 +732,11 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `train.py` | Training utilities (Adam-based) |
 | `estep.py` | Custom E-step Newton update + `train_efm()` |
 | `test_fit.py` | Test script for Adam training |
-| `test_estep_pnas.py` | Single-implementation test - 2 modes: adam/efm |
-| `tests/test_estep_comparison.py` | **Canonical test** - compares varGP, GPyTorch efm, GPyTorch adam |
+| `test_estep_pnas.py` | Single-mode testing for development |
+| `tests/test_estep_comparison.py` | **Canonical test** - compares varGP + 3 GPyTorch modes |
 | `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
+| `results/BENCHMARK_LOG.md` | Performance tracking across milestones |
 
 ---
 

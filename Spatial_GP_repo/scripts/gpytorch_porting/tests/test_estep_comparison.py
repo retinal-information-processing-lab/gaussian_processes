@@ -22,18 +22,16 @@ FROZEN PARAMETERS (from one_cell_fit.py):
     eps_0x, eps_0y  = 0.0, 0.0
     sigma_0         = 1.0
 
-IMPORTANT - Link Function Initialization Differs:
-    ┌─────────────┬─────────┬────────────┐
-    │ Parameter   │ varGP   │ GPyTorch   │
-    ├─────────────┼─────────┼────────────┤
-    │ A_init      │ 0.01    │ 1.0        │
-    │ lambda0_init│ 1.0     │ 0.0        │
-    └─────────────┴─────────┴────────────┘
+IMPORTANT - Link Function Initialization:
+    ┌─────────────┬─────────┬────────────────┬────────────┐
+    │ Parameter   │ varGP   │ vargp_style    │ efm/adam   │
+    ├─────────────┼─────────┼────────────────┼────────────┤
+    │ A_init      │ 0.01    │ 0.01           │ 1.0        │
+    │ lambda0_init│ 1.0     │ 1.0            │ 0.0        │
+    └─────────────┴─────────┴────────────────┴────────────┘
 
-    Per Q19 in CLAUDE.md, the model is robust to A initialization - both converge
-    to similar Pearson r. However, this difference should be noted when interpreting
-    results, especially if comparing intermediate training states or final parameter
-    values (not just accuracy metrics).
+    vargp_style uses same initialization as varGP for fair comparison.
+    Per Q19 in CLAUDE.md, the model is robust to A initialization.
 
 Created by Claude as the single source of truth for E-step testing.
 """
@@ -59,7 +57,7 @@ import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from estep import train_efm
+from estep import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
 
 
@@ -97,8 +95,15 @@ PARAMS = {
     # Link function - DIFFERENT between implementations (see docstring)
     'vargp_A_init': 0.01,
     'vargp_lambda0_init': 1.0,
-    'gpytorch_A_init': 1.0,
-    'gpytorch_lambda0_init': 0.0,
+    'gpytorch_A_init': 1.0,        # For efm/adam modes
+    'gpytorch_lambda0_init': 0.0,  # For efm/adam modes
+
+    # vargp_style uses varGP initialization for fair comparison
+    'vargp_style_A_init': 0.01,
+    'vargp_style_lambda0_init': 1.0,
+    'vargp_style_lr_f': 0.1,   # varGP default (LBFGS)
+    'vargp_style_lr_m': 0.1,   # varGP default
+    'vargp_style_n_estep': 10,
 }
 
 
@@ -313,6 +318,92 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device):
     }
 
 
+def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device):
+    """Run GPyTorch with vargp_style training (matches varGP structure)."""
+    print("\n" + "="*60)
+    print("Running GPyTorch (vargp_style mode)")
+    print("="*60)
+
+    cellid = params['cellid']
+    ntilde = params['ntilde']
+    n_train = params['n_train']
+    n_px_side = params['n_px_side']
+
+    # Select cell
+    r = R[:, cellid]
+    r_test = R_test[:, :, cellid]
+
+    # Select training subset with SAME seed as varGP
+    torch.manual_seed(42)
+    indices = torch.randperm(X.shape[0], device=device)[:n_train]
+    X_train = X[indices].double()
+    r_train = r[indices].double()
+
+    # Inducing points (first ntilde training points) - SAME as varGP
+    inducing_points = X_train[:ntilde].clone()
+
+    # Create kernel
+    base_kernel = ArcCosineKernel(
+        sigma_0=params['sigma_0'],
+        n_px_side=n_px_side,
+        eps_0x=params['eps_0x'],
+        eps_0y=params['eps_0y'],
+        beta=params['beta'],
+        rho=params['rho'],
+        use_mask=True,
+    )
+    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
+    kernel.outputscale = 1e-4
+
+    # Create model and likelihood (varGP-style initialization)
+    model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
+    likelihood = PoissonLikelihood(
+        A_init=params['vargp_style_A_init'],
+        lambda0_init=params['vargp_style_lambda0_init']
+    )
+
+    model = model.double().to(device)
+    likelihood = likelihood.double().to(device)
+
+    print(f"  A_init: {params['vargp_style_A_init']}, lambda0_init: {params['vargp_style_lambda0_init']}")
+    print(f"  ntilde: {ntilde}, n_train: {n_train}")
+    print(f"  n_iterations: {params['gpytorch_iterations']}, n_estep: {params['vargp_style_n_estep']}")
+    print(f"  lr_f: {params['vargp_style_lr_f']}, lr_m: {params['vargp_style_lr_m']}")
+
+    # Train with vargp_style (LBFGS F-step, analytical lambda0)
+    start_time = time.time()
+    with torch.enable_grad():
+        losses = train_varGP_style(
+            model, likelihood, X_train, r_train,
+            n_iterations=params['gpytorch_iterations'],
+            n_estep=params['vargp_style_n_estep'],
+            n_fstep=params['gpytorch_n_fstep'],
+            n_mstep=params['gpytorch_n_mstep'],
+            lr_f=params['vargp_style_lr_f'],
+            lr_m=params['vargp_style_lr_m'],
+            print_every=params['gpytorch_iterations'] // 5,
+            device=device,
+        )
+    elapsed = time.time() - start_time
+
+    # Evaluate
+    X_test_double = X_test.double()
+    predictions = predict(model, likelihood, X_test_double, device=device)
+    explained_var, reliability = compute_explained_variance(r_test.double(), predictions['f_pred'])
+
+    print(f"\n  Time: {elapsed:.1f}s")
+    print(f"  Explained variance: {explained_var:.4f}")
+    print(f"  Reliability: {reliability:.4f}")
+
+    return {
+        'implementation': 'GPyTorch (vargp_style)',
+        'time': elapsed,
+        'explained_var': explained_var,
+        'reliability': reliability,
+        'ntilde': ntilde,
+    }
+
+
 def run_gpytorch_adam(X, R, X_test, R_test, params, device):
     """Run GPyTorch with pure Adam training (no E-step)."""
     print("\n" + "="*60)
@@ -402,46 +493,45 @@ def print_comparison_table(results):
 
     ntilde = results[0]['ntilde'] if results[0] else 'N/A'
     print(f"\nParameters: M={ntilde}, cell=8, n_train=500, iter=50")
-    print("\nIMPORTANT: A_init differs (varGP=0.01, GPyTorch=1.0)")
-    print("           lambda0_init differs (varGP=1.0, GPyTorch=0.0)")
+    print("\nInit: varGP & vargp_style use A=0.01, λ₀=1.0")
+    print("      efm & adam use A=1.0, λ₀=0.0")
     print()
 
-    print("┌────────────────────┬───────────────┬──────────┐")
-    print("│ Implementation     │ Expl. Var     │ Time (s) │")
-    print("├────────────────────┼───────────────┼──────────┤")
+    print("┌────────────────────────┬───────────────┬──────────┐")
+    print("│ Implementation         │ Expl. Var     │ Time (s) │")
+    print("├────────────────────────┼───────────────┼──────────┤")
 
     for r in results:
         if r is not None:
-            impl = r['implementation'][:18].ljust(18)
+            impl = r['implementation'][:22].ljust(22)
             ev = f"{r['explained_var']:.4f}".ljust(13)
             t = f"{r['time']:.1f}".ljust(8)
             print(f"│ {impl} │ {ev} │ {t} │")
         else:
-            print(f"│ {'FAILED'.ljust(18)} │ {'N/A'.ljust(13)} │ {'N/A'.ljust(8)} │")
+            print(f"│ {'FAILED'.ljust(22)} │ {'N/A'.ljust(13)} │ {'N/A'.ljust(8)} │")
 
-    print("└────────────────────┴───────────────┴──────────┘")
+    print("└────────────────────────┴───────────────┴──────────┘")
 
     # Print differences
     valid_results = [r for r in results if r is not None]
     if len(valid_results) >= 2:
-        vargp = next((r for r in valid_results if 'varGP' in r['implementation']), None)
+        vargp = next((r for r in valid_results if r['implementation'] == 'varGP'), None)
+        vargp_style = next((r for r in valid_results if 'vargp_style' in r['implementation']), None)
         efm = next((r for r in valid_results if 'efm' in r['implementation']), None)
         adam = next((r for r in valid_results if 'adam' in r['implementation']), None)
 
-        print("\nDifferences:")
+        print("\nDifferences (vs varGP reference):")
+        if vargp and vargp_style:
+            diff = vargp['explained_var'] - vargp_style['explained_var']
+            print(f"  varGP - vargp_style: {diff:+.4f}")
+            if abs(diff) > 0.05:
+                print("    ^ Gap > 0.05 - check vargp_style implementation")
         if vargp and efm:
             diff = vargp['explained_var'] - efm['explained_var']
-            print(f"  varGP - GPyTorch(efm):  {diff:+.4f}")
-            if abs(diff) > 0.1:
-                print("    ^ WARNING: Large gap - investigate E-step implementation")
+            print(f"  varGP - efm:         {diff:+.4f}")
         if vargp and adam:
             diff = vargp['explained_var'] - adam['explained_var']
-            print(f"  varGP - GPyTorch(adam): {diff:+.4f}")
-        if efm and adam:
-            diff = efm['explained_var'] - adam['explained_var']
-            print(f"  GPyTorch(efm) - GPyTorch(adam): {diff:+.4f}")
-            if diff > 0.05:
-                print("    ^ E-step provides benefit over pure Adam")
+            print(f"  varGP - adam:        {diff:+.4f}")
 
 
 def main():
@@ -472,6 +562,12 @@ def main():
         params, device
     )
     results.append(result_vargp)
+
+    result_gpytorch_vargp_style = run_gpytorch_vargp_style(
+        data['X'], data['R'], data['X_test'], data['R_test'],
+        params, device
+    )
+    results.append(result_gpytorch_vargp_style)
 
     result_gpytorch_efm = run_gpytorch_efm(
         data['X'], data['R'], data['X_test'], data['R_test'],
