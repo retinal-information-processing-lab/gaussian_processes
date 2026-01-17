@@ -36,7 +36,7 @@ import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from train import train_model, predict, compute_pearson_correlation
+from train import train_adam, predict, compute_pearson_correlation
 
 
 # ============================================================================
@@ -44,7 +44,7 @@ from train import train_model, predict, compute_pearson_correlation
 # ============================================================================
 CONFIG = {
     # Data settings
-    'cellid': 1,
+    'cellid': 15,
     'ntilde': 500,
     'n_train': 2000,
     'n_px_side': 108,
@@ -298,7 +298,7 @@ def run_gpytorch(X, R, X_test, R_test, device):
     start_time = time.time()
 
     with torch.enable_grad():
-        losses = train_model(model, likelihood, X_train, r_train,
+        losses = train_adam(model, likelihood, X_train, r_train,
                              n_iterations=cfg['gpytorch_iterations'],
                              lr=cfg['gpytorch_lr'],
                              print_every=cfg['gpytorch_iterations'] // 5)

@@ -65,20 +65,23 @@ torch.backends.cudnn.benchmark = False
 # =============================================================================
 # Training Parameters
 # =============================================================================
+# NOTE: These defaults match GPyTorch scripts (test_estep_pnas.py, test_fit.py)
+# for uniform testing across implementations.
 
 rand_xtilde = True  # If True, xtilde (inducing points) are chosen randomly
 
 cellid = 8               # Choose cell
-ntilde = 40              # Number of inducing points (xtilde)
+ntilde = 50              # Number of inducing points (canonical default for comparison)
 additional_x_number = 0  # Additional x points to be added
 kernfun = GP_utils.acosker  # Choose kernel function (must be the actual function, not a string)
 
 nEstep = 10              # Total number of E-steps iterations
 nFparamstep = 10         # Number of iterations for f params update per E-step
-nMstep = 0               # Total number of M-steps iterations
-maxiter = 10             # Iterations of the optimization algorithm
+# WARNING: nMstep=0 disables kernel learning. Use nMstep >= 10 for proper optimization.
+nMstep = 10              # Total number of M-steps iterations (kernel hyperparameter updates)
+maxiter = 50             # Iterations of the optimization algorithm (matches GPyTorch n_iterations)
 
-ntrain_start = 40       # Number of training images (can differ from ntilde)
+ntrain_start = 500       # Number of training images (matches GPyTorch default)
 
 
 # =============================================================================
@@ -201,9 +204,9 @@ logrhoexpr = -torch.log(2 * rho * rho)
 sigma_0 = torch.tensor(1.)
 Amp = torch.tensor(1.0)
 
-# Center of receptive field
-eps_0x = torch.tensor(0.0001)
-eps_0y = torch.tensor(0.0001)
+# Center of receptive field (matches GPyTorch default)
+eps_0x = torch.tensor(0.0)
+eps_0y = torch.tensor(0.0)
 
 # Hyperparameters dictionary
 theta = {
@@ -225,6 +228,8 @@ hyperparams_tuple = GP_utils.generate_theta(
 )
 
 # Link function parameters
+# NOTE: Reference varGP uses A=0.01, lambda0=1.0
+# GPyTorch scripts use A=1.0, lambda0=0.0 (model is robust to init per Q19 in CLAUDE.md)
 A = torch.tensor(0.01)
 logA = torch.log(A)
 lambda0 = torch.tensor(1.)

@@ -11,12 +11,16 @@ This document tracks the porting effort from the custom variational GP implement
 
 | Item | Value |
 |------|-------|
-| **Current status** | Stage 2 + Masking COMPLETE, E-step IMPLEMENTED (performance degrades for M>50) |
+| **Current status** | Stage 2 + Masking COMPLETE, E-step partially working (see Section 6.2) |
 | **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `test_estep_pnas.py`, `tests/` |
-| **Run test** | `python test_fit.py --cell 8` (Adam) or `python test_estep_pnas.py --ntilde 50` (E-step) |
-| **Deferred** | Test D (multi-cell), eigenspace projection (Section 6.4) |
-| **Known limitations** | RF center needs reasonable init (Q20); E-step performance degrades for large M (Section 6.2) |
+| **Run test** | `python tests/test_estep_comparison.py` (compares varGP, GPyTorch efm, GPyTorch adam) |
+| **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
+| **Deferred** | E-step improvements for large M (Section 6.2), eigenspace projection (Section 6.4) |
+| **Known limitations** | RF center needs reasonable init (Q20); E-step degrades for M>50 |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
+
+**CRITICAL RULE - nMstep/n_mstep:**
+> **NEVER use nMstep=0 or n_mstep=0 as default.** This disables kernel hyperparameter learning, which is essential for good performance. Always use nMstep >= 10.
 
 ---
 
@@ -252,8 +256,9 @@ This avoids explicit K̃⁻¹ computation - uses element-wise division with diag
 Location: `scripts/one_cell_fit.py`
 
 Uses PNAS dataset, fits single cell with:
-- ntilde = 2100 inducing points
-- nEstep = 10, nMstep = 0, nFparamstep = 10
+- ntilde = 50 inducing points (standardized default)
+- n_train = 500 training samples
+- nEstep = 10, nMstep = 10, nFparamstep = 10, maxiter = 50
 - acosker kernel
 
 ---
@@ -448,6 +453,15 @@ This means we can:
 > A: **Explained variance** (Pearson r / reliability), matching `utils.py:explained_variance()`.
 > Added `compute_explained_variance()` to `train.py` and `--plot`/`--save-plot` to `test_fit.py`.
 
+### Session 7: Training Loop Comparison (January 2025)
+
+**Q23: Training mode comparison?**
+> A: `efm` mode (E-F-M loop) outperforms pure `adam` for M≤50.
+>
+> **Canonical test**: `python tests/test_estep_comparison.py`
+>
+> This script compares varGP (reference), GPyTorch efm, and GPyTorch adam with frozen parameters from `one_cell_fit.py`.
+
 ### Session 6: Pixel Masking (January 2025)
 
 **Q22: How should pixel masking be implemented?**
@@ -580,57 +594,19 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 - Any active learning functionality
 
 ### 6.2 Custom E-step
-**Status**: IMPLEMENTED (January 2025)
+**Status**: WORKS FOR M≤50, DEGRADES FOR M>50
 
-**File**: `estep.py` - Contains `e_step()`, `update_variational_parameters()`, `train_with_estep()`
+**Files**: `estep.py`, `test_estep_pnas.py`
 
-**Test script**: `test_estep_pnas.py` - Runs E-step on real PNAS data with configurable M
+**Canonical test**: `python tests/test_estep_comparison.py`
 
-**IMPORTANT**: See `.claude/ESTEP_MATH_ANALYSIS.md` for full derivation and formula comparison.
+This script runs varGP (reference), GPyTorch efm, and GPyTorch adam with identical frozen parameters and outputs a comparison table.
 
-**CORRECT formulas** (implemented in `estep.py`):
-```python
-# Helper quantities (standard form, not transformed)
-g = A * K.T @ (r - f_mean)                    # (M,)
-G = A**2 * K.T @ diag(f_mean) @ K             # (M, M)
+**Finding**: At M=50, GPyTorch efm closely matches varGP. E-step provides significant benefit over pure Adam. Performance degrades for M>50.
 
-# V update (CORRECT - symmetric sandwich)
-V_new = K_tilde @ solve(K_tilde + G, K_tilde)
+**Root cause**: No eigenspace projection (see Section 6.4).
 
-# m update (CORRECT - Newton step)
-m_new = m + K_tilde @ solve(K_tilde + G, g - m)
-
-# Always symmetrize
-V_new = (V_new + V_new.T) / 2
-```
-
-**Critical finding (January 2025)**: The original `utils.py:Estep()` uses a DIFFERENT m formula:
-```python
-# Original code formula (has discrepancy)
-m_new = V_new @ (G_t @ m + g_t)  # where g_t, G_t are transformed
-```
-The GPyTorch E-step uses the mathematically correct Newton step formula.
-
-**Validation results** (from `test_estep_pnas.py`, cell 8, n_train=500, 50 iterations):
-
-| M | Train r | Test r | Pred std | Notes |
-|---|---------|--------|----------|-------|
-| 25 | 0.44 | **0.71** | 0.66 | Good |
-| 50 | 0.43 | **0.86** | 0.79 | Best |
-| 100 | 0.44 | **0.60** | 0.76 | Degraded |
-
-**Observations**:
-- E-step works across all M values (no collapse to r≈0)
-- Best performance at M=50 (test r = 0.86)
-- Performance degrades for M=100 (test r = 0.60 vs Adam's ~0.84)
-- KL divergence increases with M (50→99→186), as expected
-
-**Known limitation**: E-step performance degrades for large M (≥100). Eigenspace projection (Section 6.4) may help but has not been confirmed as necessary.
-
-**Cholesky conversion**:
-- GPyTorch stores: L where V = LLᵀ
-- Custom code uses: V directly
-- Conversion: `V = L @ L.T` and `L = torch.linalg.cholesky(V)`
+**Fix (DEFERRED)**: Implement eigenspace projection throughout training loop.
 
 ### 6.3 Custom M-step Gradients
 **Reason for deferral**: Autograd works, optimization later.
@@ -711,11 +687,12 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `kernels.py` | ArcCosineKernel with RF structure and masking |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
-| `train.py` | Training and evaluation utilities (Adam-based) |
-| `estep.py` | Custom E-step Newton update |
-| `test_fit.py` | Main test script for Adam training |
-| `test_estep_pnas.py` | E-step validation on PNAS data (Section 6.2 results) |
-| `tests/test_mask_validation.py` | 4 validation tests for pixel masking |
+| `train.py` | Training utilities (Adam-based) |
+| `estep.py` | Custom E-step Newton update + `train_efm()` |
+| `test_fit.py` | Test script for Adam training |
+| `test_estep_pnas.py` | Single-implementation test - 2 modes: adam/efm |
+| `tests/test_estep_comparison.py` | **Canonical test** - compares varGP, GPyTorch efm, GPyTorch adam |
+| `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
 
 ---
@@ -903,7 +880,7 @@ class VariationalGPModel(gpytorch.models.ApproximateGP):
 ### 11.3 Training Loop
 
 ```python
-def train_model(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
+def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
     model.train()
 
     # Optimize both model and likelihood parameters
@@ -978,4 +955,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 7 - E-step math analysis complete, see ESTEP_MATH_ANALYSIS.md)*
+*Last updated: January 2025 (Session 7 - E-step M scaling: M=50 works, M>50 degrades)*
