@@ -11,9 +11,10 @@ This document tracks the porting effort from the custom variational GP implement
 
 | Item | Value |
 |------|-------|
+| **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
 | **Current status** | Stage 2 + Masking COMPLETE, E-step partially working (see Section 6.2) |
 | **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `test_estep_pnas.py`, `tests/` |
-| **Run test** | `python test_estep_pnas.py` (modes: adam, efm, vargp_style) |
+| **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: adam, efm, vargp_style) |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | E-step improvements for large M (Section 6.2), eigenspace projection (Section 6.4) |
 | **Known limitations** | RF center needs reasonable init (Q20); E-step degrades for M>50 |

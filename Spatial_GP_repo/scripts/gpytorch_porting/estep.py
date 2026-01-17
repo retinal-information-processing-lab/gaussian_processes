@@ -482,6 +482,302 @@ def m_step(
         optimizer.step()
 
 
+def m_step_lbfgs(
+    model: gpytorch.models.ApproximateGP,
+    likelihood,
+    X: torch.Tensor,
+    r: torch.Tensor,
+    n_mstep: int,
+    lr: float = 0.1,  # varGP default
+    verbose: bool = False,
+    debug: bool = False
+):
+    """M-step: Optimize kernel hyperparameters using LBFGS.
+
+    Uses autograd for gradients (not analytical).
+    Matches varGP LBFGS settings: lr=0.1, strong_wolfe line search.
+
+    Key feature: Returns infinite loss when parameters exceed bounds (matching
+    original varGP behavior). This forces LBFGS to try smaller steps.
+
+    Args:
+        model: VariationalGPModel instance
+        likelihood: PoissonLikelihood instance
+        X: Training inputs, shape (N, n_features)
+        r: Training spike counts, shape (N,)
+        n_mstep: Number of LBFGS iterations (max_iter)
+        lr: Learning rate for LBFGS (default 0.1 matches varGP)
+        verbose: Print debug info
+        debug: Print detailed debugging info
+    """
+    if n_mstep == 0:
+        return
+
+    # Get kernel parameters (from ScaleKernel wrapper)
+    kernel_params = list(model.covar_module.parameters())
+
+    # Debug: capture initial state
+    if debug:
+        with torch.no_grad():
+            output_init = model(X)
+            ell_init = likelihood.expected_log_prob(r, output_init)
+            kl_init = model.variational_strategy.kl_divergence()
+            loss_init = (-ell_init + kl_init).item()
+        param_init = {name: p.clone().detach() for name, p in model.covar_module.named_parameters()}
+        print(f"  M-step LBFGS DEBUG: initial loss = {loss_init:.2f}")
+        for name, p in param_init.items():
+            print(f"    {name}: {p.item():.6f}" if p.numel() == 1 else f"    {name}: shape {p.shape}")
+
+    # LBFGS optimizer matching varGP settings
+    optimizer = torch.optim.LBFGS(
+        kernel_params,
+        lr=lr,
+        max_iter=n_mstep,
+        tolerance_change=1e-9,
+        tolerance_grad=1e-7,
+        history_size=100,
+        line_search_fn='strong_wolfe'
+    )
+
+    closure_counter = [0]
+    bounds_violations = [0]
+    grad_norms = []
+
+    def closure():
+        closure_counter[0] += 1
+        optimizer.zero_grad()
+
+        # Check parameter bounds (matching varGP behavior)
+        # If bounds violated, set gradient to inf and return inf loss
+        # This tells LBFGS to try a smaller step
+        base_kernel = model.covar_module.base_kernel
+        return_infinite_loss = False
+        if hasattr(base_kernel, 'eps_0x') and hasattr(base_kernel, 'eps_0y'):
+            eps_0x = base_kernel.eps_0x.item()
+            eps_0y = base_kernel.eps_0y.item()
+            # Bounds: eps_0 should be in [-0.99, 0.99] (slightly inside image boundary)
+            # Using 0.99 instead of 1.0 to keep RF center well inside image
+            if not (-0.99 <= eps_0x <= 0.99):
+                return_infinite_loss = True
+                if base_kernel.eps_0x.requires_grad:
+                    base_kernel.eps_0x.grad = torch.full_like(base_kernel.eps_0x, float('inf'))
+            if not (-0.99 <= eps_0y <= 0.99):
+                return_infinite_loss = True
+                if base_kernel.eps_0y.requires_grad:
+                    base_kernel.eps_0y.grad = torch.full_like(base_kernel.eps_0y, float('inf'))
+
+        if return_infinite_loss:
+            bounds_violations[0] += 1
+            if debug:
+                print(f"  Bounds violation at closure {closure_counter[0]}: "
+                      f"eps_0=({eps_0x:.3f}, {eps_0y:.3f})")
+            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+        # Forward pass
+        output = model(X)
+
+        # Compute ELBO loss
+        ell = likelihood.expected_log_prob(r, output)
+        kl = model.variational_strategy.kl_divergence()
+        loss = -ell + kl
+
+        # Check for NaN/inf
+        if torch.isnan(loss) or torch.isinf(loss):
+            bounds_violations[0] += 1
+            # Set all gradients to inf
+            for p in kernel_params:
+                if p.requires_grad:
+                    p.grad = torch.full_like(p, float('inf'))
+            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+        # Backward pass (autograd)
+        loss.backward()
+
+        # Debug: track gradient norms
+        if debug:
+            total_grad_norm = 0.0
+            for p in kernel_params:
+                if p.grad is not None:
+                    total_grad_norm += p.grad.norm().item() ** 2
+            grad_norms.append(total_grad_norm ** 0.5)
+
+        return loss
+
+    # Run LBFGS (single step, but closure called multiple times)
+    optimizer.step(closure)
+
+    # Debug: capture final state
+    if debug:
+        with torch.no_grad():
+            output_final = model(X)
+            ell_final = likelihood.expected_log_prob(r, output_final)
+            kl_final = model.variational_strategy.kl_divergence()
+            loss_final = (-ell_final + kl_final).item()
+        print(f"  M-step LBFGS DEBUG: final loss = {loss_final:.2f} (delta = {loss_final - loss_init:.2f})")
+        print(f"  M-step LBFGS DEBUG: {closure_counter[0]} closure calls, {bounds_violations[0]} bounds violations")
+        print(f"  M-step LBFGS DEBUG: grad norms: {grad_norms[:5]}...")
+        for name, p in model.covar_module.named_parameters():
+            p_init = param_init[name]
+            delta = (p - p_init).abs().max().item()
+            print(f"    {name}: {p.item():.6f} (delta={delta:.6f})" if p.numel() == 1 else f"    {name}: max_delta={delta:.6f}")
+
+    if verbose:
+        print(f"M-step LBFGS: {closure_counter[0]} closure calls, {bounds_violations[0]} bounds violations")
+
+
+def m_step_lbfgs_grouped(
+    model: gpytorch.models.ApproximateGP,
+    likelihood,
+    X: torch.Tensor,
+    r: torch.Tensor,
+    n_mstep: int,
+    lr_center: float = 0.1,
+    lr_sigma0: float = 1.0,  # 10x larger for sigma_0
+    lr_other: float = 0.1,
+    verbose: bool = False
+):
+    """M-step with grouped LBFGS: separate optimizers for different parameter groups.
+
+    Splits kernel parameters into 3 groups with different learning rates:
+    1. RF center (eps_0x, eps_0y): lr_center, with bounds checking
+    2. sigma_0: lr_sigma0 (larger, since gradient is small)
+    3. Other (outputscale, beta, rho): lr_other
+
+    This is block coordinate descent - each group optimized while others held fixed.
+
+    Args:
+        model: VariationalGPModel instance
+        likelihood: PoissonLikelihood instance
+        X: Training inputs, shape (N, n_features)
+        r: Training spike counts, shape (N,)
+        n_mstep: Number of LBFGS iterations per group
+        lr_center: Learning rate for RF center
+        lr_sigma0: Learning rate for sigma_0 (default 10x larger)
+        lr_other: Learning rate for other parameters
+        verbose: Print debug info
+    """
+    if n_mstep == 0:
+        return
+
+    base_kernel = model.covar_module.base_kernel
+
+    # Identify parameter groups
+    center_params = []
+    sigma0_params = []
+    other_params = []
+
+    for name, p in model.covar_module.named_parameters():
+        if 'eps_0x' in name or 'eps_0y' in name:
+            center_params.append(p)
+        elif 'sigma_0' in name:
+            sigma0_params.append(p)
+        else:
+            other_params.append(p)
+
+    def make_closure(params_to_optimize):
+        """Create closure that only computes gradients for specified params."""
+        def closure():
+            # Zero all gradients
+            for p in model.covar_module.parameters():
+                if p.grad is not None:
+                    p.grad.zero_()
+
+            # Forward pass
+            output = model(X)
+            ell = likelihood.expected_log_prob(r, output)
+            kl = model.variational_strategy.kl_divergence()
+            loss = -ell + kl
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+            loss.backward()
+            return loss
+        return closure
+
+    def make_center_closure():
+        """Closure for RF center with bounds checking."""
+        def closure():
+            for p in model.covar_module.parameters():
+                if p.grad is not None:
+                    p.grad.zero_()
+
+            # Bounds check for eps_0
+            if hasattr(base_kernel, 'eps_0x') and hasattr(base_kernel, 'eps_0y'):
+                eps_0x = base_kernel.eps_0x.item()
+                eps_0y = base_kernel.eps_0y.item()
+                if not (-0.99 <= eps_0x <= 0.99):
+                    if base_kernel.eps_0x.requires_grad:
+                        base_kernel.eps_0x.grad = torch.full_like(base_kernel.eps_0x, float('inf'))
+                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+                if not (-0.99 <= eps_0y <= 0.99):
+                    if base_kernel.eps_0y.requires_grad:
+                        base_kernel.eps_0y.grad = torch.full_like(base_kernel.eps_0y, float('inf'))
+                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+            output = model(X)
+            ell = likelihood.expected_log_prob(r, output)
+            kl = model.variational_strategy.kl_divergence()
+            loss = -ell + kl
+
+            if torch.isnan(loss) or torch.isinf(loss):
+                return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+            loss.backward()
+            return loss
+        return closure
+
+    total_closures = [0]
+
+    # Group 1: sigma_0 - Use ADAM (handles small gradients well)
+    # LBFGS overshoots for this parameter due to tiny gradient magnitude
+    if sigma0_params:
+        optimizer = torch.optim.Adam(sigma0_params, lr=lr_sigma0)
+        for _ in range(n_mstep):
+            optimizer.zero_grad()
+            output = model(X)
+            ell = likelihood.expected_log_prob(r, output)
+            kl = model.variational_strategy.kl_divergence()
+            loss = -ell + kl
+            if not (torch.isnan(loss) or torch.isinf(loss)):
+                loss.backward()
+                optimizer.step()
+        total_closures[0] += n_mstep
+
+    # Group 2: RF center (eps_0x, eps_0y) with bounds
+    if center_params:
+        optimizer = torch.optim.LBFGS(
+            center_params, lr=lr_center, max_iter=n_mstep,
+            tolerance_change=1e-9, tolerance_grad=1e-7,
+            history_size=100, line_search_fn='strong_wolfe'
+        )
+        closure = make_center_closure()
+        closure_count = [0]
+        def counted_closure():
+            closure_count[0] += 1
+            return closure()
+        optimizer.step(counted_closure)
+        total_closures[0] += closure_count[0]
+
+    # Group 3: Other params (outputscale, beta, rho)
+    if other_params:
+        optimizer = torch.optim.LBFGS(
+            other_params, lr=lr_other, max_iter=n_mstep,
+            tolerance_change=1e-9, tolerance_grad=1e-7,
+            history_size=100, line_search_fn='strong_wolfe'
+        )
+        closure = make_closure(other_params)
+        closure_count = [0]
+        def counted_closure():
+            closure_count[0] += 1
+            return closure()
+        optimizer.step(counted_closure)
+        total_closures[0] += closure_count[0]
+
+    if verbose:
+        print(f"M-step LBFGS grouped: {total_closures[0]} total closure calls")
+
+
 def train_varGP_style(
     model: gpytorch.models.ApproximateGP,
     likelihood,
