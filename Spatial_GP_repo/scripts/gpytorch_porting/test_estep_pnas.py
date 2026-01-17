@@ -5,11 +5,24 @@ Test training loops on real PNAS neural data.
 Created by Claude to compare training modes:
   - adam: Pure Adam optimization (no E-step)
   - efm: E-F-M loop (1 E-step, n F-steps, n M-steps per iteration)
+  - vargp_style: Matches original varGP training structure (analytical lambda0, etc.)
 
 Usage:
     python test_estep_pnas.py --ntilde 50 --mode adam --save-plot imgs/adam_M50.png
     python test_estep_pnas.py --ntilde 50 --mode efm --save-plot imgs/efm_M50.png
+    python test_estep_pnas.py --ntilde 50 --mode vargp_style --save-plot imgs/vargp_style_M50.png
     python test_estep_pnas.py  # Uses defaults: M=50, mode=efm, saves to imgs/
+
+IMPORTANT - Link Function Initialization:
+    ┌─────────────┬─────────────────┬──────────────────┐
+    │ Parameter   │ adam/efm        │ vargp_style      │
+    ├─────────────┼─────────────────┼──────────────────┤
+    │ A_init      │ 1.0             │ 0.01 (varGP)     │
+    │ lambda0_init│ 0.0             │ 1.0  (varGP)     │
+    └─────────────┴─────────────────┴──────────────────┘
+
+    Per Q19 in CLAUDE.md, the model is robust to A initialization - both converge
+    to similar Pearson r. However, vargp_style uses varGP's init for fair comparison.
 """
 
 import sys
@@ -26,7 +39,7 @@ import matplotlib.pyplot as plt
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from estep import train_efm
+from estep import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
 
 
@@ -125,8 +138,8 @@ def main():
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate (default: 0.01)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
     parser.add_argument('--mode', type=str, default='efm',
-                        choices=['adam', 'efm'],
-                        help='Training mode: adam (no E-step), efm (E-F-M loop)')
+                        choices=['adam', 'efm', 'vargp_style'],
+                        help='Training mode: adam (no E-step), efm (E-F-M loop), vargp_style (matches varGP)')
 
     # RF parameters - use defaults that work
     parser.add_argument('--beta', type=float, default=0.1, help='RF size (default: 0.1)')
@@ -200,13 +213,20 @@ def main():
     kernel.outputscale = 1e-4  # Prevent overflow
 
     # Create model and likelihood
+    # vargp_style uses varGP's init values for fair comparison
+    if args.mode == 'vargp_style':
+        A_init, lambda0_init = 0.01, 1.0  # Match varGP defaults
+    else:
+        A_init, lambda0_init = 1.0, 0.0   # GPyTorch defaults
+
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
-    likelihood = PoissonLikelihood(A_init=1.0, lambda0_init=0.0)
+    likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
     model = model.double().to(device)
     likelihood = likelihood.double().to(device)
 
     print(f"\nInitial parameters:")
+    print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
     print(f"  A: {likelihood.A.item():.4f}")
     print(f"  lambda0: {likelihood.lambda0.item():.4f}")
     print(f"  outputscale: {kernel.outputscale.item():.6f}")
@@ -225,7 +245,7 @@ def main():
             print_every=print_every,
             device=device
         )
-    else:  # efm
+    elif args.mode == 'efm':
         print(f"  n_iterations={args.n_iterations}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}, lr={args.lr}")
         losses = train_efm(
             model, likelihood, X_train, r_train,
@@ -233,6 +253,21 @@ def main():
             n_fstep=args.n_fstep,
             n_mstep=args.n_mstep,
             lr=args.lr,
+            print_every=print_every,
+            device=device
+        )
+    else:  # vargp_style
+        # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
+        print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
+        print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
+        losses = train_varGP_style(
+            model, likelihood, X_train, r_train,
+            n_iterations=args.n_iterations,
+            n_estep=args.n_estep,
+            n_fstep=args.n_fstep,
+            n_mstep=args.n_mstep,
+            lr_f=0.1,  # varGP default
+            lr_m=0.1,  # varGP default
             print_every=print_every,
             device=device
         )

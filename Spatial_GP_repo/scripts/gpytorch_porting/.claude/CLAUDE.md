@@ -13,14 +13,15 @@ This document tracks the porting effort from the custom variational GP implement
 |------|-------|
 | **Current status** | Stage 2 + Masking COMPLETE, E-step partially working (see Section 6.2) |
 | **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `test_estep_pnas.py`, `tests/` |
-| **Run test** | `python tests/test_estep_comparison.py` (compares varGP, GPyTorch efm, GPyTorch adam) |
+| **Run test** | `python test_estep_pnas.py` (modes: adam, efm, vargp_style) |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | E-step improvements for large M (Section 6.2), eigenspace projection (Section 6.4) |
 | **Known limitations** | RF center needs reasonable init (Q20); E-step degrades for M>50 |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
-**CRITICAL RULE - nMstep/n_mstep:**
-> **NEVER use nMstep=0 or n_mstep=0 as default.** This disables kernel hyperparameter learning, which is essential for good performance. Always use nMstep >= 10.
+**CRITICAL RULES:**
+> - **NEVER use nMstep=0 or n_mstep=0 as default.** Disables kernel learning. Always use nMstep >= 10.
+> - **Parameters in GPyTorch modes MUST match varGP.** See Section 6.2 for test script architecture.
 
 ---
 
@@ -462,6 +463,15 @@ This means we can:
 >
 > This script compares varGP (reference), GPyTorch efm, and GPyTorch adam with frozen parameters from `one_cell_fit.py`.
 
+**Q24: Should we use softplus or exp/log for A parameterization?**
+> A: **exp/log** (A = exp(raw_A), raw_A = logA).
+>
+> **Rationale**:
+> - Matches original varGP's logA parameterization exactly
+> - Simpler code (no inverse softplus computation in f_step_lbfgs)
+> - Testing showed equivalent performance between transforms
+> - Multiplicative gradient scaling (same relative change at any A value)
+
 ### Session 6: Pixel Masking (January 2025)
 
 **Q22: How should pixel masking be implemented?**
@@ -596,15 +606,45 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 ### 6.2 Custom E-step
 **Status**: WORKS FOR M≤50, DEGRADES FOR M>50
 
-**Files**: `estep.py`, `test_estep_pnas.py`
+#### Test Script Architecture
 
-**Canonical test**: `python tests/test_estep_comparison.py`
+| Script | Role | Modify? |
+|--------|------|---------|
+| `tests/test_estep_comparison.py` | **FROZEN reference** - runs varGP + GPyTorch with locked params | NO |
+| `test_estep_pnas.py` | **Active development** - experiment with training modes | YES |
 
-This script runs varGP (reference), GPyTorch efm, and GPyTorch adam with identical frozen parameters and outputs a comparison table.
+**Training modes in `test_estep_pnas.py`:**
+- `adam`: Pure Adam optimization (no E-step)
+- `efm`: E-F-M loop (1 E-step, n F-steps, n M-steps)
+- `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
 
-**Finding**: At M=50, GPyTorch efm closely matches varGP. E-step provides significant benefit over pure Adam. Performance degrades for M>50.
+#### CRITICAL: Parameter Equivalence
 
-**Root cause**: No eigenspace projection (see Section 6.4).
+**GPyTorch `vargp_style` mode MUST mirror original varGP parameters exactly:**
+
+| Parameter | varGP | vargp_style | adam/efm |
+|-----------|-------|-------------|----------|
+| A_init | 0.01 | 0.01 | 1.0 |
+| lambda0_init | 1.0 | 1.0 | 0.0 |
+| lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) | 0.01 (Adam) |
+| lr_m (M-step) | 0.1 | 0.1 | 0.01 |
+| F-step optimizer | LBFGS | LBFGS | Adam |
+| M-step optimizer | LBFGS | **Adam** | Adam |
+
+**Before modifying training code, ALWAYS verify parameters match between implementations.**
+
+**Known gaps in `vargp_style` vs original varGP:**
+1. M-step uses Adam (not LBFGS with analytical gradients)
+2. No eigenspace projection (works in full M-dimensional space)
+
+Performance gap: varGP=0.87, vargp_style=0.83.
+
+#### Key Implementation Details
+
+- `f_step_lbfgs()`: LBFGS with `logA` parameterization (matching varGP)
+- `m_step()`: Uses Adam (NOT matching varGP's LBFGS)
+
+**Root cause of M>50 degradation**: No eigenspace projection (see Section 6.4).
 
 **Fix (DEFERRED)**: Implement eigenspace projection throughout training loop.
 
@@ -821,8 +861,8 @@ class PoissonLikelihood(gpytorch.likelihoods.Likelihood):
 
     @property
     def A(self):
-        # Ensure A > 0 via softplus or exp
-        return torch.nn.functional.softplus(self.raw_A)
+        # A = exp(raw_A), where raw_A = logA (matching varGP)
+        return self.raw_A_constraint.transform(self.raw_A)
 
     def expected_log_prob(self, target, input):
         """

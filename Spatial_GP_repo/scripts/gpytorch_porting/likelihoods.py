@@ -37,7 +37,7 @@ class PoissonLikelihood(Likelihood):
     Attributes
     ----------
     raw_A : Parameter
-        Unconstrained parameter for A
+        Unconstrained parameter (logA), where A = exp(raw_A)
     A : Property
         Constrained (positive) A value
     lambda0 : Parameter
@@ -52,7 +52,10 @@ class PoissonLikelihood(Likelihood):
             name='raw_A',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        self.register_constraint('raw_A', Positive())
+
+        # Use exp/log transform (A = exp(raw_A), matching varGP's logA)
+        self.register_constraint('raw_A', Positive(transform=torch.exp, inv_transform=torch.log))
+
         self.A = A_init  # Set via property to apply inverse transform
 
         # Register lambda0 parameter (unconstrained)
