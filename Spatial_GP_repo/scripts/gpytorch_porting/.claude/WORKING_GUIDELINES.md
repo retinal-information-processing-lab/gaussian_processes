@@ -81,6 +81,16 @@
 - Example: "Pixel masking - DEFERRED because adds complexity, not needed for first version"
 - This prevents future sessions from re-debating the same questions
 
+### 3.5 Always Test with Real Data
+- **Default to real data** (PNAS dataset) for all validation tests
+- **Ask before using synthetic data** - it can hide real-world issues
+- The user assumes tests run on real data unless told otherwise
+
+### 3.6 Include Timing in Test Scripts
+- **Always add timing** to model fitting/training scripts
+- Print elapsed time in results summary
+- Enables performance comparisons across configurations
+
 ---
 
 ## 4. Code Style
@@ -134,7 +144,13 @@
 - Mark items complete immediately when done
 - Keep the list current - remove stale items
 
-### 5.4 Reproducibility Rule for Documented Results
+### 5.4 No Useless Aesthetic Changes
+- When editing files, only change what's needed for the task
+- Do NOT change capitalization, formatting, or wording just for style
+- Do NOT reformat tables or reorganize sections unless specifically requested
+- Substantive multi-line changes are fine - just avoid cosmetic tweaks
+
+### 5.5 Reproducibility Rule for Documented Results
 
 **Core Rule**: If experimental results are important enough to document in CLAUDE.md, they MUST be reproducible via a script.
 

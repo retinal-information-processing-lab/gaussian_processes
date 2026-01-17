@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from train import (train_model, predict, compute_r_squared,
+from train import (train_adam, predict, compute_r_squared,
                    compute_pearson_correlation, compute_explained_variance)
 
 
@@ -137,7 +137,7 @@ def plot_fit(r_test_mean, f_pred, cellid, r2, corr, reliability, explained_var, 
 def main():
     parser = argparse.ArgumentParser(description='Test GPyTorch fit on PNAS data')
     parser.add_argument('--cell', type=int, default=8, help='Cell ID to fit (default: 8)')
-    parser.add_argument('--ntilde', type=int, default=200, help='Number of inducing points (default: 200)')
+    parser.add_argument('--ntilde', type=int, default=50, help='Number of inducing points (default: 50)')
     parser.add_argument('--n-train', type=int, default=500,
                         help='Number of training samples (default: 500, use 0 for all)')
     parser.add_argument('--iterations', type=int, default=200, help='Training iterations (default: 200)')
@@ -262,9 +262,9 @@ def main():
 
     # Train
     print(f"\nTraining for {args.iterations} iterations (lr={args.lr})...")
-    losses = train_model(model, likelihood, X_train, r_train,
-                         n_iterations=args.iterations, lr=args.lr,
-                         print_every=max(1, args.iterations // 5))
+    losses = train_adam(model, likelihood, X_train, r_train,
+                        n_iterations=args.iterations, lr=args.lr,
+                        print_every=max(1, args.iterations // 5))
 
     # Print final parameters
     print(f"\nFinal parameters:")

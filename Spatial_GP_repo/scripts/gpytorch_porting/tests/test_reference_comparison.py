@@ -45,7 +45,7 @@ from train import train_adam, predict, compute_pearson_correlation
 CONFIG = {
     # Data settings
     'cellid': 15,
-    'ntilde': 500,
+    'ntilde': 50,
     'n_train': 2000,
     'n_px_side': 108,
 

@@ -141,6 +141,14 @@ model.kernfun = GP_utils.acosker
 print(f"  Model loaded from: {model_path}")
 print(f"  Inducing points: {len(model.in_use_idx)}")
 
+# Get training data from model indices
+X_train_used = X[model.in_use_idx]
+R_train_used = R[model.in_use_idx]
+
+# Compute mean pixel value per training image (proxy for "gray level")
+train_mean_pixels = X_train_used.mean(dim=1)  # Shape: (ntrain,)
+print(f"  Training images: {len(model.in_use_idx)}")
+
 # =============================================================================
 # 4. Evaluate Model Quality on Test Set
 # =============================================================================
@@ -275,6 +283,9 @@ ax1.fill_between(
 # Mark sample gray level
 ax1.axvline(x=sample_pixel_value, color='red', linestyle='--', linewidth=2,
             label=f'Sample ({SAMPLE_GRAY_LEVEL*100:.0f}% gray)')
+# Scatter plot of training data (mean pixel value → observed response)
+ax1.scatter(train_mean_pixels.cpu().numpy(), R_train_used.cpu().numpy(),
+            c='black', s=30, alpha=0.6, zorder=3, label=f'Training data ({len(R_train_used)} imgs)')
 ax1.set_ylabel('Firing Rate (spikes/frame)')
 ax1.set_title('GP Firing Rate Prediction vs Pixel Value')
 ax1.legend(loc='upper right')

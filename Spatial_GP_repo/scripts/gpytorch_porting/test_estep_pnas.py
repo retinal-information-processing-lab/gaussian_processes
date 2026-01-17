@@ -274,7 +274,9 @@ def main():
             return None
 
         # Evaluate using GP_utils.test
-        _, _, r2, sigma_r2 = GP_utils.test(
+        # test() returns (R_test_cell, R_pred_cell, expl_var, sigma_expl_var)
+        # R_pred_cell is already the predicted firing rate (not lambda)
+        _, f_pred, r2, sigma_r2 = GP_utils.test(
             X_test.reshape(-1, n_px_side, n_px_side, 1).float(),
             r_test.float(),
             X_train=X.float(),
@@ -289,21 +291,13 @@ def main():
         test_corr = explained_var * reliability  # Approximate
         train_corr = 0.0  # Not computed for varGP
         final_loss = fit_model.get('loss', 0.0)
-        pred_std = 1.0  # Placeholder
-        pred_mean = 0.0
-        pred_min = 0.0
-        pred_max = 0.0
+        pred_std = f_pred.std().item()
+        pred_mean = f_pred.mean().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
 
-        # Get predictions for plotting
-        f_pred_test = GP_utils.lambda_moments(
-            X_test.reshape(-1, n_px_side, n_px_side, 1).float(),
-            X_train=X.float(),
-            **fit_model
-        )[0]  # Returns (mean, var)
-        # Convert lambda to firing rate
-        A_final = torch.exp(fit_model['f_params']['logA'])
-        lambda0_final = fit_model['f_params']['lambda0']
-        f_pred = torch.exp(A_final * f_pred_test + lambda0_final)
+        # Create predictions dict to match GPyTorch branch structure
+        predictions = {'f_pred': f_pred}
 
         r_test_mean = r_test.mean(dim=0)
         losses = [final_loss]

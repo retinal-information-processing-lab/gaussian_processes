@@ -8,9 +8,9 @@ import torch
 import numpy as np
 
 
-def train_model(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1,
-                print_every=100, device=None):
-    """Train the variational GP model.
+def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1,
+               print_every=100, device=None):
+    """Train the variational GP model using Adam optimizer (no E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
 
@@ -244,8 +244,8 @@ def test_training():
     likelihood = PoissonLikelihood(A_init=1.0, lambda0_init=0.0)
 
     print("Training on synthetic data...")
-    losses = train_model(model, likelihood, X_train, y_train,
-                         n_iterations=100, lr=0.1, print_every=25)
+    losses = train_adam(model, likelihood, X_train, y_train,
+                        n_iterations=100, lr=0.1, print_every=25)
 
     print(f"\nFinal loss: {losses[-1]:.2f}")
     print(f"Loss decreased: {losses[0] > losses[-1]}")

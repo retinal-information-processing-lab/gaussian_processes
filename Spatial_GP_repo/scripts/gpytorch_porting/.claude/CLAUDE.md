@@ -605,7 +605,7 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 - Any active learning functionality
 
 ### 6.2 Custom E-step
-**Status**: WORKS FOR M≤50, DEGRADES FOR M>50
+**Status**: vargp_style STABLE across M, outperforms varGP for M≥75 (see `results/BENCHMARK_LOG.md`)
 
 #### Test Script Architecture
 
@@ -640,25 +640,36 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 1. M-step uses Adam (not LBFGS with analytical gradients)
 2. No eigenspace projection (works in full M-dimensional space)
 
-Performance gap: varGP=0.87, vargp_style=0.83.
+Performance: see `results/BENCHMARK_LOG.md`.
 
 #### Key Implementation Details
 
 - `f_step_lbfgs()`: LBFGS with `logA` parameterization (matching varGP)
 - `m_step()`: Uses Adam (NOT matching varGP's LBFGS)
 
-**Root cause of M>50 degradation**: No eigenspace projection (see Section 6.4).
+**Note**: efm mode degrades at M>50, but vargp_style remains stable. Original varGP also degrades at M>50.
 
-**Fix (DEFERRED)**: Implement eigenspace projection throughout training loop.
+### 6.3 LBFGS M-step
+**Status**: DEFERRED (January 2025) - investigated, Adam works better
 
-### 6.3 Custom M-step Gradients
+**Investigation summary** (see `LBFGS_MSTEP_INVESTIGATION.md`):
+- LBFGS with autograd underperforms Adam (0.61 vs 0.83 explained variance)
+- Root cause: gradient scale imbalance (sigma_0 gradient ~1000x smaller than others)
+- LBFGS uses single step size, follows large gradients, ignores sigma_0
+- Grouped LBFGS experiment also failed (kernel becomes non-PD during line search)
+
+**Conclusion**: Adam's adaptive per-parameter learning rates handle the gradient imbalance naturally. Keep Adam for M-step unless analytical gradients are implemented.
+
+**Code preserved**: `m_step_lbfgs()` and `m_step_lbfgs_grouped()` in `estep.py` for future reference.
+
+### 6.4 Custom M-step Gradients
 **Reason for deferral**: Autograd works, optimization later.
 
 **Gradient formulas available in**:
 - `latex_summaries/acosker_kernel_def_and_gradients.tex`
 - `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
 
-### 6.4 Eigenspace Projection
+### 6.5 Eigenspace Projection
 **Status**: DEFERRED (January 2025) - potential improvement for large M
 
 **Context**: The original `utils.py:varGP()` stores variational parameters (m_b, V_b) permanently in a reduced eigenspace of K̃. The GPyTorch E-step currently works in full M-dimensional space.
@@ -688,12 +699,12 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 
 **Implementation would require**: Storing variational parameters in reduced eigenspace throughout, not just during E-step updates.
 
-### 6.5 Pixel Masking
+### 6.6 Pixel Masking
 **Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.
 
 **Result**: C reduced from 11664×11664 to ~2480×2480 (~20x memory reduction).
 
-### 6.6 Multi-Cell Validation (Test D)
+### 6.7 Multi-Cell Validation (Test D)
 **Reason for deferral**: Cell 8 validation sufficient for initial implementation.
 
 **Plan**: Run on cells 0, 4, 8, 12 to verify robustness across different neurons.

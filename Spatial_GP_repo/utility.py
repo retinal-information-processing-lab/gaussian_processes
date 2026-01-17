@@ -6,6 +6,7 @@ from tabnanny import verbose
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.ndimage import gaussian_filter
 # from gaussian_processes.Spatial_GP_repo.utils import (
     # TORCH_DTYPE, DEVICE)
 
@@ -2262,6 +2263,12 @@ def optimize_with_conditioned_utility(
     DEBUG_FULL_FIELD = DEBUG_dict.get('DEBUG_FULL_FIELD', False)
     # New: use a small pool of full-field gray images for sampling
     DEBUG_FULL_FIELD_MULTI = DEBUG_dict.get('DEBUG_FULL_FIELD_MULTI', False)
+    # New: bipartite sample image (two gray levels split vertically in masked region)
+    DEBUG_FULL_FIELD_BIPARTITE = DEBUG_dict.get('DEBUG_FULL_FIELD_BIPARTITE', False)
+    # New: natural image smoothed mode (sample = sharp natural image, initial = Gaussian-smoothed version)
+    DEBUG_NATURAL_SMOOTHED = DEBUG_dict.get('DEBUG_NATURAL_SMOOTHED', False)
+    # Use posterior mean instead of sampling (deterministic utility)
+    DEBUG_FIX_LAMBDA_i = DEBUG_dict.get('DEBUG_FIX_LAMBDA_i', False)
     verbose = DEBUG_dict.get('verbose', True)
 
     # Filter out start_img_idx from remaining_idx (always done)
@@ -2272,8 +2279,8 @@ def optimize_with_conditioned_utility(
         "Starting image index must not be in remaining images for conditioned utility."
 
     # Initialize starting image and sampled images based on debug mode
-    if DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI:
-        # DEBUG MODE: Test model response to uniform full-field stimuli
+    if DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI or DEBUG_FULL_FIELD_BIPARTITE or DEBUG_NATURAL_SMOOTHED:
+        # DEBUG MODE: Test model response to uniform or bipartite full-field stimuli
         # Gray levels are configurable via DEBUG_dict:
         #   - start_gray: fraction of pixel range for starting image (default 0.7)
         # Single-sample mode (DEBUG_FULL_FIELD):
@@ -2282,6 +2289,9 @@ def optimize_with_conditioned_utility(
         #   - center_gray: center fraction for the pool (default 0.5)
         #   - span: total span around the center (default 0.05)
         #   - n_full_field_samples: number of full-field samples in the pool (default 10)
+        # Bipartite mode (DEBUG_FULL_FIELD_BIPARTITE):
+        #   - sample_gray_left: fraction for left half of masked region (default 0.3)
+        #   - sample_gray_right: fraction for right half of masked region (default 0.7)
         # NOTE: conditioned_utility_clean() will randomly sample N images from remaining_imgs.
         pixel_min_val = imgs_train.min()
         pixel_max_val = imgs_train.max()
@@ -2330,7 +2340,55 @@ def optimize_with_conditioned_utility(
                 # Keep prints short but explicit (10 samples)
                 for j in range(n_full_field_samples):
                     print(f"     sample[{j:02d}]: frac={gray_fracs[j].item():.6f} -> pixel={gray_values[j].item():.4f}")
-        else:
+
+        elif DEBUG_FULL_FIELD_BIPARTITE:
+            # Bipartite sample: two gray levels split vertically in the masked region
+            # Get mask to determine which pixels are in the receptive field
+            _, mask, _, _, _ = GP_utils.get_final_K_vals(model)
+
+            # Compute 2D structure for vertical split
+            n_pixels = imgs_train.shape[1]
+            n_px_side = int(n_pixels ** 0.5)
+
+            # Create column index for each pixel
+            col_indices = torch.arange(n_px_side, device=mask.device).repeat(n_px_side, 1)  # (n_px_side, n_px_side)
+            col_indices_flat = col_indices.reshape(-1)  # (n_pixels,)
+
+            # Determine split point from masked pixels (center of masked region)
+            masked_cols = col_indices_flat[mask]
+            col_center = (masked_cols.min() + masked_cols.max()) / 2.0
+
+            # Get gray values for left and right halves
+            sample_gray_left_frac = DEBUG_dict.get('sample_gray_left', 0.3)
+            sample_gray_right_frac = DEBUG_dict.get('sample_gray_right', 0.7)
+            gray_left_value = pixel_min_val + pixel_range * sample_gray_left_frac
+            gray_right_value = pixel_min_val + pixel_range * sample_gray_right_frac
+
+            # Create left/right masks within the overall receptive field mask
+            is_left = (col_indices_flat < col_center) & mask
+            is_right = (col_indices_flat >= col_center) & mask
+
+            # Create bipartite sample image (base value outside mask doesn't affect utility)
+            base_value = (gray_left_value + gray_right_value) / 2
+            sample_img = torch.full_like(imgs_train[0], base_value)
+            sample_img[is_left] = gray_left_value
+            sample_img[is_right] = gray_right_value
+
+            remaining_imgs = sample_img[None]  # Shape: (1, n_pixels)
+
+            # Count pixels in each half for diagnostics
+            n_left = is_left.sum().item()
+            n_right = is_right.sum().item()
+
+            if verbose:
+                print(" DEBUG FULL FIELD BIPARTITE MODE ACTIVE ")
+                print(f"   Starting gray: {start_gray_frac*100:.0f}% -> pixel value {start_gray_value.item():.4f}")
+                print(f"   Sample (bipartite, vertical split at col {col_center.item():.1f}):")
+                print(f"     Left half:  {sample_gray_left_frac*100:.0f}% -> pixel value {gray_left_value.item():.4f} ({n_left} pixels)")
+                print(f"     Right half: {sample_gray_right_frac*100:.0f}% -> pixel value {gray_right_value.item():.4f} ({n_right} pixels)")
+
+        elif DEBUG_FULL_FIELD:
+            # DEBUG_FULL_FIELD: single uniform gray sample
             sample_gray_frac = DEBUG_dict.get('sample_gray', 0.5)
             sample_gray_value = pixel_min_val + pixel_range * sample_gray_frac
             remaining_imgs = torch.full_like(imgs_train[0], sample_gray_value)[None]  # Shape: (1, n_pixels)
@@ -2339,6 +2397,31 @@ def optimize_with_conditioned_utility(
                 print(" DEBUG FULL FIELD MODE ACTIVE ")
                 print(f"   Starting gray: {start_gray_frac*100:.0f}% -> pixel value {start_gray_value.item():.4f}")
                 print(f"   Sample gray:   {sample_gray_frac*100:.0f}% -> pixel value {sample_gray_value.item():.4f}")
+
+        elif DEBUG_NATURAL_SMOOTHED:
+            # Natural image nudged mode:
+            # - Sample = original natural image from imgs_train[start_img_idx]
+            # - Initial = original image with a small uniform nudge added to all pixels
+
+            nudge_amount = DEBUG_dict.get('nudge_amount', 0.1)
+
+            # Get the original natural image
+            original_img = imgs_train[start_img_idx].clone().detach()
+
+            # Apply uniform nudge to all pixels
+            nudged_img = original_img + nudge_amount
+
+            # Initial = nudged, Sample = original
+            x = nudged_img.clone().detach()
+            initial_img = x.clone().detach()
+            remaining_imgs = original_img[None]  # Shape: (1, n_pixels)
+
+            if verbose:
+                print(" DEBUG NATURAL NUDGED MODE ACTIVE ")
+                print(f"   Natural image index: {start_img_idx}")
+                print(f"   Nudge amount: {nudge_amount}")
+                print(f"   Original pixel range: [{original_img.min().item():.4f}, {original_img.max().item():.4f}]")
+                print(f"   Nudged pixel range: [{nudged_img.min().item():.4f}, {nudged_img.max().item():.4f}]")
 
     elif DEBUG_SINGLE_IMAGE:
         if verbose:
@@ -2376,14 +2459,16 @@ def optimize_with_conditioned_utility(
     # Initial state
     if return_logf_moments:
         U_initial, logf_mean_init, logf_var_init = conditioned_utility_clean(
-            x, model, remaining_imgs, N, r_cutoff, 
-            lambda_samples_per_x=lambda_samples, 
+            x, model, remaining_imgs, N, r_cutoff,
+            lambda_samples_per_x=lambda_samples,
+            DEBUG_FIX_LAMBDA_i=DEBUG_FIX_LAMBDA_i,
             return_logf_moments=True
             )
     else:
         U_initial = conditioned_utility_clean(
-            x, model, remaining_imgs, N, r_cutoff, 
-            lambda_samples_per_x = lambda_samples
+            x, model, remaining_imgs, N, r_cutoff,
+            lambda_samples_per_x=lambda_samples,
+            DEBUG_FIX_LAMBDA_i=DEBUG_FIX_LAMBDA_i
             )
         logf_mean_init, logf_var_init = None, None
     grad_initial = torch.autograd.grad(U_initial, x)[0].detach().clone()
@@ -2414,7 +2499,8 @@ def optimize_with_conditioned_utility(
             x = pixel_min + (pixel_max - pixel_min) * torch.sigmoid(theta)
 
         # Compute utility
-        U = conditioned_utility_clean(x, model, remaining_imgs, N, r_cutoff, lambda_samples)
+        U = conditioned_utility_clean(x, model, remaining_imgs, N, r_cutoff, lambda_samples,
+                                      DEBUG_FIX_LAMBDA_i=DEBUG_FIX_LAMBDA_i)
 
         # Negate utility for maximization (Adam minimizes)
         loss = -U
@@ -2441,14 +2527,16 @@ def optimize_with_conditioned_utility(
 
     if return_logf_moments:
         U_final, logf_mean_final, logf_var_final = conditioned_utility_clean(
-            x, model, remaining_imgs, N, r_cutoff, 
-            lambda_samples_per_x = lambda_samples, 
-            return_logf_moments  = True
+            x, model, remaining_imgs, N, r_cutoff,
+            lambda_samples_per_x=lambda_samples,
+            DEBUG_FIX_LAMBDA_i=DEBUG_FIX_LAMBDA_i,
+            return_logf_moments=True
             )
     else:
         U_final = conditioned_utility_clean(
-            x, model, remaining_imgs, N, r_cutoff, 
-            lambda_samples_per_x = lambda_samples
+            x, model, remaining_imgs, N, r_cutoff,
+            lambda_samples_per_x=lambda_samples,
+            DEBUG_FIX_LAMBDA_i=DEBUG_FIX_LAMBDA_i
             )
         logf_mean_final, logf_var_final = None, None
     grad_final = torch.autograd.grad(U_final, x)[0]
@@ -2477,8 +2565,8 @@ def optimize_with_conditioned_utility(
         'logf_var_initial': logf_var_init.item() if logf_var_init is not None else None,
         'logf_var_final': logf_var_final.item() if logf_var_final is not None else None,
         'sampled_img': remaining_imgs if N==1 else None,
-        'sampled_img_pool': remaining_imgs.detach() if (DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI) else None,
-        'initial_img': initial_img if (DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI) else None
+        'sampled_img_pool': remaining_imgs.detach() if (DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI or DEBUG_FULL_FIELD_BIPARTITE or DEBUG_NATURAL_SMOOTHED) else None,
+        'initial_img': initial_img if (DEBUG_FULL_FIELD or DEBUG_FULL_FIELD_MULTI or DEBUG_FULL_FIELD_BIPARTITE or DEBUG_NATURAL_SMOOTHED) else None
     }
 
 def soft_sigmoid_compress_pixels(x_masked, pixel_min, pixel_max, steepness=1.0,

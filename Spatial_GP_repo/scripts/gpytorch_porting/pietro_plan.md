@@ -4,7 +4,7 @@ Things to remember having claude check:
 
 [X] Masking of C -> works
 [ ] Is it a good idea to detach it so that mask does not change during backprop?
-[ ] Visualization -> first version in tes_fit prints in imgs/
+[X] Visualization -> first version in tes_fit prints in imgs/
 [ ] Comparison with one_cell_fit script
 [ ] I think hyperparameters are still parametrized as weird log expressions ( like beta for example) and they do not use the gpytorch link functions. to change
 [ ] Documentation refers too many times to "PNAS data" , we should remove it.
@@ -30,3 +30,12 @@ Things to remember having claude check:
 [ ] Check that the beta/rho conversion from the log-space parameters is correct. we can use the methods defined by pietro
 [ ] Still isnt clear if the r_cutoff has an influence on stability ( is 100 enough?)
 [ ] Are we including the ntilde in the ntrain?
+[ ] To check if we can condense the mathematical foundation file into the claude.md file to not dispere too much
+[ ] No need to create compute_moments() function
+[X] old code seems to have 0 mstep as defauls BUG
+- Notes on Estep failures:
+    - M=50 leads to constant prediction and rtrain=0, no overfitting. maybe A is going to 0?
+
+[X]   from gpytorch.constraints import Positive IMPLEMENTED
+  Positive(transform=torch.exp, inv_transform=torch.log)    
+-> htis might be a way to define a likelihood that optimized logA instead of A, globally.
