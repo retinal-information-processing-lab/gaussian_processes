@@ -1,0 +1,139 @@
+Benchmark Summary - dim. 18 janv. 2026 12:46:59 CET
+================================
+
+--- adam_autograd_M100.log ---
+Training time: 2.1s
+RESULTS: mode=adam, M=100
+  Training time:   2.1s
+  Test Pearson r:  0.6424
+  Explained var:   0.6758
+
+--- adam_autograd_M200.log ---
+Training time: 2.5s
+RESULTS: mode=adam, M=200
+  Training time:   2.5s
+  Test Pearson r:  0.6363
+  Explained var:   0.6695
+
+--- adam_autograd_M50.log ---
+Training time: 1.9s
+RESULTS: mode=adam, M=50
+  Training time:   1.9s
+  Test Pearson r:  0.6325
+  Explained var:   0.6652
+
+--- adam_autograd_M75.log ---
+Training time: 2.0s
+RESULTS: mode=adam, M=75
+  Training time:   2.0s
+  Test Pearson r:  0.6229
+  Explained var:   0.6553
+
+--- adam_vjp_M100.log ---
+Training time: 2.8s
+RESULTS: mode=adam, M=100
+  Training time:   2.8s
+  Test Pearson r:  0.6424
+  Explained var:   0.6758
+
+--- adam_vjp_M200.log ---
+Training time: 3.1s
+RESULTS: mode=adam, M=200
+  Training time:   3.1s
+  Test Pearson r:  0.6363
+  Explained var:   0.6695
+
+--- adam_vjp_M50.log ---
+Training time: 2.5s
+RESULTS: mode=adam, M=50
+  Training time:   2.5s
+  Test Pearson r:  0.6325
+  Explained var:   0.6652
+
+--- adam_vjp_M75.log ---
+Training time: 2.5s
+RESULTS: mode=adam, M=75
+  Training time:   2.5s
+  Test Pearson r:  0.6229
+  Explained var:   0.6553
+
+--- vargp_old_none_M100.log ---
+RESULTS: mode=vargp_old, M=100
+  Training time:   6.3s
+  Test Pearson r:  0.6187
+  Explained var:   0.6558
+
+--- vargp_old_none_M200.log ---
+RESULTS: mode=vargp_old, M=200
+  Training time:   8.6s
+  Test Pearson r:  0.3288
+  Explained var:   0.3501
+
+--- vargp_old_none_M50.log ---
+RESULTS: mode=vargp_old, M=50
+  Training time:   5.4s
+  Test Pearson r:  0.8141
+  Explained var:   0.8608
+
+--- vargp_old_none_M75.log ---
+RESULTS: mode=vargp_old, M=75
+  Training time:   6.0s
+  Test Pearson r:  0.6482
+  Explained var:   0.6868
+
+--- vargp_style_autograd_M100.log ---
+Training time: 44.2s
+RESULTS: mode=vargp_style, M=100
+  Training time:   44.2s
+  Test Pearson r:  0.8260
+  Explained var:   0.8708
+
+--- vargp_style_autograd_M200.log ---
+Training time: 17.2s
+RESULTS: mode=vargp_style, M=200
+  Training time:   17.2s
+  Test Pearson r:  0.7638
+  Explained var:   0.8053
+
+--- vargp_style_autograd_M50.log ---
+Training time: 15.7s
+RESULTS: mode=vargp_style, M=50
+  Training time:   15.7s
+  Test Pearson r:  0.7870
+  Explained var:   0.8318
+
+--- vargp_style_autograd_M75.log ---
+Training time: 17.9s
+RESULTS: mode=vargp_style, M=75
+  Training time:   17.9s
+  Test Pearson r:  0.7729
+  Explained var:   0.8152
+
+--- vargp_style_vjp_M100.log ---
+Training time: 51.6s
+RESULTS: mode=vargp_style, M=100
+  Training time:   51.6s
+  Test Pearson r:  0.7895
+  Explained var:   0.8317
+
+--- vargp_style_vjp_M200.log ---
+Training time: 18.5s
+RESULTS: mode=vargp_style, M=200
+  Training time:   18.5s
+  Test Pearson r:  0.7953
+  Explained var:   0.8381
+
+--- vargp_style_vjp_M50.log ---
+Training time: 17.4s
+RESULTS: mode=vargp_style, M=50
+  Training time:   17.4s
+  Test Pearson r:  0.8003
+  Explained var:   0.8453
+
+--- vargp_style_vjp_M75.log ---
+Training time: 19.9s
+RESULTS: mode=vargp_style, M=75
+  Training time:   19.9s
+  Test Pearson r:  0.7602
+  Explained var:   0.8017
+
