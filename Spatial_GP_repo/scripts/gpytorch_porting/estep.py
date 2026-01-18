@@ -841,8 +841,13 @@ def train_varGP_style(
         device: Device to use
 
     Returns:
-        losses: List of ELBO values
+        dict with keys:
+            'losses': List of ELBO values
+            'time_estep_total': Total time spent in E-step block (includes F-step)
+            'time_mstep_total': Total time spent in M-step block
     """
+    import time
+
     if device is None:
         device = train_x.device
 
@@ -852,9 +857,13 @@ def train_varGP_style(
     train_y = train_y.to(device)
 
     losses = []
+    time_estep_total = 0.0
+    time_mstep_total = 0.0
 
     for iteration in range(n_iterations):
-        # ===== E-STEP BLOCK =====
+        # ===== E-STEP BLOCK (includes F-step) =====
+        start_time_estep = time.time()
+
         # Disable kernel gradients (not needed, speeds up analytical grad computation)
         set_kernel_requires_grad(model, False)
         model.eval()
@@ -873,7 +882,12 @@ def train_varGP_style(
             f_step_lbfgs(model, likelihood, train_x, train_y,
                          lambda_m, lambda_var, n_fstep, lr_f, verbose=verbose)
 
+        time_estep = time.time() - start_time_estep
+        time_estep_total += time_estep
+
         # ===== M-STEP =====
+        start_time_mstep = time.time()
+
         # Skip M-step on last iteration (like old varGP: "to avoid generating a
         # new eigenspace that will not be used by V and m")
         if n_mstep > 0 and iteration < n_iterations - 1:
@@ -883,6 +897,9 @@ def train_varGP_style(
                 m_step(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
             # Disable kernel gradients after M-step (for loss recording)
             set_kernel_requires_grad(model, False)
+
+        time_mstep = time.time() - start_time_mstep
+        time_mstep_total += time_mstep
 
         # Record loss
         model.eval()
@@ -899,7 +916,11 @@ def train_varGP_style(
             print(f"Iter {iteration+1}/{n_iterations}, Loss: {current_loss:.2f}, "
                   f"A: {A:.4f}, lambda0: {lambda0:.4f}")
 
-    return losses
+    return {
+        'losses': losses,
+        'time_estep_total': time_estep_total,
+        'time_mstep_total': time_mstep_total,
+    }
 
 
 def test_estep():
