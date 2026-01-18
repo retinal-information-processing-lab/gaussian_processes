@@ -11,11 +11,18 @@ where:
     g = A · Kᵀ @ (r - f̄)
     G = A² · Kᵀ @ diag(f̄) @ K
     f̄ᵢ = exp(A·μᵢ + ½A²σᵢ² + λ₀)
+
+PERFORMANCE OPTIMIZATION (2026-01-18):
+    Kernel matrices K and K̃ are cached via compute_kernel_cache() and reused
+    within e_step_loop() via compute_moments_from_kernel_cache() and
+    e_step_with_kernel_cache(). This bypasses GPyTorch's model(X) calls and
+    reduces kernel computations from 35 to 3 per loop (11.7x reduction).
+    Use `use_cache=False` in train_varGP_style() to disable for testing.
 """
 
 import torch
 import gpytorch
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 
 def set_kernel_requires_grad(model: gpytorch.models.ApproximateGP, requires_grad: bool):
@@ -32,6 +39,162 @@ def set_kernel_requires_grad(model: gpytorch.models.ApproximateGP, requires_grad
     for name, param in model.covar_module.named_parameters():
         param.requires_grad = requires_grad
 
+
+# =============================================================================
+# Kernel Caching Functions (2026-01-18 optimization)
+# =============================================================================
+
+def compute_kernel_cache(
+    model: gpytorch.models.ApproximateGP,
+    X: torch.Tensor,
+    jitter: float = 1e-6
+) -> Dict[str, torch.Tensor]:
+    """Compute and cache kernel matrices for E-step reuse.
+
+    This function computes K and K̃ once, which can then be reused across
+    multiple Newton steps in e_step_loop(). This reduces kernel calls from
+    35 to 3 per loop (11.7x improvement).
+
+    Args:
+        model: VariationalGPModel instance
+        X: Training inputs, shape (N, n_features)
+        jitter: Small value for numerical stability
+
+    Returns:
+        Dict with:
+            'K': Cross-kernel matrix (N, M)
+            'K_tilde': Inducing point kernel matrix (M, M)
+            'K_tilde_j': K_tilde + jitter * I for stability
+            'k0': Diagonal of kernel at X (for variance), shape (N,)
+    """
+    inducing_points = model.variational_strategy.inducing_points
+    kernel = model.covar_module
+
+    # Compute kernel matrices ONCE
+    K = kernel(X, inducing_points).evaluate()           # (N, M)
+    K_tilde = kernel(inducing_points).evaluate()        # (M, M)
+
+    # Diagonal of kernel at X - needed for variance computation
+    # k0[i] = k(x_i, x_i)
+    k0 = kernel(X, diag=True)  # (N,)
+    if hasattr(k0, 'evaluate'):
+        k0 = k0.evaluate()
+
+    # Add jitter for stability
+    M = K_tilde.shape[0]
+    eye = torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
+    K_tilde_j = K_tilde + jitter * eye
+
+    return {
+        'K': K,
+        'K_tilde': K_tilde,
+        'K_tilde_j': K_tilde_j,
+        'k0': k0,
+    }
+
+
+def compute_moments_from_kernel_cache(
+    kernel_cache: Dict[str, torch.Tensor],
+    m: torch.Tensor,
+    V: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute lambda moments using cached kernel matrices (bypasses GPyTorch model(X)).
+
+    This computes posterior moments directly from the cached K and K̃ matrices,
+    avoiding GPyTorch's model(X) which would recompute kernels.
+
+    Formulas:
+        u = K̃⁻¹ @ Kᵀ  (projection vectors, shape M x N)
+        λ_mean = u.T @ m = K @ K̃⁻¹ @ m  (shape N,)
+        λ_var = k0 - diag(K @ K̃⁻¹ @ Kᵀ) + diag(K @ K̃⁻¹ @ V @ K̃⁻¹ @ Kᵀ)
+              = k0 + diag(K @ K̃⁻¹ @ (V - K̃) @ K̃⁻¹ @ Kᵀ)
+
+    Args:
+        kernel_cache: Dict from compute_kernel_cache() containing K, K_tilde, k0
+        m: Variational mean, shape (M,)
+        V: Variational covariance, shape (M, M)
+
+    Returns:
+        lambda_m: Posterior mean at X, shape (N,)
+        lambda_var: Posterior variance at X, shape (N,)
+    """
+    K = kernel_cache['K']              # (N, M)
+    K_tilde_j = kernel_cache['K_tilde_j']  # (M, M)
+    k0 = kernel_cache['k0']            # (N,)
+
+    # u = K̃⁻¹ @ Kᵀ, shape (M, N) - solve K̃ @ u = Kᵀ
+    u = torch.linalg.solve(K_tilde_j, K.T)  # (M, N)
+
+    # λ_mean = uᵀ @ m = K @ K̃⁻¹ @ m
+    lambda_m = u.T @ m  # (N,)
+
+    # λ_var = k0 + diag(K @ K̃⁻¹ @ (V - K̃) @ K̃⁻¹ @ Kᵀ)
+    #       = k0 + diag(uᵀ @ (V - K̃) @ u)
+    # For efficiency, compute (V - K̃) @ u first, then dot with u
+    V_minus_K = V - kernel_cache['K_tilde']
+    Vu = V_minus_K @ u  # (M, N)
+    # diag(uᵀ @ Vu) = sum(u * Vu, dim=0)
+    lambda_var = k0 + (u * Vu).sum(dim=0)  # (N,)
+
+    # Ensure variance is positive
+    lambda_var = torch.clamp(lambda_var, min=1e-6)
+
+    return lambda_m, lambda_var
+
+
+def e_step_with_kernel_cache(
+    m: torch.Tensor,
+    V: torch.Tensor,
+    kernel_cache: Dict[str, torch.Tensor],
+    A: torch.Tensor,
+    lambda0: torch.Tensor,
+    r: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Perform one E-step using cached kernel matrices (bypasses GPyTorch).
+
+    This is the optimized version of e_step() that reuses pre-computed K and K̃
+    matrices instead of calling GPyTorch's model(X).
+
+    Args:
+        m: Current variational mean, shape (M,)
+        V: Current variational covariance, shape (M, M)
+        kernel_cache: Dict from compute_kernel_cache() containing K, K_tilde, k0
+        A: Gain parameter (scalar)
+        lambda0: Bias parameter (scalar)
+        r: Training spike counts, shape (N,)
+
+    Returns:
+        m_new: Updated variational mean, shape (M,)
+        V_new: Updated variational covariance, shape (M, M)
+    """
+    K = kernel_cache['K']
+    K_tilde_j = kernel_cache['K_tilde_j']
+
+    # Compute moments using cached kernel matrices (not GPyTorch model(X))
+    lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
+
+    # Expected firing rate: f̄ = exp(A·μ + ½A²σ² + λ₀)
+    f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
+
+    # Standard (non-transformed) g and G
+    g = A * K.T @ (r - f_mean)                              # (M,)
+    G = A**2 * K.T @ (f_mean[:, None] * K)                  # (M, M)
+
+    # V update: V_new = K̃ @ solve(K̃ + G, K̃) = K̃(K̃ + G)⁻¹K̃
+    V_new = K_tilde_j @ torch.linalg.solve(K_tilde_j + G, K_tilde_j)
+
+    # m update: m_new = m + K̃ @ solve(K̃ + G, g - m) = m + K̃(K̃ + G)⁻¹(g - m)
+    m_new = m + K_tilde_j @ torch.linalg.solve(K_tilde_j + G, g - m)
+
+    # Symmetrize V
+    V_new = (V_new + V_new.T) / 2
+
+    return m_new, V_new
+
+
+# =============================================================================
+# Original E-step (non-cached)
+# =============================================================================
 
 def e_step(
     model: gpytorch.models.ApproximateGP,
@@ -226,7 +389,8 @@ def e_step_loop(
     r: torch.Tensor,
     n_estep: int,
     jitter: float = 1e-6,
-    verbose: bool = False
+    verbose: bool = False,
+    kernel_cache: Optional[Dict[str, torch.Tensor]] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run Newton loop with moment recomputation and stability checks.
 
@@ -236,6 +400,10 @@ def e_step_loop(
     - Stability check: revert if f_mean.mean() > 1000
     - Early stopping: break if rel_change < 1e-5
 
+    PERFORMANCE OPTIMIZATION (2026-01-18):
+        When kernel_cache is provided, K and K̃ matrices are reused instead of
+        recomputed via GPyTorch. This reduces kernel calls from 35 to 3 per loop.
+
     Args:
         model: VariationalGPModel instance
         likelihood: PoissonLikelihood instance
@@ -244,42 +412,98 @@ def e_step_loop(
         n_estep: Number of Newton iterations
         jitter: Small value for numerical stability
         verbose: Print debug info
+        kernel_cache: Optional pre-computed kernel cache from compute_kernel_cache().
+                      When provided, uses direct math formulas instead of GPyTorch model(X).
 
     Returns:
         lambda_m: Final posterior mean of λ at X, shape (N,)
         lambda_var: Final posterior variance of λ at X, shape (N,)
     """
-    # Initial moment computation
-    lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+    # Get likelihood parameters
+    A = likelihood.A.squeeze()
+    lambda0 = likelihood.lambda0.squeeze()
 
-    for i in range(n_estep):
-        # Save previous state
-        m_prev = get_variational_mean(model).clone()
-        V_prev = get_variational_covar(model).clone()
-        f_mean_prev = f_mean.clone()
+    # Use cached kernels if provided, otherwise use original (non-cached) path
+    if kernel_cache is not None:
+        # =====================================================================
+        # CACHED PATH: Use pre-computed kernel matrices (bypasses GPyTorch)
+        # =====================================================================
+        # Get current variational parameters
+        m = get_variational_mean(model).clone()
+        V = get_variational_covar(model).clone()
 
-        # Newton update
-        m_new, V_new = e_step(model, likelihood, X, r, jitter)
-        update_variational_parameters(model, m_new, V_new)
+        # Initial moment computation using cached kernels (not GPyTorch model(X))
+        lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
+        f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
 
-        # Recompute moments (CRITICAL - old code does this after each Newton step)
+        for i in range(n_estep):
+            # Save previous state
+            m_prev = m.clone()
+            V_prev = V.clone()
+            f_mean_prev = f_mean.clone()
+
+            # Newton update using cached kernels (not GPyTorch)
+            m, V = e_step_with_kernel_cache(m, V, kernel_cache, A, lambda0, r)
+
+            # Recompute moments using cached kernels
+            lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
+            f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
+
+            # Stability check: revert if f_mean is too large
+            if f_mean.mean() > 1000:
+                if verbose:
+                    print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
+                m, V = m_prev, V_prev
+                lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
+                f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
+                break
+
+            # Convergence check (early stopping)
+            if i > 0:
+                rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
+                if rel_change < 1e-5:
+                    if verbose:
+                        print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                    break
+
+        # Write final m, V back to model
+        update_variational_parameters(model, m, V)
+
+    else:
+        # =====================================================================
+        # NON-CACHED PATH: Original implementation (for testing/comparison)
+        # =====================================================================
+        # Initial moment computation
         lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
 
-        # Stability check: revert if f_mean is too large
-        if f_mean.mean() > 1000:
-            if verbose:
-                print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
-            update_variational_parameters(model, m_prev, V_prev)
-            lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
-            break
+        for i in range(n_estep):
+            # Save previous state
+            m_prev = get_variational_mean(model).clone()
+            V_prev = get_variational_covar(model).clone()
+            f_mean_prev = f_mean.clone()
 
-        # Convergence check (early stopping)
-        if i > 0:
-            rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
-            if rel_change < 1e-5:
+            # Newton update
+            m_new, V_new = e_step(model, likelihood, X, r, jitter)
+            update_variational_parameters(model, m_new, V_new)
+
+            # Recompute moments (CRITICAL - old code does this after each Newton step)
+            lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+
+            # Stability check: revert if f_mean is too large
+            if f_mean.mean() > 1000:
                 if verbose:
-                    print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                    print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
+                update_variational_parameters(model, m_prev, V_prev)
+                lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
                 break
+
+            # Convergence check (early stopping)
+            if i > 0:
+                rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
+                if rel_change < 1e-5:
+                    if verbose:
+                        print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                    break
 
     return lambda_m, lambda_var
 
@@ -806,7 +1030,8 @@ def train_varGP_style(
     lr_m: float = 0.1,  # Match varGP default (lr_Mstep)
     print_every: int = 10,
     verbose: bool = False,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    use_cache: bool = True,  # Enable kernel caching for performance (11.7x fewer kernel calls)
 ):
     """Train using varGP-style loop: E-step (with F-step inside), then M-step.
 
@@ -839,6 +1064,9 @@ def train_varGP_style(
         print_every: Print progress every N iterations (0 to disable)
         verbose: Print debug info
         device: Device to use
+        use_cache: If True, cache kernel matrices and reuse across Newton iterations.
+                   This reduces kernel calls from 35 to 3 per E-step loop (11.7x speedup).
+                   Set to False for testing the non-cached fallback path.
 
     Returns:
         dict with keys:
@@ -860,6 +1088,9 @@ def train_varGP_style(
     time_estep_total = 0.0
     time_mstep_total = 0.0
 
+    # Kernel cache (K, K̃, k0) - computed once per iteration, invalidated after M-step
+    kernel_cache = None
+
     for iteration in range(n_iterations):
         # ===== E-STEP BLOCK (includes F-step) =====
         start_time_estep = time.time()
@@ -868,10 +1099,18 @@ def train_varGP_style(
         set_kernel_requires_grad(model, False)
         model.eval()
 
+        # Compute kernel cache if enabled (reused across Newton steps within E-step)
+        if use_cache:
+            with torch.no_grad():
+                kernel_cache = compute_kernel_cache(model, train_x)
+        else:
+            kernel_cache = None  # Force non-cached path (uses GPyTorch model(X))
+
         # Newton loop with moment recomputation
         with torch.no_grad():
             lambda_m, lambda_var = e_step_loop(
-                model, likelihood, train_x, train_y, n_estep, verbose=verbose
+                model, likelihood, train_x, train_y, n_estep, verbose=verbose,
+                kernel_cache=kernel_cache
             )
 
         # F-step (inside E-step block, matches old varGP structure)
@@ -897,6 +1136,8 @@ def train_varGP_style(
                 m_step(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
             # Disable kernel gradients after M-step (for loss recording)
             set_kernel_requires_grad(model, False)
+            # Invalidate kernel cache - kernel params changed, need fresh cache next iteration
+            kernel_cache = None
 
         time_mstep = time.time() - start_time_mstep
         time_mstep_total += time_mstep

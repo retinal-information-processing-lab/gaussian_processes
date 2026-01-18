@@ -53,3 +53,36 @@ Track performance across development milestones. Update after significant change
 ### Timing Anomalies
 - M=100 runs (~44-51s) much slower than M=200 (~17-18s) for vargp_style
 - Likely due to convergence differences or GPU warmup effects
+
+---
+
+## Benchmark: 2026-01-18 (E-step Kernel Caching Optimization)
+
+**Problem**: vargp_style E-step was 4.9x slower than original varGP (8.8s vs 1.8s).
+
+**Root cause**: 35 kernel calls per E-step loop vs ideal 2 (17.5x overhead).
+
+**Solution**: Cache K, K̃ matrices and reuse across Newton iterations.
+
+**Command**: `python test_estep_pnas.py --mode vargp_style --ntilde 50 [--no-cache]`
+
+### Performance Results (M=50, N=500)
+
+| Path | Test r | E-step Time | Total Time | Kernel Calls |
+|------|--------|-------------|------------|--------------|
+| varGP (reference) | 0.8141 | 1.1s | 5.2s | ~2 |
+| GPyTorch cached | 0.7752 | **1.0s** | 6.4s | 3 |
+| GPyTorch non-cached | 0.7870 | 8.8s | 16.1s | 35 |
+
+### Key Findings
+
+1. **E-step speedup**: 8.8s → 1.0s = **8.8x faster**
+2. **GPyTorch E-step now faster than varGP** (1.0s vs 1.1s)
+3. **Model quality preserved**: test r = 0.77-0.79 (vs 0.81 reference)
+4. **Small accuracy difference** between cached (0.7752) and non-cached (0.7870) - may warrant investigation
+
+### Reference
+
+- Decision Log: Q25 in CLAUDE.md
+- Details: `HANDOFF_2026-01-18.md`, `results/PROFILING_2026-01-18.md`
+- Original non-cached commit: `44d9227`

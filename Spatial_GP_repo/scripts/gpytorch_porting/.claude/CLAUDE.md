@@ -12,10 +12,11 @@ This document tracks the porting effort from the custom variational GP implement
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking + Analytical Gradients (3 modes) COMPLETE |
-| **Key files** | `kernels.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
+| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching COMPLETE |
+| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
 | **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: vargp_old, adam, efm, vargp_style) |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
+| **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
 | **Known limitations** | RF center needs reasonable init (Q20) |
@@ -482,6 +483,37 @@ This means we can:
 > - Testing showed equivalent performance between transforms
 > - Multiplicative gradient scaling (same relative change at any A value)
 
+### Session 8: E-step Kernel Caching (January 2025)
+
+**Q25: How to fix 4.9x E-step slowdown in `vargp_style` vs original varGP?**
+> A: **Cache kernel matrices K and K̃** and reuse across Newton iterations within E-step.
+>
+> **Root cause**: Profiling revealed 35 kernel calls per E-step loop (10 Newton steps) vs ideal 2.
+> Each `model(X)` call and explicit kernel computation was redundant since kernel params don't change during E-step.
+>
+> **Solution**: New functions in `estep.py`:
+> - `compute_kernel_cache()`: Compute K, K̃, k0 once before E-step loop
+> - `compute_moments_from_kernel_cache()`: Compute λ_m, λ_var from cached matrices (bypasses GPyTorch `model(X)`)
+> - `e_step_with_kernel_cache()`: Newton update using cached kernels (bypasses GPyTorch)
+>
+> **Performance results** (M=50, N=500):
+> | Path | Test r | E-step Time | Total Time |
+> |------|--------|-------------|------------|
+> | varGP (reference) | 0.8141 | 1.1s | 5.2s |
+> | GPyTorch cached | 0.7752 | 1.0s | 6.4s |
+> | GPyTorch non-cached | 0.7870 | 8.8s | 16.1s |
+>
+> **Key achievement**: GPyTorch E-step now **faster than original varGP** (1.0s vs 1.1s).
+>
+> **Testing**: Use `--no-cache` flag to test non-cached fallback path:
+> ```bash
+> python test_estep_pnas.py --mode vargp_style --ntilde 50 --no-cache
+> ```
+>
+> **Note**: Small performance difference (r=0.7752 vs r=0.7870) between cached and non-cached paths may warrant investigation. Reference commit for original non-cached code: `44d9227`.
+>
+> **Documentation**: See `HANDOFF_2026-01-18.md` and `results/PROFILING_2026-01-18.md` for details.
+
 ### Session 6: Pixel Masking (January 2025)
 
 **Q22: How should pixel masking be implemented?**
@@ -735,6 +767,19 @@ Performance: see `results/BENCHMARK_LOG.md`.
 
 **Note**: efm mode degrades at M>50, but vargp_style remains stable. Original varGP also degrades at M>50.
 
+#### Kernel Caching Optimization (January 2025)
+
+E-step now caches kernel matrices to avoid redundant computation. See Q25 in Decision Log.
+
+**New functions** (in `estep.py`):
+- `compute_kernel_cache()`: Compute K, K̃, k0 once
+- `compute_moments_from_kernel_cache()`: Compute moments without calling `model(X)`
+- `e_step_with_kernel_cache()`: Newton update using cached kernels
+
+**Performance**: E-step reduced from 8.8s to 1.0s (8.8x faster, now faster than original varGP).
+
+**Usage**: Enabled by default. Use `use_cache=False` or `--no-cache` to disable for testing.
+
 ### 6.3 LBFGS M-step
 **Status**: DEFERRED (January 2025) - investigated, Adam works better
 
@@ -841,17 +886,19 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
 | `train.py` | Training utilities (Adam-based) |
-| `estep.py` | Custom E-step Newton update + `train_efm()` |
+| `estep.py` | Custom E-step Newton update + `train_efm()` + kernel caching (`compute_kernel_cache`, `compute_moments_from_kernel_cache`, `e_step_with_kernel_cache`) |
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
 | `test_fit.py` | Test script for Adam training |
-| `test_estep_pnas.py` | Single-mode testing (supports `--gradient-mode`) |
+| `test_estep_pnas.py` | Single-mode testing (supports `--gradient-mode`, `--no-cache`) |
 | `tests/test_estep_comparison.py` | **Canonical test** - compares varGP + 3 GPyTorch modes |
 | `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
 | `tests/test_analytical_gradients.py` | Analytical gradient validation |
 | `results/BENCHMARK_LOG.md` | Performance tracking across milestones |
+| `results/PROFILING_2026-01-18.md` | E-step profiling results (kernel caching optimization) |
+| `HANDOFF_2026-01-18.md` | Kernel caching implementation details and reference commits |
 
 ---
 
@@ -1113,4 +1160,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 9 - Metric standardization across all training modes)*
+*Last updated: January 2025 (Session 10 - E-step kernel caching optimization, 8.8x speedup)*

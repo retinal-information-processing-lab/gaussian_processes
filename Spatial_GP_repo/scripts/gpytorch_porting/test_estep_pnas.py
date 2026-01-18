@@ -161,6 +161,12 @@ def main():
                         choices=list(GRADIENT_MODES),
                         help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
 
+    # Performance options
+    parser.add_argument('--use-cache', action='store_true', default=True,
+                        help='Use kernel caching in E-step (default: True, 11.7x fewer kernel calls)')
+    parser.add_argument('--no-cache', action='store_false', dest='use_cache',
+                        help='Disable kernel caching (for testing fallback path)')
+
     # Plotting options
     parser.add_argument('--plot', action='store_true',
                         help='Show plot of actual vs predicted firing rates')
@@ -384,6 +390,7 @@ def main():
             # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
             print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
             print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
+            print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
             result = train_varGP_style(
                 model, likelihood, X_train, r_train,
                 n_iterations=args.n_iterations,
@@ -393,7 +400,8 @@ def main():
                 lr_f=0.1,  # varGP default
                 lr_m=0.1,  # varGP default
                 print_every=print_every,
-                device=device
+                device=device,
+                use_cache=args.use_cache,  # Kernel caching for E-step performance
             )
             losses = result['losses']
             time_estep_total = result['time_estep_total']

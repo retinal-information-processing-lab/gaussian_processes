@@ -242,6 +242,7 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 - Use simple commands: `git add -A && git commit -m "message"` then `git push`
 - Offer to help with the commit message
 - If something goes wrong with git, fix it without lengthy explanations
+- If you take decisions about not including specific CODE-RELATED files, mention it clearly
 
 ### 8.3 Don't Overdo It
 - One reminder per natural milestone is enough
