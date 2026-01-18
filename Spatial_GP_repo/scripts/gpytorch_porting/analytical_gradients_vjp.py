@@ -19,7 +19,7 @@ import torch
 from typing import Tuple, Optional
 
 
-class ArcCosineKernelVJP(torch.autograd.Function):
+class ArcCosineVJPGradients(torch.autograd.Function):
     """
     VJP-based arc-cosine kernel with analytical gradients.
 
@@ -58,12 +58,12 @@ class ArcCosineKernelVJP(torch.autograd.Function):
         )
 
         # Track kernel calls for debugging
-        if not hasattr(ArcCosineKernelVJP, '_call_count'):
-            ArcCosineKernelVJP._call_count = {'grad': 0, 'no_grad': 0}
+        if not hasattr(ArcCosineVJPGradients, '_call_count'):
+            ArcCosineVJPGradients._call_count = {'grad': 0, 'no_grad': 0}
         if needs_grad:
-            ArcCosineKernelVJP._call_count['grad'] += 1
+            ArcCosineVJPGradients._call_count['grad'] += 1
         else:
-            ArcCosineKernelVJP._call_count['no_grad'] += 1
+            ArcCosineVJPGradients._call_count['no_grad'] += 1
 
         # ===== Stage 1: Build coordinate grid and mask =====
         ycord, xcord = torch.meshgrid(
@@ -384,7 +384,7 @@ def test_vjp_correctness():
         eps_0y=config['eps_0y'],
         beta=config['beta'],
         rho=config['rho'],
-        use_analytical_grads=False
+        gradient_mode='autograd'
     ).to(device).double()
 
     K_auto = kernel_auto(x1, x2).evaluate()
@@ -414,7 +414,7 @@ def test_vjp_correctness():
     raw_beta = kernel_auto.raw_m2log2beta.clone().detach().requires_grad_(True)
     raw_rho = kernel_auto.raw_mlog2rho2.clone().detach().requires_grad_(True)
 
-    K_vjp = ArcCosineKernelVJP.apply(
+    K_vjp = ArcCosineVJPGradients.apply(
         x1, x2,
         sigma_0, eps_0x, eps_0y, raw_beta, raw_rho,
         n_px_side, False, False  # use_mask=False, diag=False
@@ -462,7 +462,7 @@ def benchmark_implementations():
     import sys
     sys.path.insert(0, '.')
     from kernels import ArcCosineKernel
-    from analytical_gradients import ArcCosineKernelFunction
+    from analytical_gradients import ArcCosineJacobianGradients
 
     print("\n" + "=" * 60)
     print("Benchmarking: VJP vs Current Analytical vs Autograd")
@@ -494,7 +494,7 @@ def benchmark_implementations():
     print("\n1. Autograd (no analytical gradients):")
     kernel_auto = ArcCosineKernel(
         sigma_0=1.0, n_px_side=n_px_side, beta=0.1, rho=0.1,
-        use_mask=True, use_analytical_grads=False
+        use_mask=True, gradient_mode='autograd'
     ).to(device).double()
 
     for _ in range(n_warmup):
@@ -522,7 +522,7 @@ def benchmark_implementations():
     for _ in range(n_warmup):
         for p in params:
             p.grad = None
-        K = ArcCosineKernelFunction.apply(x1, x2, *params, n_px_side, True, False)
+        K = ArcCosineJacobianGradients.apply(x1, x2, *params, n_px_side, True, False)
         K.sum().backward()
 
     if device.type == 'cuda':
@@ -532,7 +532,7 @@ def benchmark_implementations():
     for _ in range(n_trials):
         for p in params:
             p.grad = None
-        K = ArcCosineKernelFunction.apply(x1, x2, *params, n_px_side, True, False)
+        K = ArcCosineJacobianGradients.apply(x1, x2, *params, n_px_side, True, False)
         K.sum().backward()
     if device.type == 'cuda':
         torch.cuda.synchronize()
@@ -546,7 +546,7 @@ def benchmark_implementations():
     for _ in range(n_warmup):
         for p in params:
             p.grad = None
-        K = ArcCosineKernelVJP.apply(x1, x2, *params, n_px_side, True, False)
+        K = ArcCosineVJPGradients.apply(x1, x2, *params, n_px_side, True, False)
         K.sum().backward()
 
     if device.type == 'cuda':
@@ -556,7 +556,7 @@ def benchmark_implementations():
     for _ in range(n_trials):
         for p in params:
             p.grad = None
-        K = ArcCosineKernelVJP.apply(x1, x2, *params, n_px_side, True, False)
+        K = ArcCosineVJPGradients.apply(x1, x2, *params, n_px_side, True, False)
         K.sum().backward()
     if device.type == 'cuda':
         torch.cuda.synchronize()

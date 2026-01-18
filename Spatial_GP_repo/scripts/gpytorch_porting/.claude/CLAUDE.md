@@ -31,7 +31,7 @@ This document tracks the porting effort from the custom variational GP implement
 > - `'vjp'`: VJP analytical - same speed as autograd, explicit formulas
 > - `'jacobian'`: Old Jacobian materialization - slow but matches original varGP exactly
 >
-> Note: `use_analytical_grads` flag is **deprecated** (maps to `'jacobian'`).
+> Note: `use_analytical_grads` flag was removed (Jan 2025). Use `gradient_mode` instead.
 
 ---
 
@@ -599,8 +599,8 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 - New file `analytical_gradients.py` with:
   - `acosker_with_hyp_grad()`: Computes K and all dK/dθ matrices
   - `compute_C_and_gradients()`: Computes C and dC matrices
-  - `ArcCosineKernelFunction(torch.autograd.Function)`: Wrapper for clean integration
-- Flag `use_analytical_grads=True` added to `ArcCosineKernel`
+  - `ArcCosineJacobianGradients(torch.autograd.Function)`: Wrapper for clean integration
+- Use `gradient_mode='jacobian'` in `ArcCosineKernel`
 - When enabled, forward pass computes K and saves dK; backward uses analytical gradients
 
 **Validation results** (from `tests/test_analytical_gradients.py`):
@@ -610,7 +610,7 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 
 **Usage**:
 ```bash
-python test_estep_pnas.py --mode vargp_style --use-analytical-grads
+python test_estep_pnas.py --mode vargp_style --gradient-mode jacobian
 ```
 
 **Performance characteristics** (old Jacobian-materialization approach):
@@ -667,7 +667,7 @@ python test_estep_pnas.py --gradient-mode autograd  # PyTorch autograd (default)
 
 **Math reference**: `.claude/VJP_ANALYTICAL_GRADIENTS.md`
 
-**Backward compatibility**: `use_analytical_grads=True` is deprecated but still works (maps to `'jacobian'`).
+**Note**: `use_analytical_grads` parameter was removed (Jan 2025). Use `gradient_mode='jacobian'` instead.
 
 **estep.py optimization** (still relevant):
 - Training loop toggles `requires_grad` on kernel parameters

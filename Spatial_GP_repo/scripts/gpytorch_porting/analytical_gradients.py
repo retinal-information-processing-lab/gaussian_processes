@@ -21,12 +21,12 @@ The module provides three main components:
 2. **compute_C_and_gradients()**
    Computes C matrix and dC/dθ for all hyperparameters from RF parameters.
 
-3. **ArcCosineKernelFunction(torch.autograd.Function)**
+3. **ArcCosineJacobianGradients(torch.autograd.Function)**
    PyTorch autograd wrapper. Forward computes K, backward uses analytical dK.
 
 Data Flow
 ---------
-When use_analytical_grads=True in ArcCosineKernel:
+When gradient_mode='jacobian' in ArcCosineKernel:
 
     forward(x1, x2):
         1. compute_C_and_gradients() → C, dC dict
@@ -47,17 +47,17 @@ Gradients Computed
 
 Usage
 -----
-Option 1: Via ArcCosineKernel flag (recommended)
+Option 1: Via ArcCosineKernel gradient_mode (recommended)
 
     from kernels import ArcCosineKernel
     kernel = ArcCosineKernel(
         n_px_side=108,
-        use_analytical_grads=True  # Enable analytical gradients
+        gradient_mode='jacobian'  # Analytical gradients (slow, reference)
     )
 
 Option 2: CLI flag for test scripts
 
-    python test_estep_pnas.py --mode vargp_style --use-analytical-grads
+    python test_estep_pnas.py --mode vargp_style --gradient-mode jacobian
 
 Option 3: Direct function call
 
@@ -383,7 +383,7 @@ def compute_K_only(
     return K
 
 
-class ArcCosineKernelFunction(torch.autograd.Function):
+class ArcCosineJacobianGradients(torch.autograd.Function):
     """
     torch.autograd.Function for arc-cosine kernel with analytical gradients.
 
@@ -392,7 +392,7 @@ class ArcCosineKernelFunction(torch.autograd.Function):
     Backward pass uses the saved dK matrices to compute parameter gradients.
 
     Usage:
-        K = ArcCosineKernelFunction.apply(
+        K = ArcCosineJacobianGradients.apply(
             x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
             n_px_side, use_mask, diag
         )
@@ -454,12 +454,12 @@ class ArcCosineKernelFunction(torch.autograd.Function):
         )
 
         # Track kernel calls for debugging/optimization analysis
-        if not hasattr(ArcCosineKernelFunction, '_call_count'):
-            ArcCosineKernelFunction._call_count = {'grad': 0, 'no_grad': 0}
+        if not hasattr(ArcCosineJacobianGradients, '_call_count'):
+            ArcCosineJacobianGradients._call_count = {'grad': 0, 'no_grad': 0}
         if needs_grad:
-            ArcCosineKernelFunction._call_count['grad'] += 1
+            ArcCosineJacobianGradients._call_count['grad'] += 1
         else:
-            ArcCosineKernelFunction._call_count['no_grad'] += 1
+            ArcCosineJacobianGradients._call_count['no_grad'] += 1
 
         # Amplitude is handled by ScaleKernel (outputscale), so we set Amp=1.0
         # in C matrix computation. The dK['Amp'] = K / Amp = K when Amp=1.
@@ -554,8 +554,8 @@ class ArcCosineKernelFunction(torch.autograd.Function):
 
 
 def test_autograd_function():
-    """Test that ArcCosineKernelFunction gradients match autograd."""
-    print("\nTesting ArcCosineKernelFunction...")
+    """Test that ArcCosineJacobianGradients gradients match autograd."""
+    print("\nTesting ArcCosineJacobianGradients...")
 
     torch.manual_seed(42)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -576,7 +576,7 @@ def test_autograd_function():
 
     # Test with analytical gradients
     print("  Computing K with analytical gradients...")
-    K_analytical = ArcCosineKernelFunction.apply(
+    K_analytical = ArcCosineJacobianGradients.apply(
         x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
         n_px_side, True, False  # use_mask=True, diag=False
     )
@@ -592,7 +592,7 @@ def test_autograd_function():
     print(f"  grad_beta: {raw_m2log2beta.grad.item():.6f}")
     print(f"  grad_rho: {raw_mlog2rho2.grad.item():.6f}")
 
-    print("  ArcCosineKernelFunction test PASSED!")
+    print("  ArcCosineJacobianGradients test PASSED!")
     return True
 
 

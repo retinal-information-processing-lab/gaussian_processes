@@ -60,10 +60,10 @@ def test_gradient_correctness():
             eps_0y=config['eps_0y'],
             beta=config['beta'],
             rho=config['rho'],
-            use_analytical_grads=False
+            gradient_mode='autograd'
         ).to(device).double()
 
-        # Create analytical kernel with same parameters
+        # Create analytical kernel with same parameters (jacobian mode)
         kernel_analytical = ArcCosineKernel(
             sigma_0=config['sigma_0'],
             n_px_side=n_px_side,
@@ -71,7 +71,7 @@ def test_gradient_correctness():
             eps_0y=config['eps_0y'],
             beta=config['beta'],
             rho=config['rho'],
-            use_analytical_grads=True
+            gradient_mode='jacobian'
         ).to(device).double()
 
         # Compute K and sum (simple loss function)
@@ -137,7 +137,7 @@ def test_numerical_gradient():
     eps_fd = 1e-5
     tolerance = 1e-4  # Looser tolerance for finite differences
 
-    # Create analytical kernel
+    # Create analytical kernel (jacobian mode)
     kernel = ArcCosineKernel(
         sigma_0=config['sigma_0'],
         n_px_side=n_px_side,
@@ -145,7 +145,7 @@ def test_numerical_gradient():
         eps_0y=config['eps_0y'],
         beta=config['beta'],
         rho=config['rho'],
-        use_analytical_grads=True
+        gradient_mode='jacobian'
     ).to(device).double()
 
     # Get analytical gradient
@@ -218,7 +218,7 @@ def test_training_equivalence():
     # Target: simple function of kernel values
     # We'll use self-kernel as a proxy for real training
 
-    def train_kernel(use_analytical, n_steps=50, lr=0.01):
+    def train_kernel(gradient_mode, n_steps=50, lr=0.01):
         """Train kernel parameters and return loss trajectory."""
         kernel = ScaleKernel(
             ArcCosineKernel(
@@ -226,7 +226,7 @@ def test_training_equivalence():
                 n_px_side=n_px_side,
                 eps_0x=0.0, eps_0y=0.0,
                 beta=0.1, rho=0.1,
-                use_analytical_grads=use_analytical
+                gradient_mode=gradient_mode
             )
         ).to(device).double()
 
@@ -246,10 +246,10 @@ def test_training_equivalence():
         return losses
 
     print("Training with autograd...")
-    losses_autograd = train_kernel(use_analytical=False)
+    losses_autograd = train_kernel(gradient_mode='autograd')
 
-    print("Training with analytical gradients...")
-    losses_analytical = train_kernel(use_analytical=True)
+    print("Training with analytical gradients (jacobian)...")
+    losses_analytical = train_kernel(gradient_mode='jacobian')
 
     # Compare loss trajectories
     losses_autograd = np.array(losses_autograd)

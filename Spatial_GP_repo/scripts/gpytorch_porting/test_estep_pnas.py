@@ -384,7 +384,7 @@ def main():
             # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
             print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
             print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
-            losses = train_varGP_style(
+            result = train_varGP_style(
                 model, likelihood, X_train, r_train,
                 n_iterations=args.n_iterations,
                 n_estep=args.n_estep,
@@ -395,9 +395,17 @@ def main():
                 print_every=print_every,
                 device=device
             )
+            losses = result['losses']
+            time_estep_total = result['time_estep_total']
+            time_mstep_total = result['time_mstep_total']
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
+
+        # Print E-step/M-step timing breakdown for vargp_style
+        if args.mode == 'vargp_style':
+            print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
+            print(f"  M-step:            {time_mstep_total:.1f}s")
 
         print(f"\nFinal parameters:")
         print(f"  A: {likelihood.A.item():.4f}")
@@ -437,9 +445,9 @@ def main():
     if args.gradient_mode != 'autograd':
         # Check which implementation was used
         if args.gradient_mode == 'vjp':
-            from analytical_gradients_vjp import ArcCosineKernelVJP as GradImpl
+            from analytical_gradients_vjp import ArcCosineVJPGradients as GradImpl
         else:
-            from analytical_gradients import ArcCosineKernelFunction as GradImpl
+            from analytical_gradients import ArcCosineJacobianGradients as GradImpl
         if hasattr(GradImpl, '_call_count'):
             cc = GradImpl._call_count
             total = cc['grad'] + cc['no_grad']
