@@ -15,6 +15,11 @@ Usage:
     python test_estep_pnas.py --ntilde 50 --mode vargp_style
     python test_estep_pnas.py  # Uses defaults: M=50, mode=efm
 
+Gradient modes (for GPyTorch modes only):
+    --gradient-mode autograd   # PyTorch autograd (default)
+    --gradient-mode vjp        # VJP analytical - same speed as autograd
+    --gradient-mode jacobian   # Old Jacobian materialization - slow but matches varGP
+
 IMPORTANT - Link Function Initialization:
     ┌─────────────┬─────────────────┬────────────────────┐
     │ Parameter   │ adam/efm        │ vargp_old/vargp_style  │
@@ -42,7 +47,7 @@ import matplotlib.pyplot as plt
 from gaussian_processes.Spatial_GP_repo import utils as GP_utils
 
 # Import our GPyTorch components
-from kernels import ArcCosineKernel
+from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from estep import train_efm, train_varGP_style
@@ -152,6 +157,9 @@ def main():
     parser.add_argument('--rho', type=float, default=0.1, help='Smoothness (default: 0.1)')
     parser.add_argument('--use-mask', action='store_true', default=True, help='Use pixel masking')
     parser.add_argument('--no-mask', action='store_false', dest='use_mask')
+    parser.add_argument('--gradient-mode', type=str, default='autograd',
+                        choices=list(GRADIENT_MODES),
+                        help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
 
     # Plotting options
     parser.add_argument('--plot', action='store_true',
@@ -165,6 +173,8 @@ def main():
     print(f"Device: {device}")
     print(f"Mode: {args.mode}")
     print(f"M={args.ntilde} inducing points")
+    if args.gradient_mode != 'autograd':
+        print(f"Gradient mode: {args.gradient_mode}")
 
     # Set seed
     torch.manual_seed(42)
@@ -314,7 +324,8 @@ def main():
             eps_0y=0.0,
             beta=args.beta,
             rho=args.rho,
-            use_mask=args.use_mask
+            use_mask=args.use_mask,
+            gradient_mode=args.gradient_mode
         )
         kernel = gpytorch.kernels.ScaleKernel(base_kernel)
         kernel.outputscale = 1e-4  # Prevent overflow
@@ -415,6 +426,20 @@ def main():
     print(f"  Explained var:   {explained_var:.4f}")
     print(f"  Final loss:      {losses[-1]:.2f}")
     print(f"  Prediction stats: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
+
+    # Print kernel call stats if analytical gradients were used
+    if args.gradient_mode != 'autograd':
+        # Check which implementation was used
+        if args.gradient_mode == 'vjp':
+            from analytical_gradients_vjp import ArcCosineKernelVJP as GradImpl
+        else:
+            from analytical_gradients import ArcCosineKernelFunction as GradImpl
+        if hasattr(GradImpl, '_call_count'):
+            cc = GradImpl._call_count
+            total = cc['grad'] + cc['no_grad']
+            print(f"  Kernel calls:     {total} total ({cc['grad']} with grads, {cc['no_grad']} without)")
+            # Reset for next run
+            GradImpl._call_count = {'grad': 0, 'no_grad': 0}
 
     # Check for collapsed predictions
     if pred_std < 0.1:

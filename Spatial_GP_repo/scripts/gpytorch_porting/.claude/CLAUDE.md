@@ -12,17 +12,26 @@ This document tracks the porting effort from the custom variational GP implement
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking COMPLETE, E-step partially working (see Section 6.2) |
-| **Key files** | `kernels.py`, `test_fit.py`, `likelihoods.py`, `model.py`, `train.py`, `estep.py`, `test_estep_pnas.py`, `tests/` |
+| **Current status** | Stage 2 + Masking + Analytical Gradients (3 modes) COMPLETE |
+| **Key files** | `kernels.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
 | **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: adam, efm, vargp_style) |
+| **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
-| **Deferred** | E-step improvements for large M (Section 6.2), eigenspace projection (Section 6.4) |
-| **Known limitations** | RF center needs reasonable init (Q20); E-step degrades for M>50 |
+| **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
+| **Known limitations** | RF center needs reasonable init (Q20) |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
 **CRITICAL RULES:**
 > - **NEVER use nMstep=0 or n_mstep=0 as default.** Disables kernel learning. Always use nMstep >= 10.
 > - **Parameters in GPyTorch modes MUST match varGP.** See Section 6.2 for test script architecture.
+
+**Gradient Mode Selection (January 2025):**
+> Use `ArcCosineKernel(..., gradient_mode='MODE')` or `--gradient-mode MODE` in CLI:
+> - `'autograd'`: PyTorch autograd (default) - automatic differentiation
+> - `'vjp'`: VJP analytical - same speed as autograd, explicit formulas
+> - `'jacobian'`: Old Jacobian materialization - slow but matches original varGP exactly
+>
+> Note: `use_analytical_grads` flag is **deprecated** (maps to `'jacobian'`).
 
 ---
 
@@ -581,15 +590,89 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 - [ ] Write updated parameters back to model
 - [ ] Benchmark speed improvement
 
-### Stage 4: Custom M-step Gradients (Deferred)
-**Status**: DEFERRED
+### Stage 4: Analytical M-step Gradients
+**Status**: COMPLETE (January 2025)
 
-**Goal**: Implement analytical gradients for kernel hyperparameters.
+**Goal**: Implement analytical gradients for kernel hyperparameters, matching varGP.
 
-**Tasks**:
-- [ ] Port gradient formulas from LaTeX documents
-- [ ] Create custom `backward()` methods
-- [ ] Benchmark vs autograd
+**Implementation**:
+- New file `analytical_gradients.py` with:
+  - `acosker_with_hyp_grad()`: Computes K and all dK/dθ matrices
+  - `compute_C_and_gradients()`: Computes C and dC matrices
+  - `ArcCosineKernelFunction(torch.autograd.Function)`: Wrapper for clean integration
+- Flag `use_analytical_grads=True` added to `ArcCosineKernel`
+- When enabled, forward pass computes K and saves dK; backward uses analytical gradients
+
+**Validation results** (from `tests/test_analytical_gradients.py`):
+- Gradient correctness: relative error < 1e-7 vs autograd
+- Numerical check: finite differences match within 1e-6
+- Training equivalence: final loss differs by ~1% between modes
+
+**Usage**:
+```bash
+python test_estep_pnas.py --mode vargp_style --use-analytical-grads
+```
+
+**Performance characteristics** (old Jacobian-materialization approach):
+
+| M | Autograd | Old Analytical | Slowdown | Notes |
+|---|----------|----------------|----------|-------|
+| 50 | 16s | 30s | 1.9x | Equivalent results (0.83) |
+| 75 | 18s | 46s | 2.5x | Equivalent results |
+| 100 | 45s | 84s | 1.9x | **Analytical worse: 0.71 vs 0.87** |
+
+**Why was old implementation 2x slower**: It materialized 5 dC matrices and 5 dK matrices (15 large matrix multiplies). Autograd uses VJPs without materializing intermediates.
+
+### Stage 4b: VJP-Based Analytical Gradients (INTEGRATED)
+**Status**: COMPLETE + INTEGRATED (January 2025)
+
+**Files**:
+- `analytical_gradients_vjp.py` - VJP implementation (fast, recommended)
+- `analytical_gradients.py` - Jacobian implementation (slow, reference)
+
+**Integration**: Both implementations are now accessible via `gradient_mode` parameter:
+
+```python
+# Use VJP (fast, same speed as autograd)
+kernel = ArcCosineKernel(n_px_side=108, gradient_mode='vjp')
+
+# Use Jacobian (slow, matches original varGP exactly)
+kernel = ArcCosineKernel(n_px_side=108, gradient_mode='jacobian')
+
+# Use autograd (default)
+kernel = ArcCosineKernel(n_px_side=108, gradient_mode='autograd')
+```
+
+**CLI usage**:
+```bash
+python test_estep_pnas.py --gradient-mode vjp       # Fast analytical
+python test_estep_pnas.py --gradient-mode jacobian  # Slow reference
+python test_estep_pnas.py --gradient-mode autograd  # PyTorch autograd (default)
+```
+
+**Performance comparison**:
+
+| Mode | Time per call | Notes |
+|------|---------------|-------|
+| `autograd` | 16.2 ms | PyTorch automatic differentiation |
+| `vjp` | 16.2 ms | Same speed, explicit kernel formulas |
+| `jacobian` | 73.1 ms | 4.5x slower, matches original varGP |
+
+**When to use each mode**:
+- `autograd`: Default, simplest, works well
+- `vjp`: When you want explicit control with no speed penalty
+- `jacobian`: When you need exact match with original varGP for debugging
+
+**Key insight**: VJP computes dL/dC ONCE in backward, then chains to each hyperparameter via element-wise ops. Jacobian materializes 5 dK matrices explicitly.
+
+**Math reference**: `.claude/VJP_ANALYTICAL_GRADIENTS.md`
+
+**Backward compatibility**: `use_analytical_grads=True` is deprecated but still works (maps to `'jacobian'`).
+
+**estep.py optimization** (still relevant):
+- Training loop toggles `requires_grad` on kernel parameters
+- E-step and F-step: kernel gradients disabled
+- M-step only: kernel gradients enabled
 
 ---
 
@@ -663,11 +746,24 @@ Performance: see `results/BENCHMARK_LOG.md`.
 **Code preserved**: `m_step_lbfgs()` and `m_step_lbfgs_grouped()` in `estep.py` for future reference.
 
 ### 6.4 Custom M-step Gradients
-**Reason for deferral**: Autograd works, optimization later.
+**Status**: COMPLETE + INTEGRATED (January 2025) - see Implementation Stage 4b
 
-**Gradient formulas available in**:
+**Implementation**: Three gradient modes available via `gradient_mode` parameter:
+- `'autograd'`: PyTorch autograd (default)
+- `'vjp'`: VJP-based analytical (fast, same speed as autograd)
+- `'jacobian'`: Jacobian-based analytical (slow, matches original varGP)
+
+**Usage**:
+```python
+kernel = ArcCosineKernel(n_px_side=108, gradient_mode='vjp')
+```
+Or CLI: `python test_estep_pnas.py --gradient-mode vjp`
+
+**Reference formulas in**:
 - `latex_summaries/acosker_kernel_def_and_gradients.tex`
 - `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
+- `.claude/ANALYTICAL_GRADIENTS_MATH.md`
+- `.claude/VJP_ANALYTICAL_GRADIENTS.md` (VJP-specific derivation)
 
 ### 6.5 Eigenspace Projection
 **Status**: DEFERRED (January 2025) - potential improvement for large M
@@ -738,16 +834,20 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 ### GPyTorch Porting Files (this project)
 | File | Content |
 |------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure and masking |
+| `kernels.py` | ArcCosineKernel with RF structure, masking, `gradient_mode` selection |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
 | `train.py` | Training utilities (Adam-based) |
 | `estep.py` | Custom E-step Newton update + `train_efm()` |
+| `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
+| `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
+| `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
 | `test_fit.py` | Test script for Adam training |
-| `test_estep_pnas.py` | Single-mode testing for development |
+| `test_estep_pnas.py` | Single-mode testing (supports `--gradient-mode`) |
 | `tests/test_estep_comparison.py` | **Canonical test** - compares varGP + 3 GPyTorch modes |
 | `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
+| `tests/test_analytical_gradients.py` | Analytical gradient validation |
 | `results/BENCHMARK_LOG.md` | Performance tracking across milestones |
 
 ---
@@ -1010,4 +1110,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 7 - E-step M scaling: M=50 works, M>50 degrades)*
+*Last updated: January 2025 (Session 8 - Analytical gradients for M-step implemented)*

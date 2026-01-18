@@ -17,14 +17,45 @@ Mathematical definition:
 Stage 1 (C=I): Uses identity matrix, v_x = ‖x‖² + σ₀²
 Stage 2 (RF structure): Computes C from receptive field parameters (β, ρ, ξ₀)
 
+Gradient Modes:
+    - 'autograd': PyTorch autograd (default) - automatic differentiation
+    - 'vjp': VJP analytical gradients - same speed as autograd, explicit formulas
+    - 'jacobian': Old Jacobian materialization - slow but matches original varGP exactly
+
 Reference: kernels/kernels.py:acosker_clean(), localker_clean()
 """
 
+import warnings
 import numpy as np
 import torch
 import gpytorch
 from gpytorch.kernels import Kernel
 from gpytorch.constraints import Positive
+
+# Valid gradient modes
+GRADIENT_MODES = ('autograd', 'vjp', 'jacobian')
+
+# Lazy imports for gradient implementations (avoid circular deps)
+_ArcCosineKernelFunction = None  # Jacobian implementation
+_ArcCosineKernelVJP = None       # VJP implementation
+
+
+def _get_jacobian_implementation():
+    """Lazy import for Jacobian-based analytical gradients (slow, reference)."""
+    global _ArcCosineKernelFunction
+    if _ArcCosineKernelFunction is None:
+        from analytical_gradients import ArcCosineKernelFunction
+        _ArcCosineKernelFunction = ArcCosineKernelFunction
+    return _ArcCosineKernelFunction
+
+
+def _get_vjp_implementation():
+    """Lazy import for VJP-based analytical gradients (fast, recommended)."""
+    global _ArcCosineKernelVJP
+    if _ArcCosineKernelVJP is None:
+        from analytical_gradients_vjp import ArcCosineKernelVJP
+        _ArcCosineKernelVJP = ArcCosineKernelVJP
+    return _ArcCosineKernelVJP
 
 
 class ArcCosineKernel(Kernel):
@@ -57,6 +88,15 @@ class ArcCosineKernel(Kernel):
         Pixels with locality weight α >= 0.001 are included. This reduces C from
         (n_px, n_px) to (n_masked, n_masked), typically ~100x smaller.
         Default: True.
+    gradient_mode : str, optional
+        How to compute gradients for hyperparameters. Options:
+        - 'autograd': PyTorch autograd (default) - automatic differentiation
+        - 'vjp': VJP analytical gradients - same speed as autograd, explicit formulas
+        - 'jacobian': Jacobian materialization - slow but matches original varGP exactly
+        Only 'vjp' and 'jacobian' are valid when n_px_side is set.
+    use_analytical_grads : bool, optional
+        DEPRECATED. Use gradient_mode='jacobian' instead.
+        Kept for backward compatibility.
 
     Attributes
     ----------
@@ -64,6 +104,8 @@ class ArcCosineKernel(Kernel):
         Unconstrained parameter for sigma_0
     sigma_0 : Property
         Constrained (positive) sigma_0 value
+    gradient_mode : str
+        Current gradient computation mode
     """
 
     has_lengthscale = False  # Arc-cosine doesn't have a lengthscale
@@ -71,7 +113,8 @@ class ArcCosineKernel(Kernel):
 
     def __init__(self, sigma_0=1.0, C=None, n_px_side=None,
                  eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
-                 use_mask=True, **kwargs):
+                 use_mask=True, gradient_mode='autograd',
+                 use_analytical_grads=None, **kwargs):
         super().__init__(**kwargs)
 
         # Register sigma_0 parameter with dummy initial value
@@ -118,6 +161,21 @@ class ArcCosineKernel(Kernel):
         self.use_mask = use_mask and (n_px_side is not None)
         # Cache for mask (computed on first forward pass)
         self._cached_mask = None
+
+        # Handle gradient mode (with backward compatibility for use_analytical_grads)
+        if use_analytical_grads is not None:
+            warnings.warn(
+                "use_analytical_grads is deprecated. Use gradient_mode='jacobian' or 'vjp' instead.",
+                DeprecationWarning, stacklevel=2
+            )
+            gradient_mode = 'jacobian' if use_analytical_grads else 'autograd'
+
+        # Validate gradient mode
+        if gradient_mode not in GRADIENT_MODES:
+            raise ValueError(f"gradient_mode must be one of {GRADIENT_MODES}, got '{gradient_mode}'")
+        if gradient_mode in ('vjp', 'jacobian') and n_px_side is None:
+            raise ValueError(f"gradient_mode='{gradient_mode}' requires n_px_side to be set")
+        self.gradient_mode = gradient_mode
 
     @property
     def sigma_0(self):
@@ -249,6 +307,22 @@ class ArcCosineKernel(Kernel):
         Tensor
             Kernel matrix of shape (..., n1, n2) or (..., n1,) if diag=True
         """
+        # Use analytical gradients path if enabled (VJP or Jacobian)
+        if self.gradient_mode in ('vjp', 'jacobian') and self.n_px_side is not None:
+            if self.gradient_mode == 'vjp':
+                GradFunction = _get_vjp_implementation()
+            else:  # jacobian
+                GradFunction = _get_jacobian_implementation()
+
+            K = GradFunction.apply(
+                x1, x2,
+                self.sigma_0,
+                self.eps_0x, self.eps_0y,
+                self.raw_m2log2beta, self.raw_mlog2rho2,
+                self.n_px_side, self.use_mask, diag
+            )
+            return K
+
         sigma_0_sq = self.sigma_0 ** 2
 
         # Determine C matrix source and handle masking
