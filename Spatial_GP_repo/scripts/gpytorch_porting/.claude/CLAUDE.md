@@ -14,7 +14,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
 | **Current status** | Stage 2 + Masking + Analytical Gradients (3 modes) COMPLETE |
 | **Key files** | `kernels.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
-| **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: adam, efm, vargp_style) |
+| **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: vargp_old, adam, efm, vargp_style) |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
@@ -700,9 +700,12 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 **Run canonical test:** `python tests/test_estep_comparison.py` (M=50 default)
 
 **Training modes:**
+- `vargp_old`: Original varGP implementation (reference baseline)
 - `adam`: Pure Adam optimization (no E-step)
 - `efm`: E-F-M loop (1 E-step, n F-steps, n M-steps)
 - `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
+
+**Metrics**: All modes report standardized metrics (test_corr, explained_var, reliability) computed identically.
 
 #### CRITICAL: Parameter Equivalence
 
@@ -1110,4 +1113,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 8 - Analytical gradients for M-step implemented)*
+*Last updated: January 2025 (Session 9 - Metric standardization across all training modes)*

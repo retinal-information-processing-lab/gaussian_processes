@@ -91,7 +91,28 @@
 - Print elapsed time in results summary
 - Enables performance comparisons across configurations
 
----
+### 3.7 Flag debug code
+- **Precede a code with "DEBUG" if you are writing it while debugging**
+- Temporary / printing code should be easy to recognize
+- Remove it when done
+
+### 3.8 Log Benchmark Results Immediately
+
+When running a **structured performance test** (not quick debugging):
+1. Log results to `results/BENCHMARK_LOG.md` immediately after the run
+2. Include: M, mode, explained variance, timing, gradient mode
+3. Include the exact command used
+4. Mark exploratory vs milestone results
+
+**What to log vs skip:**
+| Log it | Don't log it |
+|--------|--------------|
+| Intentional benchmark runs | Quick debug tests |
+| Comparing implementations | Checking if code runs |
+| Results that inform decisions | Exploratory iterations |
+
+This prevents losing results during session compaction. Complements Section 5.5 (Reproducibility Rule).
+
 
 ## 4. Code Style
 

@@ -294,12 +294,20 @@ def main():
             **fit_model
         )
 
-        explained_var = r2.item() if hasattr(r2, 'item') else r2
-        reliability = 0.9317  # Standard value for cell 8
+        # Ensure f_pred is a tensor on the correct device
+        if not isinstance(f_pred, torch.Tensor):
+            f_pred = torch.tensor(f_pred, device=device)
+        else:
+            f_pred = f_pred.to(device)
 
-        # For varGP, we get explained_var directly, estimate test_corr
-        test_corr = explained_var * reliability  # Approximate
-        train_corr = 0.0  # Not computed for varGP
+        # Compute metrics consistently with GPyTorch modes
+        r_test_mean = r_test.mean(dim=0)
+        test_corr = compute_pearson_correlation(r_test_mean.float(), f_pred.float())
+        explained_var, reliability = compute_explained_variance(r_test.float(), f_pred.float())
+
+        # Train correlation not available for vargp_old (would need extra prediction pass)
+        train_corr = float('nan')
+
         final_loss = fit_model.get('loss', 0.0)
         pred_std = f_pred.std().item()
         pred_mean = f_pred.mean().item()
@@ -308,8 +316,6 @@ def main():
 
         # Create predictions dict to match GPyTorch branch structure
         predictions = {'f_pred': f_pred}
-
-        r_test_mean = r_test.mean(dim=0)
         losses = [final_loss]
 
     # =========================================================================

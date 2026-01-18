@@ -18,6 +18,21 @@ import gpytorch
 from typing import Tuple, Optional
 
 
+def set_kernel_requires_grad(model: gpytorch.models.ApproximateGP, requires_grad: bool):
+    """Toggle requires_grad for kernel parameters.
+
+    This is used to skip gradient computation during E-step and F-step where
+    kernel gradients are not needed. Disabling requires_grad allows the
+    analytical gradients optimization to skip dK computation.
+
+    Args:
+        model: VariationalGPModel instance
+        requires_grad: Whether to enable gradient computation for kernel params
+    """
+    for name, param in model.covar_module.named_parameters():
+        param.requires_grad = requires_grad
+
+
 def e_step(
     model: gpytorch.models.ApproximateGP,
     likelihood,
@@ -840,6 +855,8 @@ def train_varGP_style(
 
     for iteration in range(n_iterations):
         # ===== E-STEP BLOCK =====
+        # Disable kernel gradients (not needed, speeds up analytical grad computation)
+        set_kernel_requires_grad(model, False)
         model.eval()
 
         # Newton loop with moment recomputation
@@ -850,6 +867,7 @@ def train_varGP_style(
 
         # F-step (inside E-step block, matches old varGP structure)
         # Uses LBFGS with logA parameterization (like original varGP)
+        # Kernel gradients still disabled (only optimizing A, lambda0)
         model.train()
         with torch.enable_grad():
             f_step_lbfgs(model, likelihood, train_x, train_y,
@@ -859,8 +877,12 @@ def train_varGP_style(
         # Skip M-step on last iteration (like old varGP: "to avoid generating a
         # new eigenspace that will not be used by V and m")
         if n_mstep > 0 and iteration < n_iterations - 1:
+            # Re-enable kernel gradients for M-step
+            set_kernel_requires_grad(model, True)
             with torch.enable_grad():
                 m_step(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
+            # Disable kernel gradients after M-step (for loss recording)
+            set_kernel_requires_grad(model, False)
 
         # Record loss
         model.eval()

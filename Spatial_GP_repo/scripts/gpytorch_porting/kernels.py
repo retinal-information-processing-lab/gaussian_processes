@@ -93,7 +93,7 @@ class ArcCosineKernel(Kernel):
         - 'autograd': PyTorch autograd (default) - automatic differentiation
         - 'vjp': VJP analytical gradients - same speed as autograd, explicit formulas
         - 'jacobian': Jacobian materialization - slow but matches original varGP exactly
-        Only 'vjp' and 'jacobian' are valid when n_px_side is set.
+        WARNING: Only 'vjp' and 'jacobian' are valid when n_px_side is set.
     use_analytical_grads : bool, optional
         DEPRECATED. Use gradient_mode='jacobian' instead.
         Kept for backward compatibility.
