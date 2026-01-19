@@ -19,7 +19,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
-| **Known limitations** | RF center needs reasonable init (Q20) |
+| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround for reproducibility (see below) |
 | **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
@@ -34,6 +34,19 @@ This document tracks the porting effort from the custom variational GP implement
 > - `'jacobian'`: Old Jacobian materialization - slow but matches original varGP exactly
 >
 > Note: `use_analytical_grads` flag was removed (Jan 2025). Use `gradient_mode` instead.
+
+**HACKY WORKAROUND - Random State Reproducibility (January 2025):**
+> Test scripts use `tests/test_utils.py:set_reproducible_seed()` which contains a **hacky workaround**:
+> ```python
+> torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
+> ```
+> This replicates a side effect from `GP_utils.py` line 49. Without it, `test_kernel_cache.py` fails
+> while `test_estep_pnas.py` succeeds - same code, different random sequences.
+>
+> **We don't understand why this works.** The assignment to `torch.pi` (a built-in constant since
+> PyTorch 1.8) somehow affects random state. This is cargo cult programming.
+>
+> See `HANDOFF_2026-01-18.md` Section 20.10 for full details and what we tried that didn't work.
 
 ---
 

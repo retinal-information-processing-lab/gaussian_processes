@@ -52,6 +52,7 @@ from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from estep import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
+from tests.test_utils import set_reproducible_seed
 
 
 def load_pnas_data(data_path, dtype=torch.float64):
@@ -182,8 +183,9 @@ def main():
     if args.gradient_mode != 'autograd':
         print(f"Gradient mode: {args.gradient_mode}")
 
-    # Set seed
-    torch.manual_seed(42)
+    # Set seed with explicit CUDA init for reproducibility
+    # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details
+    set_reproducible_seed(42, device=device)
 
     # Load data
     data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'

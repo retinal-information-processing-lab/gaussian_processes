@@ -85,11 +85,16 @@ def compute_kernel_cache(
     eye = torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
     K_tilde_j = K_tilde + jitter * eye
 
+    # Cholesky factor for whitening conversions (O(M³) - done once per E-step)
+    # L_K @ L_K.T = K_tilde_j
+    L_K = torch.linalg.cholesky(K_tilde_j)
+
     return {
         'K': K,
         'K_tilde': K_tilde,
         'K_tilde_j': K_tilde_j,
         'k0': k0,
+        'L_K': L_K,  # For whitened <-> natural m conversions
     }
 
 
@@ -313,6 +318,215 @@ def get_variational_covar(model: gpytorch.models.ApproximateGP) -> torch.Tensor:
     return L @ L.T
 
 
+# =============================================================================
+# Whitening Conversion Functions (2026-01-19)
+# =============================================================================
+# GPyTorch stores whitened variational params, but our E-step produces natural params.
+# These functions convert between the two representations at the storage boundary.
+#
+# GPyTorch formula: λ_m = K_XZ @ L_K⁻ᵀ @ m_stored  (expects whitened m)
+# Standard SVGP:    λ_m = K_XZ @ K̃⁻¹ @ m          (expects natural m)
+#
+# When we store natural m directly, GPyTorch computes wrong λ_m (~8x smaller).
+# Fix: Convert m at read/write boundaries.
+#
+# STATUS: IMPLEMENTED but DISABLED in e_step_loop() (2026-01-19)
+# These functions work correctly (verified by tests/test_m_whitening.py Test 1 & 2).
+# However, using whitened m with non-whitened V causes incorrect KL divergence
+# computation in M-step, leading to worse training results.
+# The whitening will be re-enabled after implementing V whitening (separate task).
+
+def get_variational_mean_with_L_K(
+    model: gpytorch.models.ApproximateGP,
+    L_K: torch.Tensor
+) -> torch.Tensor:
+    """Read variational mean and convert whitened → natural.
+
+    GPyTorch ALWAYS interprets m_stored as WHITENED mean, meaning:
+        m_actual = L_K @ m_stored
+
+    At initialization:
+        m_stored = 0 (zeros from __init__)
+        m_actual = L_K @ 0 = 0 (prior mean)
+        The conversion is a no-op, but we apply it for consistency with V.
+
+    After we store whitened m:
+        m_stored = m_whitened = L_K⁻¹ @ m_natural
+        m_actual = L_K @ m_whitened = m_natural
+
+    Args:
+        model: VariationalGPModel instance
+        L_K: Cholesky factor of K̃ + jitter (from kernel cache)
+
+    Returns:
+        m_natural: Natural variational mean, shape (M,)
+
+    Complexity: O(M²) - matrix-vector multiply
+    """
+    m_stored = model.variational_strategy._variational_distribution.variational_mean
+
+    # ALWAYS apply conversion - GPyTorch ALWAYS interprets m_stored as whitened
+    # At init: m_stored=0 means m_actual=0 (prior mean)
+    # After update: m_stored=m_whitened means m_actual=m_natural
+    return L_K @ m_stored
+
+
+def update_variational_mean_with_L_K(
+    model: gpytorch.models.ApproximateGP,
+    m_natural: torch.Tensor,
+    L_K: torch.Tensor
+):
+    """Convert natural → whitened and store in GPyTorch model.
+
+    Our E-step produces natural m. This function converts it to whitened form
+    before storing, so GPyTorch computes correct λ_m.
+
+    Formula: m_whitened = L_K⁻¹ @ m_natural (solved via triangular solve)
+
+    IMPORTANT: Also sets variational_params_initialized = True to prevent
+    GPyTorch's automatic whitening on first model(X) call.
+
+    Args:
+        model: VariationalGPModel instance
+        m_natural: Natural variational mean from E-step, shape (M,)
+        L_K: Cholesky factor of K̃ + jitter (from kernel cache)
+
+    Complexity: O(M²) - triangular solve
+    """
+    # Solve L_K @ m_whitened = m_natural for m_whitened
+    m_whitened = torch.linalg.solve_triangular(
+        L_K, m_natural.unsqueeze(-1), upper=False
+    ).squeeze(-1)
+    model.variational_strategy._variational_distribution.variational_mean.data.copy_(m_whitened)
+
+    # CRITICAL: Set flag to prevent GPyTorch's automatic whitening
+    # Without this, GPyTorch would double-whiten our already-whitened m
+    model.variational_strategy.variational_params_initialized.fill_(True)
+
+
+def update_variational_covar(
+    model: gpytorch.models.ApproximateGP,
+    V_new: torch.Tensor
+):
+    """Update variational covariance V in GPyTorch model.
+
+    GPyTorch stores L where V = LLᵀ (Cholesky). This function computes L from V.
+
+    Note: V whitening is NOT addressed here (separate task). This function
+    stores V directly as Cholesky, same as the original update_variational_parameters().
+
+    Args:
+        model: VariationalGPModel instance
+        V_new: New variational covariance, shape (M, M)
+    """
+    try:
+        L_new = torch.linalg.cholesky(V_new)
+    except RuntimeError:
+        # Add jitter if Cholesky fails
+        eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
+        L_new = torch.linalg.cholesky(V_new + 1e-6 * eye)
+
+    model.variational_strategy._variational_distribution.chol_variational_covar.data.copy_(L_new)
+
+
+def get_variational_covar_with_L_K(
+    model: gpytorch.models.ApproximateGP,
+    L_K: torch.Tensor
+) -> torch.Tensor:
+    """Read variational covariance and convert whitened → natural.
+
+    GPyTorch stores V as Cholesky factor L where V_stored = L @ L.T.
+    GPyTorch ALWAYS interprets V_stored as WHITENED covariance, meaning:
+        V_actual = L_K @ V_stored @ L_K.T
+
+    At initialization:
+        L_stored = I, so V_stored = I
+        GPyTorch interprets this as V_actual = L_K @ I @ L_K.T = K̃ (the prior!)
+        We MUST apply this conversion, otherwise cached path uses V=I instead of V=K̃
+
+    After we store whitened V:
+        V_stored = V_whitened = L_K⁻¹ @ V_natural @ L_K⁻ᵀ
+        V_actual = L_K @ V_whitened @ L_K.T = V_natural
+
+    Args:
+        model: VariationalGPModel instance
+        L_K: Cholesky factor of K̃ + jitter (from kernel cache)
+
+    Returns:
+        V_natural: Natural variational covariance, shape (M, M)
+
+    Complexity: O(M³) - two matrix multiplications
+    """
+    L_stored = model.variational_strategy._variational_distribution.chol_variational_covar
+    V_stored = L_stored @ L_stored.T
+
+    # ALWAYS apply conversion - GPyTorch ALWAYS interprets V_stored as whitened
+    # At init: V_stored=I means V_actual=K̃ (prior)
+    # After update: V_stored=V_whitened means V_actual=V_natural
+    return L_K @ V_stored @ L_K.T
+
+
+def update_variational_covar_with_L_K(
+    model: gpytorch.models.ApproximateGP,
+    V_natural: torch.Tensor,
+    L_K: torch.Tensor
+):
+    """Convert natural → whitened and store in GPyTorch model.
+
+    Our E-step produces natural V. This function converts it to whitened form
+    before storing, so GPyTorch computes correct variance and KL divergence.
+
+    Formula: V_whitened = L_K⁻¹ @ V_natural @ L_K⁻ᵀ (via triangular solves)
+
+    IMPORTANT:
+    - Requires cache clearing after call (variance is cached unlike mean)
+    - Sets variational_params_initialized = True (same as m whitening)
+
+    Args:
+        model: VariationalGPModel instance
+        V_natural: Natural variational covariance from E-step, shape (M, M)
+        L_K: Cholesky factor of K̃ + jitter (from kernel cache)
+
+    Complexity: O(M³) - two triangular solves + one Cholesky
+    """
+    # Step 1: Convert to whitened
+    # V_whitened = L_K⁻¹ @ V_natural @ L_K⁻ᵀ
+    temp = torch.linalg.solve_triangular(L_K, V_natural, upper=False)
+    V_whitened = torch.linalg.solve_triangular(L_K, temp.T, upper=False).T
+
+    # Ensure symmetry (numerical stability)
+    V_whitened = (V_whitened + V_whitened.T) / 2
+
+    # Step 2: Compute Cholesky of whitened V
+    try:
+        L_whitened = torch.linalg.cholesky(V_whitened)
+    except RuntimeError:
+        # Add jitter if Cholesky fails
+        M = V_whitened.shape[0]
+        eye = torch.eye(M, dtype=V_whitened.dtype, device=V_whitened.device)
+        L_whitened = torch.linalg.cholesky(V_whitened + 1e-6 * eye)
+
+    # Step 3: Store whitened Cholesky
+    model.variational_strategy._variational_distribution.chol_variational_covar.data.copy_(L_whitened)
+
+    # Set flag to indicate whitening has been applied (same as m whitening)
+    model.variational_strategy.variational_params_initialized.fill_(True)
+
+
+def clear_variational_cache(model: gpytorch.models.ApproximateGP):
+    """Clear GPyTorch's memoized cache for variational covariance.
+
+    MUST be called after updating chol_variational_covar.
+    NOT needed after updating variational_mean (mean updates are immediate).
+
+    Without clearing, GPyTorch returns stale variance values.
+    """
+    from gpytorch.utils.memoize import clear_cache_hook
+    clear_cache_hook(model.variational_strategy)
+    if hasattr(model.variational_strategy, '_memoize_cache'):
+        model.variational_strategy._memoize_cache.clear()
+
+
 def compute_moments(
     model: gpytorch.models.ApproximateGP,
     likelihood,
@@ -428,9 +642,13 @@ def e_step_loop(
         # =====================================================================
         # CACHED PATH: Use pre-computed kernel matrices (bypasses GPyTorch)
         # =====================================================================
-        # Get current variational parameters
-        m = get_variational_mean(model).clone()
-        V = get_variational_covar(model).clone()
+        # Whitening conversions enabled for both m and V (2026-01-19)
+        # This ensures GPyTorch computes correct variance and KL divergence.
+        L_K = kernel_cache['L_K']
+
+        # Read with whitening conversion (whitened → natural)
+        m = get_variational_mean_with_L_K(model, L_K).clone()
+        V = get_variational_covar_with_L_K(model, L_K).clone()
 
         # Initial moment computation using cached kernels (not GPyTorch model(X))
         lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
@@ -466,8 +684,12 @@ def e_step_loop(
                         print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
                     break
 
-        # Write final m, V back to model
-        update_variational_parameters(model, m, V)
+        # Write final m, V back to model (with whitening conversion)
+        update_variational_mean_with_L_K(model, m, L_K)
+        update_variational_covar_with_L_K(model, V, L_K)
+
+        # Clear GPyTorch cache (required for covariance updates)
+        clear_variational_cache(model)
 
     else:
         # =====================================================================
