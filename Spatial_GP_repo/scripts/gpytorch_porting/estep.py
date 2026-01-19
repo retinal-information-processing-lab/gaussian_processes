@@ -98,6 +98,32 @@ def compute_kernel_cache(
     }
 
 
+def compute_L_K(
+    model: gpytorch.models.ApproximateGP,
+    jitter: float = 1e-6
+) -> torch.Tensor:
+    """Compute Cholesky factor L_K of inducing point kernel.
+
+    L_K @ L_K.T = K̃ + jitter * I
+
+    Used for whitening conversions when kernel cache is not available.
+    This is a lightweight alternative to compute_kernel_cache() when only
+    L_K is needed (e.g., for non-cached path whitening).
+
+    Args:
+        model: VariationalGPModel instance
+        jitter: Small value for numerical stability
+
+    Returns:
+        L_K: Lower triangular Cholesky factor, shape (M, M)
+    """
+    inducing_points = model.variational_strategy.inducing_points
+    K_tilde = model.covar_module(inducing_points).evaluate()
+    M = K_tilde.shape[0]
+    K_tilde_j = K_tilde + jitter * torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
+    return torch.linalg.cholesky(K_tilde_j)
+
+
 def compute_moments_from_kernel_cache(
     kernel_cache: Dict[str, torch.Tensor],
     m: torch.Tensor,
@@ -147,6 +173,53 @@ def compute_moments_from_kernel_cache(
     return lambda_m, lambda_var
 
 
+def _newton_update(
+    m: torch.Tensor,
+    K: torch.Tensor,
+    K_tilde_j: torch.Tensor,
+    A: torch.Tensor,
+    f_mean: torch.Tensor,
+    r: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Core Newton update for E-step (shared by all E-step variants).
+
+    Computes one Newton step for the variational parameters (m, V).
+
+    Formulas:
+        g = A · Kᵀ @ (r - f̄)
+        G = A² · Kᵀ @ diag(f̄) @ K
+
+        V_new = K̃ @ solve(K̃ + G, K̃)  = K̃(K̃ + G)⁻¹K̃
+        m_new = m + K̃ @ solve(K̃ + G, g - m)  = m + K̃(K̃ + G)⁻¹(g - m)
+
+    Args:
+        m: Current variational mean, shape (M,)
+        K: Cross-kernel K(X, Z̃), shape (N, M)
+        K_tilde_j: Inducing kernel K̃ + jitter*I, shape (M, M)
+        A: Gain parameter (scalar)
+        f_mean: Expected firing rate exp(A·μ + ½A²σ² + λ₀), shape (N,)
+        r: Training spike counts, shape (N,)
+
+    Returns:
+        m_new: Updated variational mean, shape (M,)
+        V_new: Updated variational covariance, shape (M, M)
+    """
+    # Gradient and Hessian approximation
+    g = A * K.T @ (r - f_mean)                  # (M,)
+    G = A**2 * K.T @ (f_mean[:, None] * K)      # (M, M)
+
+    # V update: V_new = K̃(K̃ + G)⁻¹K̃
+    V_new = K_tilde_j @ torch.linalg.solve(K_tilde_j + G, K_tilde_j)
+
+    # m update: m_new = m + K̃(K̃ + G)⁻¹(g - m)
+    m_new = m + K_tilde_j @ torch.linalg.solve(K_tilde_j + G, g - m)
+
+    # Symmetrize V for numerical stability
+    V_new = (V_new + V_new.T) / 2
+
+    return m_new, V_new
+
+
 def e_step_with_kernel_cache(
     m: torch.Tensor,
     V: torch.Tensor,
@@ -181,20 +254,7 @@ def e_step_with_kernel_cache(
     # Expected firing rate: f̄ = exp(A·μ + ½A²σ² + λ₀)
     f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
 
-    # Standard (non-transformed) g and G
-    g = A * K.T @ (r - f_mean)                              # (M,)
-    G = A**2 * K.T @ (f_mean[:, None] * K)                  # (M, M)
-
-    # V update: V_new = K̃ @ solve(K̃ + G, K̃) = K̃(K̃ + G)⁻¹K̃
-    V_new = K_tilde_j @ torch.linalg.solve(K_tilde_j + G, K_tilde_j)
-
-    # m update: m_new = m + K̃ @ solve(K̃ + G, g - m) = m + K̃(K̃ + G)⁻¹(g - m)
-    m_new = m + K_tilde_j @ torch.linalg.solve(K_tilde_j + G, g - m)
-
-    # Symmetrize V
-    V_new = (V_new + V_new.T) / 2
-
-    return m_new, V_new
+    return _newton_update(m, K, K_tilde_j, A, f_mean, r)
 
 
 # =============================================================================
@@ -259,20 +319,56 @@ def e_step(
     eye = torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
     K_tilde_j = K_tilde + jitter * eye
 
-    # Standard (non-transformed) g and G
-    g = A * K.T @ (r - f_mean)                              # (M,)
-    G = A**2 * K.T @ (f_mean[:, None] * K)                  # (M, M)
+    return _newton_update(m, K, K_tilde_j, A, f_mean, r)
 
-    # V update: V_new = K̃ @ solve(K̃ + G, K̃) = K̃(K̃ + G)⁻¹K̃
-    V_new = K_tilde_j @ torch.linalg.solve(K_tilde_j + G, K_tilde_j)
 
-    # m update: m_new = m + K̃ @ solve(K̃ + G, g - m) = m + K̃(K̃ + G)⁻¹(g - m)
-    m_new = m + K_tilde_j @ torch.linalg.solve(K_tilde_j + G, g - m)
+def e_step_explicit(
+    m: torch.Tensor,
+    model: gpytorch.models.ApproximateGP,
+    likelihood,
+    X: torch.Tensor,
+    r: torch.Tensor,
+    jitter: float = 1e-6
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """E-step with explicit m parameter for whitened workflows.
 
-    # Symmetrize V
-    V_new = (V_new + V_new.T) / 2
+    Unlike e_step(), this takes m as an argument rather than reading from model.
+    Uses model(X) for moment computation (expects stored params to be whitened).
 
-    return m_new, V_new
+    This function is used in the non-cached path when whitening is enabled:
+    - Stored params are whitened (for correct GPyTorch moment computation)
+    - But E-step formula needs natural m, so we pass it explicitly
+
+    Args:
+        m: Current variational mean in NATURAL parameterization, shape (M,)
+        model: VariationalGPModel (stored params should be whitened)
+        likelihood: PoissonLikelihood instance
+        X: Training inputs, shape (N, n_features)
+        r: Training spike counts, shape (N,)
+        jitter: Small value for numerical stability
+
+    Returns:
+        m_new: Updated variational mean in NATURAL parameterization, shape (M,)
+        V_new: Updated variational covariance, shape (M, M)
+    """
+    A = likelihood.A.squeeze()
+    lambda0 = likelihood.lambda0.squeeze()
+
+    # Moments via GPyTorch (uses stored whitened params - correct!)
+    output = model(X)
+    lambda_mean = output.mean
+    lambda_var = output.variance
+    f_mean = torch.exp(A * lambda_mean + 0.5 * A**2 * lambda_var + lambda0)
+
+    # Compute kernel matrices (NOT cached - this is the non-cached path)
+    inducing_points = model.variational_strategy.inducing_points
+    kernel = model.covar_module
+    K = kernel(X, inducing_points).evaluate()
+    K_tilde = kernel(inducing_points).evaluate()
+    M = K_tilde.shape[0]
+    K_tilde_j = K_tilde + jitter * torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
+
+    return _newton_update(m, K, K_tilde_j, A, f_mean, r)
 
 
 def update_variational_parameters(
@@ -604,7 +700,8 @@ def e_step_loop(
     n_estep: int,
     jitter: float = 1e-6,
     verbose: bool = False,
-    kernel_cache: Optional[Dict[str, torch.Tensor]] = None
+    kernel_cache: Optional[Dict[str, torch.Tensor]] = None,
+    use_whitening: bool = True
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run Newton loop with moment recomputation and stability checks.
 
@@ -618,6 +715,12 @@ def e_step_loop(
         When kernel_cache is provided, K and K̃ matrices are reused instead of
         recomputed via GPyTorch. This reduces kernel calls from 35 to 3 per loop.
 
+    WHITENING (2026-01-19):
+        When use_whitening=True (default), variational parameters are converted
+        between whitened (GPyTorch storage) and natural (E-step computation) forms.
+        This ensures mathematically correct behavior. Set use_whitening=False to
+        use the original "wrong but self-consistent" behavior for comparison.
+
     Args:
         model: VariationalGPModel instance
         likelihood: PoissonLikelihood instance
@@ -628,6 +731,8 @@ def e_step_loop(
         verbose: Print debug info
         kernel_cache: Optional pre-computed kernel cache from compute_kernel_cache().
                       When provided, uses direct math formulas instead of GPyTorch model(X).
+        use_whitening: If True (default), convert between whitened and natural params.
+                       If False, use original behavior (no whitening conversions).
 
     Returns:
         lambda_m: Final posterior mean of λ at X, shape (N,)
@@ -642,13 +747,15 @@ def e_step_loop(
         # =====================================================================
         # CACHED PATH: Use pre-computed kernel matrices (bypasses GPyTorch)
         # =====================================================================
-        # Whitening conversions enabled for both m and V (2026-01-19)
-        # This ensures GPyTorch computes correct variance and KL divergence.
-        L_K = kernel_cache['L_K']
-
-        # Read with whitening conversion (whitened → natural)
-        m = get_variational_mean_with_L_K(model, L_K).clone()
-        V = get_variational_covar_with_L_K(model, L_K).clone()
+        if use_whitening:
+            L_K = kernel_cache['L_K']
+            # Read with whitening conversion (whitened → natural)
+            m = get_variational_mean_with_L_K(model, L_K).clone()
+            V = get_variational_covar_with_L_K(model, L_K).clone()
+        else:
+            # NO WHITENING - read directly (old behavior before whitening was added)
+            m = get_variational_mean(model).clone()
+            V = get_variational_covar(model).clone()
 
         # Initial moment computation using cached kernels (not GPyTorch model(X))
         lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
@@ -684,48 +791,96 @@ def e_step_loop(
                         print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
                     break
 
-        # Write final m, V back to model (with whitening conversion)
-        update_variational_mean_with_L_K(model, m, L_K)
-        update_variational_covar_with_L_K(model, V, L_K)
-
-        # Clear GPyTorch cache (required for covariance updates)
-        clear_variational_cache(model)
+        # Write final m, V back to model
+        if use_whitening:
+            update_variational_mean_with_L_K(model, m, L_K)
+            update_variational_covar_with_L_K(model, V, L_K)
+            # Clear GPyTorch cache (required for covariance updates)
+            clear_variational_cache(model)
+        else:
+            # NO WHITENING - write directly
+            update_variational_parameters(model, m, V)
 
     else:
         # =====================================================================
-        # NON-CACHED PATH: Original implementation (for testing/comparison)
+        # NON-CACHED PATH: Uses GPyTorch model(X) for moment computation
         # =====================================================================
-        # Initial moment computation
-        lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+        if use_whitening:
+            # Compute L_K for whitening conversions
+            L_K = compute_L_K(model, jitter)
 
-        for i in range(n_estep):
-            # Save previous state
-            m_prev = get_variational_mean(model).clone()
-            V_prev = get_variational_covar(model).clone()
-            f_mean_prev = f_mean.clone()
+            # Read with whitening (whitened → natural)
+            m = get_variational_mean_with_L_K(model, L_K).clone()
+            V = get_variational_covar_with_L_K(model, L_K).clone()
 
-            # Newton update
-            m_new, V_new = e_step(model, likelihood, X, r, jitter)
-            update_variational_parameters(model, m_new, V_new)
-
-            # Recompute moments (CRITICAL - old code does this after each Newton step)
+            # Initial moments (model(X) uses whitened storage - correct!)
             lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
 
-            # Stability check: revert if f_mean is too large
-            if f_mean.mean() > 1000:
-                if verbose:
-                    print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
-                update_variational_parameters(model, m_prev, V_prev)
-                lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
-                break
+            for i in range(n_estep):
+                m_prev, V_prev, f_mean_prev = m.clone(), V.clone(), f_mean.clone()
 
-            # Convergence check (early stopping)
-            if i > 0:
-                rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
-                if rel_change < 1e-5:
+                # Newton update using explicit m (natural space)
+                m, V = e_step_explicit(m, model, likelihood, X, r, jitter)
+
+                # Write back whitened (needed for next model(X) call)
+                update_variational_mean_with_L_K(model, m, L_K)
+                update_variational_covar_with_L_K(model, V, L_K)
+                clear_variational_cache(model)
+
+                # Recompute moments via model(X)
+                lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+
+                # Stability check
+                if f_mean.mean() > 1000:
                     if verbose:
-                        print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                        print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting")
+                    m, V = m_prev, V_prev
+                    update_variational_mean_with_L_K(model, m, L_K)
+                    update_variational_covar_with_L_K(model, V, L_K)
+                    clear_variational_cache(model)
+                    lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
                     break
+
+                # Convergence check
+                if i > 0:
+                    rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
+                    if rel_change < 1e-5:
+                        if verbose:
+                            print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                        break
+
+        else:
+            # NO WHITENING - original behavior (--no-whitening flag)
+            lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+
+            for i in range(n_estep):
+                # Save previous state
+                m_prev = get_variational_mean(model).clone()
+                V_prev = get_variational_covar(model).clone()
+                f_mean_prev = f_mean.clone()
+
+                # Newton update
+                m_new, V_new = e_step(model, likelihood, X, r, jitter)
+                update_variational_parameters(model, m_new, V_new)
+
+                # Recompute moments (CRITICAL - old code does this after each Newton step)
+                lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+
+                # Stability check: revert if f_mean is too large
+                if f_mean.mean() > 1000:
+                    if verbose:
+                        print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
+                    update_variational_parameters(model, m_prev, V_prev)
+                    lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
+                    break
+
+                # Convergence check (early stopping)
+                if i > 0:
+                    rel_change = (f_mean - f_mean_prev).norm() / (f_mean_prev.norm() + 1e-6)
+                    if rel_change < 1e-5:
+                        if verbose:
+                            print(f"E-step converged after {i+1} iterations (rel_change={rel_change:.2e})")
+                        break
 
     return lambda_m, lambda_var
 
@@ -1254,6 +1409,7 @@ def train_varGP_style(
     verbose: bool = False,
     device: Optional[torch.device] = None,
     use_cache: bool = True,  # Enable kernel caching for performance (11.7x fewer kernel calls)
+    use_whitening: bool = True,  # Enable whitening conversions for correct math
 ):
     """Train using varGP-style loop: E-step (with F-step inside), then M-step.
 
@@ -1289,6 +1445,9 @@ def train_varGP_style(
         use_cache: If True, cache kernel matrices and reuse across Newton iterations.
                    This reduces kernel calls from 35 to 3 per E-step loop (11.7x speedup).
                    Set to False for testing the non-cached fallback path.
+        use_whitening: If True (default), convert between whitened and natural params.
+                       This ensures mathematically correct behavior.
+                       Set to False for original "wrong but self-consistent" behavior.
 
     Returns:
         dict with keys:
@@ -1332,7 +1491,8 @@ def train_varGP_style(
         with torch.no_grad():
             lambda_m, lambda_var = e_step_loop(
                 model, likelihood, train_x, train_y, n_estep, verbose=verbose,
-                kernel_cache=kernel_cache
+                kernel_cache=kernel_cache,
+                use_whitening=use_whitening
             )
 
         # F-step (inside E-step block, matches old varGP structure)
