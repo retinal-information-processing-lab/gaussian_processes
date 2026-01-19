@@ -155,6 +155,8 @@ This means we can:
 2. Later replace with custom E-step (just change the optimizer loop, not the model)
 3. Access variational parameters via `model.variational_strategy.variational_distribution`
 
+Note: Avaid using the .data parameter and if you need to, raise it to the user. prefer torch.no_grad() + copy()
+
 ---
 
 ## 4. Decision Log
@@ -195,7 +197,7 @@ This means we can:
 - `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
 - `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
 - `train.py` - Training and evaluation utilities
-- `test_fit.py` - Main test script for PNAS data
+- `test_stage1_cI.py` - Stage 1 (C=I) testing script, supports `--no-rf` flag
 
 ### Stage 2: Structured Covariance Matrix C
 **Status**: COMPLETE (January 2025)
@@ -237,7 +239,7 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 
 **Files modified**:
 - `kernels.py` - added RF parameters, `_setup_pixel_coords()`, `_compute_C_matrix()`
-- `test_fit.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags
+- `test_stage1_cI.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags
 
 ### Stage 3: Custom E-step (Deferred)
 **Status**: DEFERRED
@@ -524,9 +526,12 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
-| `test_fit.py` | Test script for Adam training |
-| `test_estep_pnas.py` | Single-mode testing (supports `--gradient-mode`, `--no-cache`) |
+| `test_stage1_cI.py` | Stage 1 (C=I) testing with Adam, supports `--no-rf` for identity covariance |
+| `test_estep_pnas.py` | **Main test script** - all training modes, supports `--gradient-mode`, `--no-cache`, `--no-whitening` |
 | `tests/test_estep_comparison.py` | **Canonical test** - compares varGP + 3 GPyTorch modes |
+| `tests/test_whitening_paths.py` | Whitening path validation (cached vs non-cached, whitening on/off) |
+| `tests/test_kernel_cache.py` | Kernel caching validation |
+| `tests/test_m_whitening.py` | Whitening conversion unit tests |
 | `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
 | `tests/test_analytical_gradients.py` | Analytical gradient validation |
