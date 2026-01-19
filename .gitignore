@@ -4,9 +4,9 @@
 # External repos (cloned separately, not submodules)
 torchlambertw/
 
-# Editor/Claude settings at this level
+# Editor/Claude settings at this level only (not nested .claude/ folders)
 .vscode/
-.claude/
+/.claude/
 
 Spatial_GP_repo/data/
 Spatial_GP_repo/figures/

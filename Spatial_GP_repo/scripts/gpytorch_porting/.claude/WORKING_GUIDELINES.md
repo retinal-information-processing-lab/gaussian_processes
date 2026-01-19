@@ -96,7 +96,34 @@
 - Temporary / printing code should be easy to recognize
 - Remove it when done
 
-### 3.8 Log Benchmark Results Immediately
+### 3.8 Note tolerance increases
+- If you decide to increase numerical tolerance in a test to make it pass, justify it and document it.
+- This holds for debugging too
+- This should be mentioned to the user
+
+### 3.9 Subagent Usage
+
+For codebase exploration questions (not specific file lookups), use the Explore agent:
+- "How does X work?"
+- "Where is Y implemented?"
+- "What files are involved in Z?"
+
+For specific file reads or known patterns, use direct tools (Read, Grep, Glob).
+
+When exploring math-related code, also read `MATH_REFERENCE.md` for context.
+
+### 3.10 Benchmark Logging
+
+Before logging results to `BENCHMARK_LOG.md`:
+
+1. Check if working tree is clean (`git status`)
+2. If uncommitted changes exist, **remind user to commit first** - results must be reproducible
+3. Include in each entry:
+   - Git commit hash
+   - Exact command used
+   - Date
+
+### 3.11 Log Benchmark Results Immediately
 
 When running a **structured performance test** (not quick debugging):
 1. Log results to `results/BENCHMARK_LOG.md` immediately after the run
@@ -248,6 +275,18 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 - One reminder per natural milestone is enough
 - If the user ignores the suggestion, move on
 - Git is a tool, not the goal
+
+---
+
+## 9. Session Wrap-up
+
+When user says "wrap up", "done for now", or "session end":
+
+1. Summarize what was accomplished (3-5 bullets)
+2. List uncommitted changes (if any)
+3. Update CLAUDE.md Quick Start if status changed
+4. If anything came up during session that was not addressed or not solved, remind the user
+5. Add brief entry to SESSION_LOG.md
 
 ---
 

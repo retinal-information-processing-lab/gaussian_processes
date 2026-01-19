@@ -20,6 +20,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
 | **Known limitations** | RF center needs reasonable init (Q20) |
+| **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
 **CRITICAL RULES:**
@@ -38,204 +39,39 @@ This document tracks the porting effort from the custom variational GP implement
 
 ## Table of Contents
 
-1. [Mathematical Foundation](#1-mathematical-foundation)
-2. [Current Custom Implementation](#2-current-custom-implementation)
-3. [Porting Strategy](#3-porting-strategy)
-4. [Decision Log](#4-decision-log)
-5. [Implementation Stages](#5-implementation-stages)
-6. [Deferred Items](#6-deferred-items)
-7. [Key Files Reference](#7-key-files-reference)
-8. [Codebase Structure](#8-codebase-structure)
-9. [Data Format](#9-data-format)
-10. [Preprocessing Steps](#10-preprocessing-steps)
-11. [Working GPyTorch Patterns](#11-working-gpytorch-patterns)
+| Section | Description | When to Read |
+|---------|-------------|--------------|
+| [Quick Start](#quick-start-for-new-sessions) | Status, commands, current focus | **Always read first** |
+| [Mathematical Foundation](#1-mathematical-foundation) | Model, ELBO, kernel math | See **MATH_REFERENCE.md** for details |
+| [Current Custom Implementation](#2-current-custom-implementation) | varGP() function reference | When comparing to original |
+| [Porting Strategy](#3-porting-strategy) | Approach and architecture | For context on design choices |
+| [Decision Log](#4-decision-log) | Q&A history (Q1-Q25) | **Key decisions live here** |
+| [Implementation Stages](#5-implementation-stages) | Stage 1-4 status | To check what's done/pending |
+| [Deferred Items](#6-deferred-items) | Parked work items | Before starting new features |
+| [Key Files Reference](#7-key-files-reference) | File locations and purposes | When looking for specific code |
+| [Appendix](#8-codebase-structure) | Data format, preprocessing, patterns | Reference material |
+
+**Related Documentation:**
+- `MATH_REFERENCE.md` - Full mathematical derivations (read when working on math problems)
+- `WORKING_GUIDELINES.md` - Process rules and policies (read at session start)
+- `SESSION_LOG.md` - Recent session summaries (read for context on recent work)
 
 ---
 
 ## 1. Mathematical Foundation
 
-### 1.1 The Model
+> **Full derivations in `MATH_REFERENCE.md`** - Read when working on math-related problems.
 
-**Observation model** (Poisson likelihood with exponential link):
-```
-r(x) ~ Poisson(f(x))
-f(x) = exp(A·λ(x) + λ₀)
-```
-where:
-- `r(x)` = observed spike count for stimulus x
-- `f(x)` = firing rate (Poisson rate parameter)
-- `λ(x)` = latent GP function
-- `A` = gain parameter
-- `λ₀` = bias parameter (baseline log-firing rate)
+**Quick Summary:**
+- **Model**: Poisson likelihood with exponential link: `r ~ Poisson(exp(A·λ + λ₀))`
+- **Inference**: Sparse variational GP with inducing points, ELBO objective
+- **Kernel**: Arc-cosine kernel with structured covariance C (encodes RF properties)
+- **Algorithm**: EM with closed-form E-step (Newton), gradient-based M-step
 
-**Latent GP prior**:
-```
-λ ~ GP(0, K_θ)
-```
-where K_θ is the kernel with hyperparameters θ.
-
-### 1.2 Variational Inference (Sparse GP)
-
-Since the Poisson likelihood makes the posterior intractable, we use variational inference with inducing points.
-
-**Inducing points**: A set of M << N pseudo-inputs {z̃₁, ..., z̃_M} with corresponding latent values λ̃ = {λ(z̃₁), ..., λ(z̃_M)}.
-
-**Variational approximation**:
-```
-q(λ̃) = N(m, V)
-```
-where m ∈ ℝᴹ and V ∈ ℝᴹˣᴹ are variational parameters.
-
-**Approximate posterior** for any point x:
-```
-q(λ(x)) = ∫ p(λ(x)|λ̃) q(λ̃) dλ̃
-
-Mean:     μ(x) = k(x)ᵀ K̃⁻¹ m
-Variance: σ²(x) = k(x,x) + k(x)ᵀ K̃⁻¹ (V - K̃) K̃⁻¹ k(x)
-```
-where:
-- k(x) = [K(x, z̃₁), ..., K(x, z̃_M)]ᵀ  (cross-covariance vector)
-- K̃ = K(Z̃, Z̃)  (inducing point kernel matrix)
-
-### 1.3 Evidence Lower Bound (ELBO)
-
-The objective to maximize:
-```
-L = E_q[log p(Y|λ)] - KL(q(λ̃) || p(λ̃))
-```
-
-**KL divergence term** (between two Gaussians):
-```
--KL = ½ log|V| - ½ log|K̃| - ½ mᵀK̃⁻¹m - ½ Tr(K̃⁻¹V) + const
-```
-
-**Expected log-likelihood term** (for Poisson with exponential link):
-```
-E_q[log p(rᵢ|λᵢ)] = rᵢ(A·μᵢ + λ₀) - exp(A·μᵢ + ½A²σᵢ² + λ₀) + const
-```
-
-### 1.4 EM Algorithm
-
-**E-step**: Update variational parameters (m, V) for fixed hyperparameters.
-
-Newton update (closed-form when α=1):
-```
-g = A · (K·K̃⁻¹)ᵀ @ (r - f_mean)
-G = A² · (K·K̃⁻¹)ᵀ @ diag(f_mean) @ (K·K̃⁻¹)
-
-V_new = solve(I + K̃·G, K̃)
-m_new = V_new @ (G·m + g)
-```
-
-**M-step**: Update kernel hyperparameters θ for fixed (m, V).
-- Gradient-based optimization of ELBO w.r.t. θ
-
-**F-step**: Update firing rate parameters (A, λ₀).
-- Can be done with E-step (same loop) since no kernel recomputation needed
-
-### 1.5 Arc-Cosine Kernel
-
-Non-stationary kernel derived from infinite-width 2-layer ReLU network:
-```
-K(x, x') = (1/π) · M · J(θ)
-
-where:
-  v_x = xᵀCx + σ₀²
-  v_x' = x'ᵀCx' + σ₀²
-  M = √(v_x · v_x')
-  cos(θ) = (xᵀCx' + σ₀²) / M
-  J(θ) = sin(θ) + (π - θ)cos(θ)
-```
-
-**Structured covariance C** (encodes receptive field properties):
-```
-C_ij = α_i^local · α_j^local · C_ij^smooth
-
-α_i^local = exp(-‖ξ_i - ξ₀‖² / 4β²)     [locality/RF size]
-C_ij^smooth = exp(-‖ξ_i - ξ_j‖² / 2ρ²)  [smoothness]
-```
-
-Hyperparameters:
-- ξ₀ = (eps_0x, eps_0y): RF center position
-- β: RF size
-- ρ: smoothness scale
-- σ₀: bias variance
-- Amp: amplitude
-
-**Pixel coordinate grid** (from `localker_clean()`):
-```python
-# Normalized grid on [-1, 1] × [-1, 1]
-ycord, xcord = torch.meshgrid(
-    torch.linspace(-1, 1, n_px_side),  # n_px_side = 108 for PNAS
-    torch.linspace(-1, 1, n_px_side),
-    indexing='ij'
-)
-xcord = xcord.flatten()  # (n_px_side², ) = (11664,)
-ycord = ycord.flatten()
-```
-- Center of image: (eps_0x, eps_0y) = (0, 0)
-- Corners: (±1, ±1)
-
-**Log-space parameterization** (for numerical stability):
-```
-Code parameter        →  Math symbol  →  Transform
--2log2beta            →  β            →  β = exp(-2log2beta) / 2
--log2rho2             →  ρ²           →  ρ² = exp(-log2rho2) / 2
-
-Example: beta=0.1, rho=0.1
-  -2log2beta = -2 * log(2 * 0.1) = -2 * log(0.2) ≈ 3.22
-  -log2rho2  = -log(2 * 0.1²)    = -log(0.02)    ≈ 3.91
-```
-
-**Implementation details** (from `kernels/kernels.py:localker_clean()`):
-
-1. **Mask computation with detached theta**:
-   ```python
-   # Mask computed with DETACHED hyperparameters
-   # This keeps mask topology fixed during backprop (structural stability)
-   dist_sq = (xcord - eps_0x.detach())**2 + (ycord - eps_0y.detach())**2
-   alpha_for_mask = torch.exp(-beta.detach() * dist_sq)
-   mask = alpha_for_mask >= 0.001  # Threshold: include if α ≥ 0.001
-   ```
-   Rationale: Prevents the set of active pixels from changing during optimization.
-
-2. **C matrix assembly**:
-   ```python
-   # Locality weights (using NON-detached theta for gradients)
-   dist_sq_center = (xcord - eps_0x)**2 + (ycord - eps_0y)**2
-   logalpha = -beta * dist_sq_center
-   alpha = torch.exp(logalpha)  # (n_px,)
-
-   # Smoothness kernel (pairwise distances)
-   dx = xcord[:, None] - xcord[None, :]
-   dy = ycord[:, None] - ycord[None, :]
-   dist_sq_pairwise = dx**2 + dy**2
-   C_smooth = torch.exp(-rho2 * dist_sq_pairwise)  # (n_px, n_px)
-
-   # Full C matrix
-   C = alpha[:, None] * C_smooth * alpha[None, :]
-   ```
-
-3. **Symmetrization** (numerical stability):
-   ```python
-   C = (C + C.T) / 2  # Enforce exact symmetry
-   ```
-
-### 1.6 Eigenspace Projection (Numerical Stability)
-
-The custom implementation projects all quantities into the eigenspace of K̃ for stability:
-```
-K̃ = B · Λ · Bᵀ  (eigendecomposition)
-Keep only eigenvalues > threshold
-
-Projected quantities:
-  K̃_b = Λ_kept  (diagonal!)
-  m_b = Bᵀ @ m
-  V_b = Bᵀ @ V @ B
-  K_b = K @ B
-```
-
-This avoids explicit K̃⁻¹ computation - uses element-wise division with diagonal K̃_b.
+**Key equations** (see MATH_REFERENCE.md for derivations):
+- Posterior mean: `μ(x) = k(x)ᵀ K̃⁻¹ m`
+- Posterior var: `σ²(x) = k(x,x) + k(x)ᵀ K̃⁻¹ (V - K̃) K̃⁻¹ k(x)`
+- Expected log-lik: `E[log p(r|λ)] = r(A·μ + λ₀) - exp(A·μ + ½A²σ² + λ₀)`
 
 ---
 
