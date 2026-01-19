@@ -385,9 +385,6 @@ def update_variational_parameters(
     # Access the parameter storage object (not the distribution)
     var_params = model.variational_strategy._variational_distribution
 
-    # Update mean (stored directly)
-    var_params.variational_mean.data.copy_(m_new)
-
     # Compute Cholesky factor L where V = LLᵀ
     try:
         L_new = torch.linalg.cholesky(V_new)
@@ -396,7 +393,11 @@ def update_variational_parameters(
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
         L_new = torch.linalg.cholesky(V_new + 1e-6 * eye)
 
-    var_params.chol_variational_covar.data.copy_(L_new)
+    # Update parameters using torch.no_grad() with .copy_() (best practice)
+    # This ensures no computation graph is attached to the parameter updates
+    with torch.no_grad():
+        var_params.variational_mean.copy_(m_new)
+        var_params.chol_variational_covar.copy_(L_new)
 
 
 # =============================================================================
@@ -493,7 +494,10 @@ def update_variational_mean_with_L_K(
     m_whitened = torch.linalg.solve_triangular(
         L_K, m_natural.unsqueeze(-1), upper=False
     ).squeeze(-1)
-    model.variational_strategy._variational_distribution.variational_mean.data.copy_(m_whitened)
+
+    # Update using torch.no_grad() with .copy_() (best practice)
+    with torch.no_grad():
+        model.variational_strategy._variational_distribution.variational_mean.copy_(m_whitened)
 
     # CRITICAL: Set flag to prevent GPyTorch's automatic whitening
     # Without this, GPyTorch would double-whiten our already-whitened m
@@ -522,7 +526,9 @@ def update_variational_covar(
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
         L_new = torch.linalg.cholesky(V_new + 1e-6 * eye)
 
-    model.variational_strategy._variational_distribution.chol_variational_covar.data.copy_(L_new)
+    # Update using torch.no_grad() with .copy_() (best practice)
+    with torch.no_grad():
+        model.variational_strategy._variational_distribution.chol_variational_covar.copy_(L_new)
 
 
 def get_variational_covar_with_L_K(
@@ -602,8 +608,9 @@ def update_variational_covar_with_L_K(
         eye = torch.eye(M, dtype=V_whitened.dtype, device=V_whitened.device)
         L_whitened = torch.linalg.cholesky(V_whitened + 1e-6 * eye)
 
-    # Step 3: Store whitened Cholesky
-    model.variational_strategy._variational_distribution.chol_variational_covar.data.copy_(L_whitened)
+    # Step 3: Store whitened Cholesky using torch.no_grad() with .copy_() (best practice)
+    with torch.no_grad():
+        model.variational_strategy._variational_distribution.chol_variational_covar.copy_(L_whitened)
 
     # Set flag to indicate whitening has been applied (same as m whitening)
     model.variational_strategy.variational_params_initialized.fill_(True)
@@ -915,7 +922,8 @@ def f_step(
     # First set analytical lambda0
     A = likelihood.A.squeeze()
     new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-    likelihood.lambda0.data.copy_(new_lambda0.unsqueeze(0))
+    with torch.no_grad():
+        likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
 
     if n_fstep == 0:
         return
@@ -929,7 +937,7 @@ def f_step(
         A = likelihood.A.squeeze()
         with torch.no_grad():
             new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-            likelihood.lambda0.data.copy_(new_lambda0.unsqueeze(0))
+            likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
 
         # Compute loss
         output = model(X)
@@ -943,7 +951,7 @@ def f_step(
     A = likelihood.A.squeeze()
     with torch.no_grad():
         new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-        likelihood.lambda0.data.copy_(new_lambda0.unsqueeze(0))
+        likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
 
 
 def f_step_lbfgs(
@@ -987,7 +995,8 @@ def f_step_lbfgs(
     # Initial lambda0 update
     A = torch.exp(logA)
     new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-    likelihood.lambda0.data.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+    with torch.no_grad():
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
 
     # Track f_mean across closure calls (nonlocal update like original)
     f_mean_container = [None]
@@ -1015,7 +1024,7 @@ def f_step_lbfgs(
         # Update lambda0 analytically (inside closure, like original)
         with torch.no_grad():
             lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-            likelihood.lambda0.data.copy_(lambda0.reshape(likelihood.lambda0.shape))
+            likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
 
         # Compute f_mean = exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0)
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
@@ -1049,13 +1058,13 @@ def f_step_lbfgs(
     with torch.no_grad():
         # Update likelihood's raw_A from optimized logA
         # raw_A = logA since A = exp(raw_A)
-        likelihood.raw_A.data.copy_(logA.reshape(likelihood.raw_A.shape))
+        likelihood.raw_A.copy_(logA.reshape(likelihood.raw_A.shape))
 
         # Final lambda0 update (like original: "the optimal logA value found by
         # the optimizer might not be the one used in the last closure call")
         A_check = likelihood.A.squeeze()
         new_lambda0 = lambda0_given_A(A_check, r, lambda_m, lambda_var)
-        likelihood.lambda0.data.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
 
     if verbose:
         print(f"F-step LBFGS: {closure_counter[0]} closure calls, A: {likelihood.A.item():.4f}")

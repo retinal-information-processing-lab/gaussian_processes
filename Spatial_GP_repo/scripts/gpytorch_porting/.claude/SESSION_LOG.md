@@ -5,6 +5,51 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-19: Whitening Implementation for Non-Cached E-step Path
+
+**Accomplished:**
+- Implemented whitening support for non-cached E-step path (plan from previous session)
+- Added `compute_L_K()` and `e_step_explicit()` functions to `estep.py`
+- Modified `e_step_loop()` and `train_varGP_style()` with `use_whitening` parameter
+- Added `--no-whitening` CLI flag to `test_estep_pnas.py`
+- Created `tests/test_whitening_paths.py` test suite (6 tests, all pass)
+- Verified GPyTorch parameter update mechanism (`.data.copy_()` is correct)
+- Refactored all `.data.copy_()` calls to use `torch.no_grad()` + `.copy_()` (best practice)
+
+**Key Results:**
+- Cached+whitening ≈ Non-cached+whitening (λ_m ratio = 1.0000) ✓
+- Test r: cached=0.7966, noncached=0.7998 (both paths work)
+
+**Files Changed:**
+- `estep.py` - whitening functions, `.data.copy_()` → `torch.no_grad()` refactor
+- `test_estep_pnas.py` - added `--no-whitening` flag
+
+**Files Created:**
+- `tests/test_whitening_paths.py` - whitening test suite
+
+---
+
+## 2026-01-19: Workflow Restructure Implementation
+
+**Accomplished:**
+- Implemented restructure plan from previous session
+- Created `MATH_REFERENCE.md` (Section 1 extracted from CLAUDE.md)
+- Created `SESSION_LOG.md` with template
+- Updated CLAUDE.md: ToC table, "Current Focus" field, compact Section 1
+- Updated WORKING_GUIDELINES.md: Sections 3.9, 3.10, 3.11, 9
+- Fixed `.gitignore` to track nested `.claude/` folders
+- Committed: `6621c5a`
+
+**Not addressed:**
+- `tests/smoke_test.sh` not created (TODO for user)
+
+**Files Changed:**
+- `.claude/CLAUDE.md`, `.claude/WORKING_GUIDELINES.md` (modified)
+- `.claude/MATH_REFERENCE.md`, `.claude/SESSION_LOG.md` (created)
+- `gaussian_processes/.gitignore` (fixed)
+
+---
+
 ## 2026-01-18: Timing Analysis & Workflow Planning
 
 **Accomplished:**
