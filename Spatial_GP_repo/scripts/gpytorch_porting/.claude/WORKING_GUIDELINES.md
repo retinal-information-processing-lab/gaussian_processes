@@ -148,6 +148,7 @@ This prevents losing results during session compaction. Complements Section 5.5 
 - Avoid clever tricks that require explanation
 - Prefer explicit over implicit
 - Use meaningful variable names that match the math
+- No emojis anywhere
 
 ### 4.2 No Unnecessary Abstractions
 - Don't create a class when a function will do
@@ -164,6 +165,7 @@ This prevents losing results during session compaction. Complements Section 5.5 
 - Include mathematical formulas in docstrings
 - Map code variables to mathematical symbols
 - Example: `# u = K_tilde_inv @ k (projection vector)`
+
 
 ---
 
