@@ -79,7 +79,7 @@ This document tracks the porting effort from the custom variational GP implement
 >
 > **Performance**: Unwhitened is ~4x slower and achieves lower test r (0.65 vs 0.80).
 >
-> **Details**: See Q26-Q28 in `DECISION_LOG.md` and `WHITENING_INVESTIGATION_2026-01-20.md`.
+> **Details**: See Q26-Q28 in `DECISION_LOG.md` and `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md`.
 
 ---
 

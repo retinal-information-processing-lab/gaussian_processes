@@ -10,7 +10,7 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 **Accomplished:**
 - Comprehensive investigation of GPyTorch whitening behavior when kernel parameters change
 - Used 4 parallel subagents to explore: GPyTorch source code, academic literature, GitHub issues, local codebase
-- Documented findings in `WHITENING_INVESTIGATION_2026-01-20.md` (comprehensive, standalone document)
+- Documented findings in `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md` (comprehensive, standalone document)
 - Updated `DECISION_LOG.md` with Q26-Q27 (whitening findings and solution)
 - **Implemented `UnwhitenedVariationalStrategy` as alternative** (preserves existing code):
   - Added `whitening` parameter to `VariationalGPModel` (default `True`)
@@ -48,7 +48,7 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 - Academic: Matthews 2017, Salimbeni 2018, Adam 2021
 
 **Files Created:**
-- `.claude/WHITENING_INVESTIGATION_2026-01-20.md` - full investigation document
+- `.claude/TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md` - full investigation document
 - `tests/diagnose_unwhitened_performance.py` - gradient/KL diagnostic script
 
 **Files Modified:**

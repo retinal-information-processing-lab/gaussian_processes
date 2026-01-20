@@ -1,9 +1,15 @@
-# Investigation: GPyTorch Whitening and L_K Inconsistency in EM Optimization
+# Technical Analysis: GPyTorch Whitening and L_K Inconsistency in EM Optimization
+
+> **NOTE (added later)**: Section 9.4 "Trade-offs" contains predictions that proved inaccurate:
+> - Predicted "~5% slower" → Actual: 4x slower (400%)
+> - Predicted "slightly worse conditioning" → Actual: 16% accuracy gap (0.6878 vs 0.8381)
+> - Predicted "cons are negligible" → Actual: significant performance impact
+> The root cause of the accuracy gap is not fully understood. See Q29 in DECISION_LOG.md.
 
 **Date**: 2026-01-20
 **Investigator**: Claude Code (Opus 4.5)
-**Status**: COMPLETE
-**Conclusion**: Use `UnwhitenedVariationalStrategy` for EM-style optimization
+**Status**: COMPLETE (with caveats above)
+**Conclusion**: Use `UnwhitenedVariationalStrategy` for EM-style optimization (but expect worse accuracy)
 
 ---
 

@@ -239,7 +239,7 @@ For project status and quick reference, see `CLAUDE.md`.
 **Q26: Does GPyTorch auto-adjust whitened variational parameters when kernel changes?**
 > A: **NO.** GPyTorch does NOT automatically re-whiten or adjust variational parameters when kernel hyperparameters change.
 >
-> **Investigation**: See `WHITENING_INVESTIGATION_2026-01-20.md` for full analysis.
+> **Investigation**: See `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md` for full analysis.
 >
 > **Core Finding**: GPyTorch's whitening design assumes joint gradient optimization where autograd handles the coupling between L_K (Cholesky of inducing kernel) and whitened parameters implicitly. EM-style optimization with closed-form E-step bypasses autograd and creates an inconsistency.
 >
@@ -281,7 +281,7 @@ For project status and quick reference, see `CLAUDE.md`.
 >
 > **Migration**: Change one import in `model.py`, remove whitening conversion functions from `estep.py`.
 >
-> **Documentation**: `WHITENING_INVESTIGATION_2026-01-20.md` Section 9
+> **Documentation**: `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md` Section 9
 
 **Q28: How to use UnwhitenedVariationalStrategy in the codebase?**
 > A: Added as an **alternative** via `whitening` parameter (default `True` for backward compatibility).
