@@ -318,9 +318,9 @@ For project status and quick reference, see `CLAUDE.md`.
 > - `tests/test_estep_comparison.py`: Added `--unwhitened` flag
 
 **Q29: Why does UnwhitenedVariationalStrategy achieve worse accuracy?**
-> A: **KL divergence gradient instability** inherent to the unwhitened parameterization.
+> A: **Unknown - tentative hypothesis is KL divergence gradient instability.**
 >
-> **Investigation** (2026-01-20, `tests/diagnose_unwhitened_performance.py`):
+> **Observed behavior** (2026-01-20, `tests/diagnose_unwhitened_performance.py`):
 >
 > K̃ condition number: 1.02e+04. Gradient evolution:
 > | Iter | Whitened KL | Unwhitened KL | Grad Ratio |
@@ -328,12 +328,12 @@ For project status and quick reference, see `CLAUDE.md`.
 > | 0 | 0.00 | 0.16 | 0.64x |
 > | 4 | 0.02 | **423.26** | **159x** |
 >
-> **Root cause**: The unwhitened KL term `mᵀ K̃⁻¹ m` amplifies gradients by O(cond(K̃)) ≈ 10⁴.
+> **Tentative hypothesis**: The unwhitened KL term `mᵀ K̃⁻¹ m` may amplify gradients.
 > In whitened space, prior is N(0, I) so ∂KL/∂m_w ≈ m_w (no K̃⁻¹).
 >
-> **Conclusion**: The 16% accuracy gap (0.6878 vs 0.8381) is INHERENT, not a bug.
-> - E-step Newton update is correct
-> - M-step gradient optimization suffers from conditioning
-> - Not fixable by tuning learning rates
+> **Status**: 16% accuracy gap (0.6878 vs 0.8381) is observed but **root cause not fully validated**.
+> - E-step Newton update appears correct
+> - M-step optimization behavior differs significantly
+> - Further investigation needed to confirm hypothesis
 >
-> **Documentation**: `HANDOFF_2026-01-20_UNWHITENED_INVESTIGATION.md`
+> **Documentation**: `ARCHIVE_2026-01-20_unwhitened_investigation.md`

@@ -1,5 +1,11 @@
 # Handoff: UnwhitenedVariationalStrategy Performance Investigation
 
+> **DISCLAIMER (added later)**: This document contains a conclusion stating the accuracy
+> gap is "INHERENT to UnwhitenedVariationalStrategy, not a bug". This conclusion is
+> **tentative and not fully validated**. The observed KL divergence explosion and gradient
+> instability are real, but the root cause explanation needs further investigation.
+> See Q29 in DECISION_LOG.md for the current (more cautious) assessment.
+
 **Date**: 2026-01-20
 **Status**: Implementation COMPLETE, Performance Investigation IN PROGRESS
 

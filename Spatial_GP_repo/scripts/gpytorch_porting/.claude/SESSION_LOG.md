@@ -29,9 +29,13 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 - Design assumes joint optimization where autograd handles L_K coupling
 - EM-style optimization bypasses autograd → L_K mismatch corruption
 - UnwhitenedVariationalStrategy stores natural params directly (verified correct)
-- **16% accuracy gap is INHERENT to unwhitened parameterization, NOT a bug**
-- Whitened KL uses N(0,I) prior → ∂KL/∂m ≈ m (stable)
-- Unwhitened KL uses N(0,K̃) prior → ∂KL/∂m includes K̃⁻¹ (unstable)
+
+**Known Issue - Unwhitened accuracy gap (not fully understood):**
+- 16% accuracy gap: 0.6878 vs 0.8381 explained variance
+- Observed: KL divergence explodes for unwhitened (0 → 423 in 5 iters)
+- Observed: Gradient ratio escalates (0.64x → 159x)
+- Tentative hypothesis: K̃⁻¹ in unwhitened KL causes gradient instability
+- **Root cause NOT fully validated - needs further investigation**
 
 **Performance Comparison (M=50, N=500):**
 - varGP reference: explained_var=0.8748, time=5.4s
@@ -54,8 +58,11 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 - `tests/test_estep_comparison.py` - added `--unwhitened` flag
 - `.claude/DECISION_LOG.md` - added Q26-Q29
 - `.claude/CLAUDE.md` - added UnwhitenedVariationalStrategy callout
-- `.claude/SESSION_LOG.md` - updated this entry
-- `.claude/HANDOFF_2026-01-20_UNWHITENED_INVESTIGATION.md` - added investigation results
+
+**Archive Files (reasoning history):**
+- `.claude/ARCHIVE_2026-01-20_unwhitened_implementation_plan.md` - original plan before implementation
+- `.claude/ARCHIVE_2026-01-20_unwhitened_investigation.md` - investigation notes and reproduction commands
+- `.claude/ARCHIVE_2026-01-20_whitening_research_notes.md` - raw research notes from subagent exploration
 
 ---
 
