@@ -339,14 +339,18 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device):
 
 
 def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
-                              use_whitening=True, use_cache=True):
+                              use_whitening=True, use_cache=True, whitening=True):
     """Run GPyTorch with vargp_style training (matches varGP structure).
 
     Args:
         use_whitening: If True, use whitening conversions for correct math.
+                       (Only relevant when whitening=True)
         use_cache: If True, cache kernel matrices for 8.8x E-step speedup.
+        whitening: If True (default), use VariationalStrategy.
+                   If False, use UnwhitenedVariationalStrategy (no L_K dependency).
     """
-    mode_str = f"whitening={'ON' if use_whitening else 'OFF'}, cache={'ON' if use_cache else 'OFF'}"
+    strategy_str = "unwhitened" if not whitening else f"whitening={'ON' if use_whitening else 'OFF'}"
+    mode_str = f"{strategy_str}, cache={'ON' if use_cache else 'OFF'}"
     print("\n" + "="*60)
     print(f"Running GPyTorch (vargp_style mode, {mode_str})")
     print("="*60)
@@ -383,7 +387,7 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
     kernel.outputscale = 1e-4
 
     # Create model and likelihood (varGP-style initialization)
-    model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
+    model = VariationalGPModel(inducing_points, kernel, jitter=1e-4, whitening=whitening)
     likelihood = PoissonLikelihood(
         A_init=params['vargp_style_A_init'],
         lambda0_init=params['vargp_style_lambda0_init']
@@ -398,6 +402,8 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
     print(f"  lr_f: {params['vargp_style_lr_f']}, lr_m: {params['vargp_style_lr_m']}")
 
     # Train with vargp_style (LBFGS F-step, analytical lambda0)
+    # If using unwhitened strategy, let auto-detect handle use_whitening
+    effective_use_whitening = None if not whitening else use_whitening
     start_time = time.time()
     with torch.enable_grad():
         train_result = train_varGP_style(
@@ -411,7 +417,7 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
             print_every=params['gpytorch_iterations'] // 5,
             device=device,
             use_cache=use_cache,
-            use_whitening=use_whitening,
+            use_whitening=effective_use_whitening,
         )
     elapsed = time.time() - start_time
 
@@ -633,6 +639,8 @@ Examples:
                         help='Use kernel caching for E-step (default: ON)')
     parser.add_argument('--no-cache', action='store_false', dest='use_cache',
                         help='Disable kernel caching (legacy mode)')
+    parser.add_argument('--unwhitened', action='store_true',
+                        help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
 
     args = parser.parse_args()
 
@@ -648,7 +656,9 @@ Examples:
 
     print(f"Device: {device}")
     print(f"Testing with M={params['ntilde']} inducing points, n_train={params['n_train']}")
-    print(f"vargp_style: whitening={'ON' if args.use_whitening else 'OFF'}, cache={'ON' if args.use_cache else 'OFF'}")
+    print(f"vargp_style: whitening={'OFF' if args.unwhitened else ('ON' if args.use_whitening else 'conversions OFF')}, cache={'ON' if args.use_cache else 'OFF'}")
+    if args.unwhitened:
+        print("Using UnwhitenedVariationalStrategy (no L_K dependency)")
 
     # Load data (float32 for varGP compatibility)
     print("\nLoading data...")
@@ -670,7 +680,8 @@ Examples:
         data['X'], data['R'], data['X_test'], data['R_test'],
         params, device,
         use_whitening=args.use_whitening,
-        use_cache=args.use_cache
+        use_cache=args.use_cache,
+        whitening=not args.unwhitened
     )
     results.append(result_gpytorch_vargp_style)
 

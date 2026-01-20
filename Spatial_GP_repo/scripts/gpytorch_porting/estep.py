@@ -20,9 +20,39 @@ PERFORMANCE OPTIMIZATION (2026-01-18):
     Use `use_cache=False` in train_varGP_style() to disable for testing.
 """
 
+import warnings
+
 import torch
 import gpytorch
 from typing import Tuple, Optional, Dict
+
+
+def _validate_jitter(jitter: Optional[float], model: gpytorch.models.ApproximateGP) -> float:
+    """Validate and return jitter value, warning if mismatch detected.
+
+    CRITICAL: All jitter values MUST match model.jitter to ensure consistency
+    between whitening conversions and GPyTorch's internal computations.
+    Mismatched jitter causes whitening conversion failures in E-step paths.
+
+    Args:
+        jitter: Explicit jitter value or None (use model.jitter)
+        model: VariationalGPModel instance (must have .jitter attribute)
+
+    Returns:
+        jitter: The validated jitter value (always model.jitter)
+    """
+    if jitter is None:
+        return model.jitter
+
+    if jitter != model.jitter:
+        warnings.warn(
+            f"Jitter mismatch: explicit jitter={jitter} but model.jitter={model.jitter}. "
+            f"This can cause incorrect results in whitened E-step paths. "
+            f"Using model.jitter={model.jitter} instead.",
+            UserWarning,
+            stacklevel=3  # Point to the caller of the function that calls _validate_jitter
+        )
+    return model.jitter
 
 
 def set_kernel_requires_grad(model: gpytorch.models.ApproximateGP, requires_grad: bool):
@@ -47,7 +77,7 @@ def set_kernel_requires_grad(model: gpytorch.models.ApproximateGP, requires_grad
 def compute_kernel_cache(
     model: gpytorch.models.ApproximateGP,
     X: torch.Tensor,
-    jitter: float = 1e-6
+    jitter: Optional[float] = None
 ) -> Dict[str, torch.Tensor]:
     """Compute and cache kernel matrices for E-step reuse.
 
@@ -58,7 +88,8 @@ def compute_kernel_cache(
     Args:
         model: VariationalGPModel instance
         X: Training inputs, shape (N, n_features)
-        jitter: Small value for numerical stability
+        jitter: Jitter value. If None (default), uses model.jitter.
+                If provided but mismatches model.jitter, warns and overrides.
 
     Returns:
         Dict with:
@@ -67,6 +98,9 @@ def compute_kernel_cache(
             'K_tilde_j': K_tilde + jitter * I for stability
             'k0': Diagonal of kernel at X (for variance), shape (N,)
     """
+    # Validate jitter - must match model.jitter for consistency
+    jitter = _validate_jitter(jitter, model)
+
     inducing_points = model.variational_strategy.inducing_points
     kernel = model.covar_module
 
@@ -87,20 +121,24 @@ def compute_kernel_cache(
 
     # Cholesky factor for whitening conversions (O(M³) - done once per E-step)
     # L_K @ L_K.T = K_tilde_j
-    L_K = torch.linalg.cholesky(K_tilde_j)
+    # Only compute if model uses whitening (needed for whitened <-> natural conversions)
+    if getattr(model, 'whitening', True):
+        L_K = torch.linalg.cholesky(K_tilde_j)
+    else:
+        L_K = None  # Not needed for UnwhitenedVariationalStrategy
 
     return {
         'K': K,
         'K_tilde': K_tilde,
         'K_tilde_j': K_tilde_j,
         'k0': k0,
-        'L_K': L_K,  # For whitened <-> natural m conversions
+        'L_K': L_K,  # For whitened <-> natural m conversions (None for unwhitened)
     }
 
 
 def compute_L_K(
     model: gpytorch.models.ApproximateGP,
-    jitter: float = 1e-6
+    jitter: Optional[float] = None
 ) -> torch.Tensor:
     """Compute Cholesky factor L_K of inducing point kernel.
 
@@ -112,11 +150,15 @@ def compute_L_K(
 
     Args:
         model: VariationalGPModel instance
-        jitter: Small value for numerical stability
+        jitter: Jitter value. If None (default), uses model.jitter.
+                If provided but mismatches model.jitter, warns and overrides.
 
     Returns:
         L_K: Lower triangular Cholesky factor, shape (M, M)
     """
+    # Validate jitter - must match model.jitter for consistency
+    jitter = _validate_jitter(jitter, model)
+
     inducing_points = model.variational_strategy.inducing_points
     K_tilde = model.covar_module(inducing_points).evaluate()
     M = K_tilde.shape[0]
@@ -266,7 +308,7 @@ def e_step(
     likelihood,
     X: torch.Tensor,
     r: torch.Tensor,
-    jitter: float = 1e-6
+    jitter: Optional[float] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Perform one E-step: closed-form Newton update of variational parameters.
 
@@ -282,15 +324,19 @@ def e_step(
 
     Args:
         model: VariationalGPModel instance
-        likelihood: PoissonLikelihood instancenc
+        likelihood: PoissonLikelihood instance
         X: Training inputs, shape (N, n_features)
         r: Training spike counts, shape (N,)
-        jitter: Small value for numerical stability
+        jitter: Jitter value. If None (default), uses model.jitter.
+                If provided but mismatches model.jitter, warns and overrides.
 
     Returns:
         m_new: Updated variational mean, shape (M,)
         V_new: Updated variational covariance, shape (M, M)
     """
+    # Validate jitter - must match model.jitter for consistency
+    jitter = _validate_jitter(jitter, model)
+
     # Get current variational mean
     var_params = model.variational_strategy._variational_distribution
     m = var_params.variational_mean  # (M,)
@@ -328,7 +374,7 @@ def e_step_explicit(
     likelihood,
     X: torch.Tensor,
     r: torch.Tensor,
-    jitter: float = 1e-6
+    jitter: Optional[float] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """E-step with explicit m parameter for whitened workflows.
 
@@ -345,12 +391,16 @@ def e_step_explicit(
         likelihood: PoissonLikelihood instance
         X: Training inputs, shape (N, n_features)
         r: Training spike counts, shape (N,)
-        jitter: Small value for numerical stability
+        jitter: Jitter value. If None (default), uses model.jitter.
+                If provided but mismatches model.jitter, warns and overrides.
 
     Returns:
         m_new: Updated variational mean in NATURAL parameterization, shape (M,)
         V_new: Updated variational covariance, shape (M, M)
     """
+    # Validate jitter - must match model.jitter for consistency
+    jitter = _validate_jitter(jitter, model)
+
     A = likelihood.A.squeeze()
     lambda0 = likelihood.lambda0.squeeze()
 
@@ -374,7 +424,8 @@ def e_step_explicit(
 def update_variational_parameters(
     model: gpytorch.models.ApproximateGP,
     m_new: torch.Tensor,
-    V_new: torch.Tensor
+    V_new: torch.Tensor,
+    jitter: float
 ):
     """Write updated (m, V) back to GPyTorch model.
 
@@ -391,7 +442,7 @@ def update_variational_parameters(
     except RuntimeError:
         # Add jitter if Cholesky fails
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
-        L_new = torch.linalg.cholesky(V_new + 1e-6 * eye)
+        L_new = torch.linalg.cholesky(V_new + jitter * eye)
 
     # Update parameters using torch.no_grad() with .copy_() (best practice)
     # This ensures no computation graph is attached to the parameter updates
@@ -705,10 +756,10 @@ def e_step_loop(
     X: torch.Tensor,
     r: torch.Tensor,
     n_estep: int,
-    jitter: float = 1e-6,
+    jitter: Optional[float] = None,
     verbose: bool = False,
     kernel_cache: Optional[Dict[str, torch.Tensor]] = None,
-    use_whitening: bool = True
+    use_whitening: Optional[bool] = None
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run Newton loop with moment recomputation and stability checks.
 
@@ -723,8 +774,8 @@ def e_step_loop(
         recomputed via GPyTorch. This reduces kernel calls from 35 to 3 per loop.
 
     WHITENING (2026-01-19):
-        When use_whitening=True (default), variational parameters are converted
-        between whitened (GPyTorch storage) and natural (E-step computation) forms.
+        When use_whitening=True, variational parameters are converted between
+        whitened (GPyTorch storage) and natural (E-step computation) forms.
         This ensures mathematically correct behavior. Set use_whitening=False to
         use the original "wrong but self-consistent" behavior for comparison.
 
@@ -734,17 +785,26 @@ def e_step_loop(
         X: Training inputs, shape (N, n_features)
         r: Training spike counts, shape (N,)
         n_estep: Number of Newton iterations
-        jitter: Small value for numerical stability
+        jitter: Jitter value. If None (default), uses model.jitter.
+                If provided but mismatches model.jitter, warns and overrides.
         verbose: Print debug info
         kernel_cache: Optional pre-computed kernel cache from compute_kernel_cache().
                       When provided, uses direct math formulas instead of GPyTorch model(X).
-        use_whitening: If True (default), convert between whitened and natural params.
+        use_whitening: If None (default), auto-detect from model.whitening attribute.
+                       If True, convert between whitened and natural params.
                        If False, use original behavior (no whitening conversions).
 
     Returns:
         lambda_m: Final posterior mean of λ at X, shape (N,)
         lambda_var: Final posterior variance of λ at X, shape (N,)
     """
+    # Validate jitter - must match model.jitter for consistency
+    jitter = _validate_jitter(jitter, model)
+
+    # Auto-detect whitening from model if not specified
+    if use_whitening is None:
+        use_whitening = getattr(model, 'whitening', True) # BUG, SHOULD raise error if model has no whitening attr
+
     # Get likelihood parameters
     A = likelihood.A.squeeze()
     lambda0 = likelihood.lambda0.squeeze()
@@ -806,7 +866,7 @@ def e_step_loop(
             clear_variational_cache(model)
         else:
             # NO WHITENING - write directly
-            update_variational_parameters(model, m, V)
+            update_variational_parameters(model, m, V, jitter)
 
     else:
         # =====================================================================
@@ -868,7 +928,7 @@ def e_step_loop(
 
                 # Newton update
                 m_new, V_new = e_step(model, likelihood, X, r, jitter)
-                update_variational_parameters(model, m_new, V_new)
+                update_variational_parameters(model, m_new, V_new, jitter)
 
                 # Recompute moments (CRITICAL - old code does this after each Newton step)
                 lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
@@ -877,7 +937,7 @@ def e_step_loop(
                 if f_mean.mean() > 1000:
                     if verbose:
                         print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
-                    update_variational_parameters(model, m_prev, V_prev)
+                    update_variational_parameters(model, m_prev, V_prev, jitter)
                     lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
                     break
 
@@ -1418,7 +1478,7 @@ def train_varGP_style(
     verbose: bool = False,
     device: Optional[torch.device] = None,
     use_cache: bool = True,  # Enable kernel caching for performance (11.7x fewer kernel calls)
-    use_whitening: bool = True,  # Enable whitening conversions for correct math
+    use_whitening: Optional[bool] = None,  # Auto-detect from model.whitening if None
 ):
     """Train using varGP-style loop: E-step (with F-step inside), then M-step.
 
@@ -1454,9 +1514,9 @@ def train_varGP_style(
         use_cache: If True, cache kernel matrices and reuse across Newton iterations.
                    This reduces kernel calls from 35 to 3 per E-step loop (11.7x speedup).
                    Set to False for testing the non-cached fallback path.
-        use_whitening: If True (default), convert between whitened and natural params.
-                       This ensures mathematically correct behavior.
-                       Set to False for original "wrong but self-consistent" behavior.
+        use_whitening: If None (default), auto-detect from model.whitening attribute.
+                       If True, convert between whitened and natural params.
+                       If False, use original behavior (no whitening conversions).
 
     Returns:
         dict with keys:
@@ -1473,6 +1533,10 @@ def train_varGP_style(
     likelihood = likelihood.to(device)
     train_x = train_x.to(device)
     train_y = train_y.to(device)
+
+    # Auto-detect whitening from model if not specified
+    if use_whitening is None:
+        use_whitening = getattr(model, 'whitening', True)
 
     losses = []
     time_estep_total = 0.0
@@ -1584,7 +1648,7 @@ def test_estep():
 
     # Test update
     print("2. Update variational params...")
-    update_variational_parameters(model, m_new, V_new)
+    update_variational_parameters(model, m_new, V_new, model.jitter)
     m_check = model.variational_strategy.variational_distribution.mean
     print(f"   Mean updated: {(m_check - m_new).abs().max().item():.2e}")
 
@@ -1666,7 +1730,7 @@ def train_efm(
         model.eval()
         with torch.no_grad():
             m_new, V_new = e_step(model, likelihood, train_x, train_y)
-            update_variational_parameters(model, m_new, V_new)
+            update_variational_parameters(model, m_new, V_new, model.jitter)
 
         # ===== F-STEP: Optimize A, lambda0 =====
         model.train()

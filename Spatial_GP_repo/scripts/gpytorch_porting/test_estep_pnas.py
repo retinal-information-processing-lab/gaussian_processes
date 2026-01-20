@@ -169,6 +169,8 @@ def main():
                         help='Disable kernel caching (for testing fallback path)')
     parser.add_argument('--no-whitening', action='store_true',
                         help='Disable whitening conversions (for debugging/comparison)')
+    parser.add_argument('--unwhitened', action='store_true',
+                        help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
 
     # Plotting options
     parser.add_argument('--plot', action='store_true',
@@ -184,6 +186,8 @@ def main():
     print(f"M={args.ntilde} inducing points")
     if args.gradient_mode != 'autograd':
         print(f"Gradient mode: {args.gradient_mode}")
+    if args.unwhitened:
+        print("Using UnwhitenedVariationalStrategy (no L_K dependency)")
 
     # Set seed with explicit CUDA init for reproducibility
     # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details
@@ -353,7 +357,7 @@ def main():
         else:
             A_init, lambda0_init = 1.0, 0.0   # GPyTorch defaults
 
-        model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
+        model = VariationalGPModel(inducing_points, kernel, jitter=1e-4, whitening=not args.unwhitened)
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
         model = model.double().to(device)
@@ -395,7 +399,9 @@ def main():
             print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
             print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
             print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
-            print(f"  whitening: {'DISABLED' if args.no_whitening else 'enabled'}")
+            # Whitening: OFF if unwhitened strategy, otherwise depends on --no-whitening flag
+            whitening_status = 'OFF (unwhitened strategy)' if args.unwhitened else ('DISABLED' if args.no_whitening else 'enabled')
+            print(f"  whitening: {whitening_status}")
             result = train_varGP_style(
                 model, likelihood, X_train, r_train,
                 n_iterations=args.n_iterations,
@@ -407,7 +413,9 @@ def main():
                 print_every=print_every,
                 device=device,
                 use_cache=args.use_cache,  # Kernel caching for E-step performance
-                use_whitening=not args.no_whitening,  # Whitening conversions for GPyTorch compatibility
+                # If unwhitened strategy, let auto-detect handle it (will be False)
+                # Otherwise use --no-whitening flag for whitening conversions
+                use_whitening=None if args.unwhitened else (not args.no_whitening),
             )
             losses = result['losses']
             time_estep_total = result['time_estep_total']

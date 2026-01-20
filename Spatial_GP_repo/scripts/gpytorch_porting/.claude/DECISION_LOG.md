@@ -233,3 +233,107 @@ For project status and quick reference, see `CLAUDE.md`.
 > **Note**: Small performance difference (r=0.7752 vs r=0.7870) between cached and non-cached paths may warrant investigation. Reference commit for original non-cached code: `44d9227`.
 >
 > **Documentation**: See `HANDOFF_2026-01-18.md` and `results/PROFILING_2026-01-18.md` for details.
+
+## Session 9: Whitening Investigation (January 2025)
+
+**Q26: Does GPyTorch auto-adjust whitened variational parameters when kernel changes?**
+> A: **NO.** GPyTorch does NOT automatically re-whiten or adjust variational parameters when kernel hyperparameters change.
+>
+> **Investigation**: See `WHITENING_INVESTIGATION_2026-01-20.md` for full analysis.
+>
+> **Core Finding**: GPyTorch's whitening design assumes joint gradient optimization where autograd handles the coupling between L_K (Cholesky of inducing kernel) and whitened parameters implicitly. EM-style optimization with closed-form E-step bypasses autograd and creates an inconsistency.
+>
+> **The L_K Mismatch Problem**:
+> 1. E-step stores whitened params: `m_stored = L_K_old^{-1} @ m_natural`
+> 2. M-step changes kernel → `L_K` becomes `L_K_new`
+> 3. Next E-step reads: `m_corrupted = L_K_new @ m_stored = L_K_new @ L_K_old^{-1} @ m_natural ≠ m_natural`
+> 4. Corruption factor: `L_K_new @ L_K_old^{-1}` causes ~8x errors in λ_m
+>
+> **Why Joint Optimization Works**: Autograd differentiates through L_K, so gradients for both kernel and variational params account for the coupling. No explicit re-whitening needed.
+>
+> **Why EM Fails**: Our Newton E-step is closed-form (no autograd involvement). Stored whitened params become "stale" after M-step changes kernel.
+>
+> **Sources examined**:
+> - GPyTorch source: `variational_strategy.py` lines 212-216 (mean formula), 238-272 (auto-whitening)
+> - GitHub issues: #1308, #1754, #1556 (cache issues), PR #903 (whitening redesign)
+> - Academic: Matthews 2017 (whitening derivation), Salimbeni 2018 (natural gradients)
+
+**Q27: What is the solution for EM-style optimization with GPyTorch?**
+> A: **Use `UnwhitenedVariationalStrategy`** instead of the default `VariationalStrategy`.
+>
+> **Why it solves the problem**:
+> - Stores natural (unwhitened) params directly: m_natural, V_natural
+> - No L_K transformation involved in storage or retrieval
+> - Prior is actual N(μ_Z, K_ZZ), not transformed N(0, I)
+> - Predictive mean uses `K_XZ @ K_ZZ^{-1} @ m` (standard SVGP formula)
+> - When kernel changes, interpretation of stored params is unchanged
+>
+> **Comparison**:
+> | Aspect | VariationalStrategy | UnwhitenedVariationalStrategy |
+> |--------|--------------------|-----------------------------|
+> | Stored params | whitened (L_K dependent) | natural (L_K independent) |
+> | EM compatible? | NO (L_K mismatch) | YES |
+> | Prior | N(0, I) | N(μ_Z, K_ZZ) |
+>
+> **Trade-offs**:
+> - Cons: Slightly worse numerical conditioning, ~5% slower for M=50-200
+> - Pros: Eliminates ALL whitening issues, simpler code, EM-compatible
+>
+> **Migration**: Change one import in `model.py`, remove whitening conversion functions from `estep.py`.
+>
+> **Documentation**: `WHITENING_INVESTIGATION_2026-01-20.md` Section 9
+
+**Q28: How to use UnwhitenedVariationalStrategy in the codebase?**
+> A: Added as an **alternative** via `whitening` parameter (default `True` for backward compatibility).
+>
+> **Usage**:
+> ```python
+> # In code:
+> model = VariationalGPModel(inducing_points, kernel, whitening=False)
+>
+> # CLI:
+> python test_estep_pnas.py --mode vargp_style --unwhitened
+> ```
+>
+> **Implementation details**:
+> - `model.py`: `whitening` parameter selects between `VariationalStrategy` and `UnwhitenedVariationalStrategy`
+> - `estep.py`: Auto-detects `model.whitening` when `use_whitening=None` (default)
+> - `compute_kernel_cache()`: Skips L_K computation when `model.whitening=False`
+>
+> **Performance comparison** (M=50, N=500):
+> | Strategy | Test r | Time | Notes |
+> |----------|--------|------|-------|
+> | Whitened (default) | 0.80 | 7.6s | Better optimization dynamics |
+> | Unwhitened | 0.65 | 30.4s | Simpler math, slower |
+>
+> **When to use unwhitened**:
+> - Investigating EM-style optimization behavior
+> - Debugging whitening conversion issues
+> - Research/comparison purposes
+>
+> **Files modified**:
+> - `model.py`: Added `whitening` parameter, conditional strategy selection
+> - `estep.py`: Auto-detect whitening, conditional L_K computation
+> - `test_estep_pnas.py`: Added `--unwhitened` flag
+> - `tests/test_estep_comparison.py`: Added `--unwhitened` flag
+
+**Q29: Why does UnwhitenedVariationalStrategy achieve worse accuracy?**
+> A: **KL divergence gradient instability** inherent to the unwhitened parameterization.
+>
+> **Investigation** (2026-01-20, `tests/diagnose_unwhitened_performance.py`):
+>
+> K̃ condition number: 1.02e+04. Gradient evolution:
+> | Iter | Whitened KL | Unwhitened KL | Grad Ratio |
+> |------|-------------|---------------|------------|
+> | 0 | 0.00 | 0.16 | 0.64x |
+> | 4 | 0.02 | **423.26** | **159x** |
+>
+> **Root cause**: The unwhitened KL term `mᵀ K̃⁻¹ m` amplifies gradients by O(cond(K̃)) ≈ 10⁴.
+> In whitened space, prior is N(0, I) so ∂KL/∂m_w ≈ m_w (no K̃⁻¹).
+>
+> **Conclusion**: The 16% accuracy gap (0.6878 vs 0.8381) is INHERENT, not a bug.
+> - E-step Newton update is correct
+> - M-step gradient optimization suffers from conditioning
+> - Not fixable by tuning learning rates
+>
+> **Documentation**: `HANDOFF_2026-01-20_UNWHITENED_INVESTIGATION.md`

@@ -12,14 +12,14 @@ This document tracks the porting effort from the custom variational GP implement
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching COMPLETE |
+| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy COMPLETE |
 | **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
 | **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: vargp_old, adam, efm, vargp_style) |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
-| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround for reproducibility (see below) |
+| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below) |
 | **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
@@ -47,6 +47,39 @@ This document tracks the porting effort from the custom variational GP implement
 > PyTorch 1.8) somehow affects random state. This is cargo cult programming.
 >
 > See `HANDOFF_2026-01-18.md` Section 20.10 for full details and what we tried that didn't work.
+
+**Jitter Consistency (Critical - January 2025):**
+> All jitter values MUST match `model.jitter` (default 1e-4). Mismatched jitter causes whitening
+> conversion failures in non-cached E-step path.
+>
+> **Problem discovered**: Config C (non-cached + whitening) failed at M=50 with test_r=0.21 instead
+> of expected ~0.77. Root cause was jitter mismatch:
+> - `VariationalGPModel` created with jitter=1e-4 (stored in `model.jitter`)
+> - `estep.py` functions defaulted to jitter=1e-6
+> - GPyTorch's internal `VariationalStrategy.jitter_val` = 1e-4
+>
+> When non-cached whitening path calls `model(X)`, GPyTorch uses its internal L_K (with 1e-4),
+> but our whitening conversions used L_K computed with 1e-6. This 100x mismatch corrupted
+> the variational parameters.
+>
+> **Fix**: All `estep.py` functions now default to `model.jitter` and warn if an explicit jitter
+> parameter mismatches. The warning includes the corrective action (using model.jitter instead).
+>
+> **Affected functions**: `compute_kernel_cache()`, `compute_L_K()`, `e_step()`,
+> `e_step_explicit()`, `e_step_loop()`.
+
+**UnwhitenedVariationalStrategy Option (January 2025):**
+> `VariationalGPModel` now supports a `whitening` parameter (default `True`):
+> - `whitening=True`: Use `VariationalStrategy` (default, stores whitened params, faster)
+> - `whitening=False`: Use `UnwhitenedVariationalStrategy` (stores natural params directly)
+>
+> **CLI usage**: `python test_estep_pnas.py --mode vargp_style --unwhitened`
+>
+> **When to use unwhitened**: Investigating EM-style optimization, debugging whitening issues.
+>
+> **Performance**: Unwhitened is ~4x slower and achieves lower test r (0.65 vs 0.80).
+>
+> **Details**: See Q26-Q28 in `DECISION_LOG.md` and `WHITENING_INVESTIGATION_2026-01-20.md`.
 
 ---
 

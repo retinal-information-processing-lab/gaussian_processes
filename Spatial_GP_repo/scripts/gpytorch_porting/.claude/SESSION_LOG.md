@@ -5,6 +5,60 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-20: L_K Whitening Investigation + UnwhitenedVariationalStrategy Implementation + Performance Investigation (COMPLETE)
+
+**Accomplished:**
+- Comprehensive investigation of GPyTorch whitening behavior when kernel parameters change
+- Used 4 parallel subagents to explore: GPyTorch source code, academic literature, GitHub issues, local codebase
+- Documented findings in `WHITENING_INVESTIGATION_2026-01-20.md` (comprehensive, standalone document)
+- Updated `DECISION_LOG.md` with Q26-Q27 (whitening findings and solution)
+- **Implemented `UnwhitenedVariationalStrategy` as alternative** (preserves existing code):
+  - Added `whitening` parameter to `VariationalGPModel` (default `True`)
+  - Modified `estep.py` for auto-detection and conditional L_K computation
+  - Added `--unwhitened` flag to `test_estep_pnas.py` and `tests/test_estep_comparison.py`
+  - Added Q28 to DECISION_LOG.md with implementation details
+- **RESOLVED: Unwhitened accuracy gap root cause identified:**
+  - Created `tests/diagnose_unwhitened_performance.py` to measure KL/gradient dynamics
+  - Found KL divergence **explodes** for unwhitened (0 → 423 in 5 iterations)
+  - Gradient ratio escalates from 0.64x to 159x over training
+  - Root cause: K̃⁻¹ in unwhitened KL amplifies gradients by O(cond(K̃)) ≈ 10⁴
+  - Added Q29 to DECISION_LOG.md documenting findings
+
+**Key Findings:**
+- GPyTorch does NOT auto-adjust whitened params when kernel changes
+- Design assumes joint optimization where autograd handles L_K coupling
+- EM-style optimization bypasses autograd → L_K mismatch corruption
+- UnwhitenedVariationalStrategy stores natural params directly (verified correct)
+- **16% accuracy gap is INHERENT to unwhitened parameterization, NOT a bug**
+- Whitened KL uses N(0,I) prior → ∂KL/∂m ≈ m (stable)
+- Unwhitened KL uses N(0,K̃) prior → ∂KL/∂m includes K̃⁻¹ (unstable)
+
+**Performance Comparison (M=50, N=500):**
+- varGP reference: explained_var=0.8748, time=5.4s
+- Whitened (no-whiten conv): explained_var=0.8381, time=6.5s
+- Unwhitened: explained_var=0.6878, time=29.3s (4x slower, 16% worse)
+
+**Sources Examined:**
+- GPyTorch source: `variational_strategy.py`, `unwhitened_variational_strategy.py`
+- GitHub issues: #1308, #1754, #1556, PR #903
+- Academic: Matthews 2017, Salimbeni 2018, Adam 2021
+
+**Files Created:**
+- `.claude/WHITENING_INVESTIGATION_2026-01-20.md` - full investigation document
+- `tests/diagnose_unwhitened_performance.py` - gradient/KL diagnostic script
+
+**Files Modified:**
+- `model.py` - added `whitening` parameter, conditional strategy selection
+- `estep.py` - auto-detect whitening, conditional L_K computation
+- `test_estep_pnas.py` - added `--unwhitened` flag
+- `tests/test_estep_comparison.py` - added `--unwhitened` flag
+- `.claude/DECISION_LOG.md` - added Q26-Q29
+- `.claude/CLAUDE.md` - added UnwhitenedVariationalStrategy callout
+- `.claude/SESSION_LOG.md` - updated this entry
+- `.claude/HANDOFF_2026-01-20_UNWHITENED_INVESTIGATION.md` - added investigation results
+
+---
+
 ## 2026-01-19: Whitening Implementation for Non-Cached E-step Path
 
 **Accomplished:**

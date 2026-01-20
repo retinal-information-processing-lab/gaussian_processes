@@ -8,7 +8,7 @@ ApproximateGP framework with the arc-cosine kernel.
 import torch
 import gpytorch
 from gpytorch.models import ApproximateGP
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy
+from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy, UnwhitenedVariationalStrategy
 
 
 class VariationalGPModel(ApproximateGP):
@@ -27,18 +27,24 @@ class VariationalGPModel(ApproximateGP):
         Whether to optimize inducing point locations (default: False)
     jitter : float
         Jitter to add for numerical stability (default: 1e-4)
+    whitening : bool
+        If True (default), use VariationalStrategy with whitened parameterization.
+        If False, use UnwhitenedVariationalStrategy (stores natural params directly).
+        Use whitening=False for EM-style optimization where kernel changes between steps.
 
     Attributes
     ----------
-    variational_strategy : VariationalStrategy
+    variational_strategy : VariationalStrategy or UnwhitenedVariationalStrategy
         GPyTorch's strategy for computing q(f) from q(u)
     mean_module : ZeroMean
         Mean function (zero for our model)
     covar_module : Kernel
         Covariance function
+    whitening : bool
+        Whether whitened parameterization is used
     """
 
-    def __init__(self, inducing_points, kernel, learn_inducing_locations=False, jitter=1e-4):
+    def __init__(self, inducing_points, kernel, learn_inducing_locations=False, jitter=1e-4, whitening=True):
         # Variational distribution q(u) = N(m, LLᵀ)
         # Uses Cholesky parameterization for numerical stability
         variational_distribution = CholeskyVariationalDistribution(
@@ -47,15 +53,27 @@ class VariationalGPModel(ApproximateGP):
 
         # Variational strategy: how to compute q(f) from q(u)
         # IMPORTANT: Pass jitter_val to ensure GPyTorch uses the same jitter as our code
-        variational_strategy = VariationalStrategy(
-            self,
-            inducing_points,
-            variational_distribution,
-            learn_inducing_locations=learn_inducing_locations,
-            jitter_val=jitter
-        )
+        if whitening:
+            variational_strategy = VariationalStrategy(
+                self,
+                inducing_points,
+                variational_distribution,
+                learn_inducing_locations=learn_inducing_locations,
+                jitter_val=jitter
+            )
+        else:
+            variational_strategy = UnwhitenedVariationalStrategy(
+                self,
+                inducing_points,
+                variational_distribution,
+                learn_inducing_locations=learn_inducing_locations,
+                jitter_val=jitter
+            )
 
         super().__init__(variational_strategy)
+
+        # Store whitening flag for downstream code
+        self.whitening = whitening
 
         # Mean function: zero mean (as in custom implementation)
         self.mean_module = gpytorch.means.ZeroMean()
