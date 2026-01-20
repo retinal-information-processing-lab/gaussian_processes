@@ -142,3 +142,66 @@ The whitened implementation collapses at M=75 specifically. This warrants invest
 - May be related to L_K mismatch when kernel params change (see HANDOFF Section 14)
 - The loss trajectory shows instability: 435 → 510 (diverging)
 - A values grow large: 0.40 → 3.58 → 2.16 (oscillating)
+
+---
+
+## Benchmark: 2026-01-20 (n_train=2000 Comparison)
+
+**Commit**: `39b04c9`
+**Command**: `python tests/test_estep_comparison.py --ntilde M --n-train 2000`
+
+Tests with 4x more training data (2000 vs 500) to see if varGP degradation at high M persists.
+
+### Results Table (Explained Variance, n_train=2000)
+
+| M | varGP | vargp_style (whitened) | vargp_style (legacy) | efm | adam |
+|---|-------|------------------------|----------------------|-----|------|
+| 50 | **0.91** | 0.82 | 0.78 | 0.86 | 0.70 |
+| 75 | **0.94** | ⚠️ 0.26 | 0.78 | 0.86 | 0.69 |
+| 100 | **0.94** | ⚠️ 0.14 | 0.64 | 0.86 | 0.74 |
+| 200 | **0.95** | 0.56 | 0.58 | 0.88 | 0.75 |
+
+### Timing Breakdown (seconds, n_train=2000)
+
+| M | varGP (E/M/Total) | vargp_style whitened (E/M/Total) | vargp_style legacy (E/M/Total) |
+|---|-------------------|----------------------------------|-------------------------------|
+| 50 | 2.8 / 5.3 / 8.4 | 2.0 / 29.8 / 33.4 | 1.1 / 13.7 / 15.6 |
+| 75 | 2.8 / 6.3 / 9.3 | 2.2 / 31.0 / 34.8 | 1.2 / 13.0 / 15.0 |
+| 100 | 3.1 / 8.5 / 12.0 | 7.3 / 53.5 / 64.3 | 11.0 / 44.2 / 58.7 |
+| 200 | 7.3 / 40.5 / 51.0 | 9.1 / 78.1 / 92.0 | 8.3 / 42.4 / 53.8 |
+
+### Key Findings
+
+1. **varGP NO LONGER degrades at high M with more data!**
+   - n_train=500: 0.87 → 0.70 → 0.67 → 0.35 (severe degradation)
+   - n_train=2000: 0.91 → 0.94 → 0.94 → 0.95 (stable, excellent)
+   - **Root cause of M>50 degradation was insufficient training data, not the algorithm**
+
+2. **Whitening collapse is WORSE with more data**
+   - M=75: 0.08 → 0.26 (still bad)
+   - M=100: 0.85 → 0.14 (now collapsed, was good with n_train=500!)
+   - Whitening issues are exacerbated, not helped, by more data
+
+3. **efm is remarkably stable**: ~0.86-0.88 regardless of M or n_train
+
+4. **adam improves slightly**: 0.67 → 0.70-0.75 with more data
+
+5. **Legacy (no-whitening) degrades at M≥100 with more data**: 0.77 → 0.64
+
+### Comparison: n_train=500 vs n_train=2000
+
+| M | varGP (500) | varGP (2000) | Δ |
+|---|-------------|--------------|---|
+| 50 | 0.87 | 0.91 | +0.04 |
+| 75 | 0.70 | **0.94** | **+0.24** |
+| 100 | 0.67 | **0.94** | **+0.27** |
+| 200 | 0.35 | **0.95** | **+0.60** |
+
+### Recommendations (Updated)
+
+- **For production use**: Use varGP with n_train≥2000 for best results at any M
+- **If limited data (n_train~500)**:
+  - M=50: varGP or efm
+  - M>50: efm is most stable (0.86), varGP degrades
+- **Avoid whitened vargp_style**: Unstable across M values, especially with more data
+- **efm is a reliable fallback**: Consistent ~0.86 regardless of settings
