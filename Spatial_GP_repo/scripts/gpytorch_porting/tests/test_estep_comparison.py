@@ -8,6 +8,21 @@ with the GPyTorch port. All parameters are frozen to match one_cell_fit.py defau
 Usage:
     python tests/test_estep_comparison.py
     python tests/test_estep_comparison.py --ntilde 75  # Test different M values
+    python tests/test_estep_comparison.py --no-whitening --no-cache  # Test legacy mode
+
+Whitening/Caching options (vargp_style only):
+    --use-whitening / --no-whitening  (default: whitening ON)
+    --use-cache / --no-cache          (default: caching ON)
+
+    Default (whitening ON, caching ON): Mathematically correct, fast (8.8x E-step speedup)
+    Legacy  (whitening OFF, caching ON): Pre-whitening implementation for comparison
+
+    When running with default config, the script ALSO runs the legacy config
+    (whitening OFF, cache ON) for side-by-side comparison.
+
+Note on varGP timing:
+    Original varGP prints E-step/M-step timing during training but does NOT
+    return it in results. Check console output for varGP timing breakdown.
 
 FROZEN PARAMETERS (from one_cell_fit.py):
     cellid          = 8
@@ -33,6 +48,10 @@ IMPORTANT - Link Function Initialization:
     vargp_style uses same initialization as varGP for fair comparison.
     Per Q19 in CLAUDE.md, the model is robust to A initialization.
 
+Reproducing results:
+    Results in BENCHMARK_LOG.md include the exact command and git commit hash.
+    To reproduce: checkout the commit, run the command shown in the log entry.
+
 Created by Claude as the single source of truth for E-step testing.
 """
 
@@ -56,9 +75,10 @@ from gaussian_processes.Spatial_GP_repo import utils as GP_utils
 import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
-from model import VariationalGPModel
+from model import VariationalGPModel #( /ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/model.py)
 from estep import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
+from tests.test_utils import set_reproducible_seed
 
 
 # =============================================================================
@@ -318,10 +338,17 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device):
     }
 
 
-def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device):
-    """Run GPyTorch with vargp_style training (matches varGP structure)."""
+def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
+                              use_whitening=True, use_cache=True):
+    """Run GPyTorch with vargp_style training (matches varGP structure).
+
+    Args:
+        use_whitening: If True, use whitening conversions for correct math.
+        use_cache: If True, cache kernel matrices for 8.8x E-step speedup.
+    """
+    mode_str = f"whitening={'ON' if use_whitening else 'OFF'}, cache={'ON' if use_cache else 'OFF'}"
     print("\n" + "="*60)
-    print("Running GPyTorch (vargp_style mode)")
+    print(f"Running GPyTorch (vargp_style mode, {mode_str})")
     print("="*60)
 
     cellid = params['cellid']
@@ -373,7 +400,7 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device):
     # Train with vargp_style (LBFGS F-step, analytical lambda0)
     start_time = time.time()
     with torch.enable_grad():
-        losses = train_varGP_style(
+        train_result = train_varGP_style(
             model, likelihood, X_train, r_train,
             n_iterations=params['gpytorch_iterations'],
             n_estep=params['vargp_style_n_estep'],
@@ -383,21 +410,39 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device):
             lr_m=params['vargp_style_lr_m'],
             print_every=params['gpytorch_iterations'] // 5,
             device=device,
+            use_cache=use_cache,
+            use_whitening=use_whitening,
         )
     elapsed = time.time() - start_time
+
+    # Extract timing breakdown from train result
+    time_estep = train_result.get('time_estep_total', 0.0)
+    time_mstep = train_result.get('time_mstep_total', 0.0)
 
     # Evaluate
     X_test_double = X_test.double()
     predictions = predict(model, likelihood, X_test_double, device=device)
     explained_var, reliability = compute_explained_variance(r_test.double(), predictions['f_pred'])
 
-    print(f"\n  Time: {elapsed:.1f}s")
+    print(f"\n  Time: {elapsed:.1f}s (E-step: {time_estep:.1f}s, M-step: {time_mstep:.1f}s)")
     print(f"  Explained variance: {explained_var:.4f}")
     print(f"  Reliability: {reliability:.4f}")
 
+    # Build implementation name with mode info
+    impl_name = 'GPyTorch (vargp_style)'
+    if not use_whitening or not use_cache:
+        flags = []
+        if not use_whitening:
+            flags.append('no-whiten')
+        if not use_cache:
+            flags.append('no-cache')
+        impl_name = f"GPyTorch (vargp_style, {'+'.join(flags)})"
+
     return {
-        'implementation': 'GPyTorch (vargp_style)',
+        'implementation': impl_name,
         'time': elapsed,
+        'time_estep': time_estep,
+        'time_mstep': time_mstep,
         'explained_var': explained_var,
         'reliability': reliability,
         'ntilde': ntilde,
@@ -485,32 +530,54 @@ def run_gpytorch_adam(X, R, X_test, R_test, params, device):
     }
 
 
-def print_comparison_table(results):
-    """Print comparison table."""
-    print("\n" + "="*60)
+def print_comparison_table(results, use_whitening=True, use_cache=True):
+    """Print comparison table with timing breakdown."""
+    print("\n" + "="*70)
     print("COMPARISON RESULTS")
-    print("="*60)
+    print("="*70)
 
     ntilde = results[0]['ntilde'] if results[0] else 'N/A'
     print(f"\nParameters: M={ntilde}, cell=8, n_train=500, iter=50")
-    print("\nInit: varGP & vargp_style use A=0.01, λ₀=1.0")
-    print("      efm & adam use A=1.0, λ₀=0.0")
+    print("\nInit: varGP & vargp_style use A=0.01, lambda0=1.0")
+    print("      efm & adam use A=1.0, lambda0=0.0")
+    print(f"\nvargp_style config: whitening={'ON' if use_whitening else 'OFF'}, cache={'ON' if use_cache else 'OFF'}")
     print()
 
-    print("┌────────────────────────┬───────────────┬──────────┐")
-    print("│ Implementation         │ Expl. Var     │ Time (s) │")
-    print("├────────────────────────┼───────────────┼──────────┤")
+    # Check if any result has timing breakdown
+    has_timing_breakdown = any(r and 'time_estep' in r for r in results)
 
-    for r in results:
-        if r is not None:
-            impl = r['implementation'][:22].ljust(22)
-            ev = f"{r['explained_var']:.4f}".ljust(13)
-            t = f"{r['time']:.1f}".ljust(8)
-            print(f"│ {impl} │ {ev} │ {t} │")
-        else:
-            print(f"│ {'FAILED'.ljust(22)} │ {'N/A'.ljust(13)} │ {'N/A'.ljust(8)} │")
+    if has_timing_breakdown:
+        print("┌──────────────────────────────────┬───────────┬──────────┬──────────┬──────────┐")
+        print("│ Implementation                   │ Expl. Var │ Total(s) │ E-step   │ M-step   │")
+        print("├──────────────────────────────────┼───────────┼──────────┼──────────┼──────────┤")
 
-    print("└────────────────────────┴───────────────┴──────────┘")
+        for r in results:
+            if r is not None:
+                impl = r['implementation'][:32].ljust(32)
+                ev = f"{r['explained_var']:.4f}".ljust(9)
+                t = f"{r['time']:.1f}".ljust(8)
+                t_e = f"{r.get('time_estep', 0.0):.1f}".ljust(8) if 'time_estep' in r else "N/A     "
+                t_m = f"{r.get('time_mstep', 0.0):.1f}".ljust(8) if 'time_mstep' in r else "N/A     "
+                print(f"| {impl} | {ev} | {t} | {t_e} | {t_m} |")
+            else:
+                print(f"| {'FAILED'.ljust(32)} | {'N/A'.ljust(9)} | {'N/A'.ljust(8)} | {'N/A'.ljust(8)} | {'N/A'.ljust(8)} |")
+
+        print("└──────────────────────────────────┴───────────┴──────────┴──────────┴──────────┘")
+    else:
+        print("┌──────────────────────────────────┬───────────┬──────────┐")
+        print("│ Implementation                   │ Expl. Var │ Time (s) │")
+        print("├──────────────────────────────────┼───────────┼──────────┤")
+
+        for r in results:
+            if r is not None:
+                impl = r['implementation'][:32].ljust(32)
+                ev = f"{r['explained_var']:.4f}".ljust(9)
+                t = f"{r['time']:.1f}".ljust(8)
+                print(f"| {impl} | {ev} | {t} |")
+            else:
+                print(f"| {'FAILED'.ljust(32)} | {'N/A'.ljust(9)} | {'N/A'.ljust(8)} |")
+
+        print("└──────────────────────────────────┴───────────┴──────────┘")
 
     # Print differences
     valid_results = [r for r in results if r is not None]
@@ -535,11 +602,36 @@ def print_comparison_table(results):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='E-step comparison: varGP vs GPyTorch')
+    parser = argparse.ArgumentParser(
+        description='E-step comparison: varGP vs GPyTorch',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Default (whitening ON, caching ON):
+    python tests/test_estep_comparison.py
+
+    # Test different M values:
+    python tests/test_estep_comparison.py --ntilde 75
+
+    # Legacy mode (for comparison with old results):
+    python tests/test_estep_comparison.py --no-whitening --no-cache
+        """
+    )
     parser.add_argument('--ntilde', type=int, default=PARAMS['ntilde'],
                         help=f"Number of inducing points M (default: {PARAMS['ntilde']})")
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device (default: cuda)')
+
+    # Whitening and caching options (vargp_style only)
+    parser.add_argument('--use-whitening', action='store_true', default=True,
+                        help='Use whitening conversions (default: ON)')
+    parser.add_argument('--no-whitening', action='store_false', dest='use_whitening',
+                        help='Disable whitening (legacy mode)')
+    parser.add_argument('--use-cache', action='store_true', default=True,
+                        help='Use kernel caching for E-step (default: ON)')
+    parser.add_argument('--no-cache', action='store_false', dest='use_cache',
+                        help='Disable kernel caching (legacy mode)')
+
     args = parser.parse_args()
 
     # Update ntilde if specified
@@ -547,34 +639,58 @@ def main():
     params['ntilde'] = args.ntilde
 
     device = torch.device(args.device)
+
+    # Set reproducible seed (see tests/test_utils.py and HANDOFF_2026-01-18.md Section 17)
+    set_reproducible_seed(42, device=args.device)
+
     print(f"Device: {device}")
     print(f"Testing with M={params['ntilde']} inducing points")
+    print(f"vargp_style: whitening={'ON' if args.use_whitening else 'OFF'}, cache={'ON' if args.use_cache else 'OFF'}")
 
     # Load data (float32 for varGP compatibility)
     print("\nLoading data...")
     data = load_data(device, dtype=torch.float32)
 
-    # Run all three implementations
+    # Run all implementations
     results = []
 
+    # 1. Reference: original varGP
+    # Note: varGP prints E-step/M-step timing during run but doesn't return it
     result_vargp = run_vargp(
         data['X'], data['R'], data['X_test'], data['R_test'],
         params, device
     )
     results.append(result_vargp)
 
+    # 2. vargp_style with current config (from CLI args)
     result_gpytorch_vargp_style = run_gpytorch_vargp_style(
         data['X'], data['R'], data['X_test'], data['R_test'],
-        params, device
+        params, device,
+        use_whitening=args.use_whitening,
+        use_cache=args.use_cache
     )
     results.append(result_gpytorch_vargp_style)
 
+    # 3. vargp_style with legacy config (cache ON, whitening OFF) for comparison
+    # Only run if current config is different from legacy
+    if args.use_whitening or not args.use_cache:
+        # Legacy = cache ON, whitening OFF (pre-whitening implementation)
+        result_gpytorch_vargp_style_legacy = run_gpytorch_vargp_style(
+            data['X'], data['R'], data['X_test'], data['R_test'],
+            params, device,
+            use_whitening=False,
+            use_cache=True
+        )
+        results.append(result_gpytorch_vargp_style_legacy)
+
+    # 4. efm mode
     result_gpytorch_efm = run_gpytorch_efm(
         data['X'], data['R'], data['X_test'], data['R_test'],
         params, device
     )
     results.append(result_gpytorch_efm)
 
+    # 5. adam mode
     result_gpytorch_adam = run_gpytorch_adam(
         data['X'], data['R'], data['X_test'], data['R_test'],
         params, device
@@ -582,7 +698,7 @@ def main():
     results.append(result_gpytorch_adam)
 
     # Print comparison
-    print_comparison_table(results)
+    print_comparison_table(results, use_whitening=args.use_whitening, use_cache=args.use_cache)
 
     return results
 
