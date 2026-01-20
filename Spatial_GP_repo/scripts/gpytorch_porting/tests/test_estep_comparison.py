@@ -530,14 +530,14 @@ def run_gpytorch_adam(X, R, X_test, R_test, params, device):
     }
 
 
-def print_comparison_table(results, use_whitening=True, use_cache=True):
+def print_comparison_table(results, use_whitening=True, use_cache=True, n_train=500):
     """Print comparison table with timing breakdown."""
     print("\n" + "="*70)
     print("COMPARISON RESULTS")
     print("="*70)
 
     ntilde = results[0]['ntilde'] if results[0] else 'N/A'
-    print(f"\nParameters: M={ntilde}, cell=8, n_train=500, iter=50")
+    print(f"\nParameters: M={ntilde}, cell=8, n_train={n_train}, iter=50")
     print("\nInit: varGP & vargp_style use A=0.01, lambda0=1.0")
     print("      efm & adam use A=1.0, lambda0=0.0")
     print(f"\nvargp_style config: whitening={'ON' if use_whitening else 'OFF'}, cache={'ON' if use_cache else 'OFF'}")
@@ -619,6 +619,8 @@ Examples:
     )
     parser.add_argument('--ntilde', type=int, default=PARAMS['ntilde'],
                         help=f"Number of inducing points M (default: {PARAMS['ntilde']})")
+    parser.add_argument('--n-train', type=int, default=PARAMS['n_train'],
+                        help=f"Number of training samples (default: {PARAMS['n_train']})")
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device (default: cuda)')
 
@@ -634,9 +636,10 @@ Examples:
 
     args = parser.parse_args()
 
-    # Update ntilde if specified
+    # Update params from CLI args
     params = PARAMS.copy()
     params['ntilde'] = args.ntilde
+    params['n_train'] = args.n_train
 
     device = torch.device(args.device)
 
@@ -644,7 +647,7 @@ Examples:
     set_reproducible_seed(42, device=args.device)
 
     print(f"Device: {device}")
-    print(f"Testing with M={params['ntilde']} inducing points")
+    print(f"Testing with M={params['ntilde']} inducing points, n_train={params['n_train']}")
     print(f"vargp_style: whitening={'ON' if args.use_whitening else 'OFF'}, cache={'ON' if args.use_cache else 'OFF'}")
 
     # Load data (float32 for varGP compatibility)
@@ -698,7 +701,7 @@ Examples:
     results.append(result_gpytorch_adam)
 
     # Print comparison
-    print_comparison_table(results, use_whitening=args.use_whitening, use_cache=args.use_cache)
+    print_comparison_table(results, use_whitening=args.use_whitening, use_cache=args.use_cache, n_train=params['n_train'])
 
     return results
 
