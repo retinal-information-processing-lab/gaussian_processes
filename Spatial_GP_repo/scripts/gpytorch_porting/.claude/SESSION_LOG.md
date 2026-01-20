@@ -5,6 +5,27 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-20: Whitening Collapse Seed Sensitivity Investigation
+
+**Accomplished:**
+- Ran canonical benchmarks at M=50,75,100,200
+- Tested seed sensitivity (seeds 42, 123, 456) for M=50 and M=75
+- Added `--seed` argument to `run_single_mode.py`
+- Created `investigations/INVESTIGATION_whitening_collapse_M75.md`
+
+**Key Finding:**
+- Whitened mode collapse is **seed-dependent, not M-dependent**
+- Seed 456 causes collapse at both M=50 and M=75
+- Seed 123 works fine at all M values
+- Legacy (unwhitened) mode never collapses regardless of seed
+
+**Files Changed:**
+- `run_single_mode.py` - added `--seed` argument
+- `results/BENCHMARK_LOG.md` - added seed sensitivity results
+- `investigations/INVESTIGATION_whitening_collapse_M75.md` - created
+
+---
+
 ## 2026-01-20: L_K Whitening Investigation + UnwhitenedVariationalStrategy Implementation + Performance Investigation (COMPLETE)
 
 **Accomplished:**

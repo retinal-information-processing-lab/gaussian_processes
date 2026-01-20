@@ -46,6 +46,8 @@ from gaussian_processes.Spatial_GP_repo.visualization import (
     single_image_sampling_plot,
 )
 
+# torch.zeros(1)
+
 torch.pi = torch.acos(torch.zeros(1)).item() * 2 # which is 3.1420927410125732
 
 print(f"In GP Utils: Default device: {torch.empty(1).device}")  # Verify default device

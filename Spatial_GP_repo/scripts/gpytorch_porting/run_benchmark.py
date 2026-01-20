@@ -255,7 +255,7 @@ def run_vargp(X, R, X_test, R_test, params, device):
     }
 
 
-def run_gpytorch_efm(X, R, X_test, R_test, params, device):
+def run_gpytorch_efm(X, R, X_test, R_test, params, device, gradient_mode='autograd'):
     """Run GPyTorch with E-F-M training loop."""
     print("\n" + "="*60)
     print("Running GPyTorch (efm mode)")
@@ -288,6 +288,7 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device):
         beta=params['beta'],
         rho=params['rho'],
         use_mask=True,
+        gradient_mode=gradient_mode,
     )
     kernel = gpytorch.kernels.ScaleKernel(base_kernel)
     kernel.outputscale = 1e-4
@@ -340,7 +341,8 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device):
 
 
 def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
-                              use_whitening=True, use_cache=True, whitening=True):
+                              use_whitening=True, use_cache=True, whitening=True,
+                              gradient_mode='autograd'):
     """Run GPyTorch with vargp_style training (matches varGP structure).
 
     Args:
@@ -383,6 +385,7 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
         beta=params['beta'],
         rho=params['rho'],
         use_mask=True,
+        gradient_mode=gradient_mode,
     )
     kernel = gpytorch.kernels.ScaleKernel(base_kernel)
     kernel.outputscale = 1e-4
@@ -456,7 +459,7 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
     }
 
 
-def run_gpytorch_adam(X, R, X_test, R_test, params, device):
+def run_gpytorch_adam(X, R, X_test, R_test, params, device, gradient_mode='autograd'):
     """Run GPyTorch with pure Adam training (no E-step)."""
     print("\n" + "="*60)
     print("Running GPyTorch (adam mode - no E-step)")
@@ -489,6 +492,7 @@ def run_gpytorch_adam(X, R, X_test, R_test, params, device):
         beta=params['beta'],
         rho=params['rho'],
         use_mask=True,
+        gradient_mode=gradient_mode,
     )
     kernel = gpytorch.kernels.ScaleKernel(base_kernel)
     kernel.outputscale = 1e-4
@@ -642,6 +646,9 @@ Examples:
                         help='Disable kernel caching (legacy mode)')
     parser.add_argument('--unwhitened', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
+    parser.add_argument('--gradient-mode', type=str, default='autograd',
+                        choices=['autograd', 'vjp', 'jacobian'],
+                        help='Gradient computation mode (default: autograd)')
 
     args = parser.parse_args()
 
@@ -660,6 +667,8 @@ Examples:
     print(f"vargp_style: whitening={'OFF' if args.unwhitened else ('ON' if args.use_whitening else 'conversions OFF')}, cache={'ON' if args.use_cache else 'OFF'}")
     if args.unwhitened:
         print("Using UnwhitenedVariationalStrategy (no L_K dependency)")
+    if args.gradient_mode != 'autograd':
+        print(f"Gradient mode: {args.gradient_mode}")
 
     # Load data (float32 for varGP compatibility)
     print("\nLoading data...")
@@ -682,7 +691,8 @@ Examples:
         params, device,
         use_whitening=args.use_whitening,
         use_cache=args.use_cache,
-        whitening=not args.unwhitened
+        whitening=not args.unwhitened,
+        gradient_mode=args.gradient_mode
     )
     results.append(result_gpytorch_vargp_style)
 
@@ -694,21 +704,24 @@ Examples:
             data['X'], data['R'], data['X_test'], data['R_test'],
             params, device,
             use_whitening=False,
-            use_cache=True
+            use_cache=True,
+            gradient_mode=args.gradient_mode
         )
         results.append(result_gpytorch_vargp_style_legacy)
 
     # 4. efm mode
     result_gpytorch_efm = run_gpytorch_efm(
         data['X'], data['R'], data['X_test'], data['R_test'],
-        params, device
+        params, device,
+        gradient_mode=args.gradient_mode
     )
     results.append(result_gpytorch_efm)
 
     # 5. adam mode
     result_gpytorch_adam = run_gpytorch_adam(
         data['X'], data['R'], data['X_test'], data['R_test'],
-        params, device
+        params, device,
+        gradient_mode=args.gradient_mode
     )
     results.append(result_gpytorch_adam)
 

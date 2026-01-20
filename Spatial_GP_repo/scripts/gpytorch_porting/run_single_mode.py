@@ -46,8 +46,8 @@ import torch
 import gpytorch
 import matplotlib.pyplot as plt
 
-# Import original varGP implementation
-from gaussian_processes.Spatial_GP_repo import utils as GP_utils
+# NOTE: GP_utils is imported lazily inside vargp_old mode to avoid
+# side effects (torch.set_grad_enabled(False) at utils.py line 2)
 
 # Import our GPyTorch components
 from kernels import ArcCosineKernel, GRADIENT_MODES
@@ -180,6 +180,8 @@ def main():
                         help='Show plot of actual vs predicted firing rates')
     parser.add_argument('--save-plot', type=str, default='auto',
                         help='Save plot path. "auto" saves to imgs/{mode}_M{ntilde}.png, "none" to disable')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility (default: 42)')
 
     args = parser.parse_args()
 
@@ -194,7 +196,8 @@ def main():
 
     # Set seed with explicit CUDA init for reproducibility
     # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details
-    set_reproducible_seed(42, device=device)
+    set_reproducible_seed(args.seed, device=device)
+    print(f"Seed: {args.seed}")
 
     # Load data
     data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
@@ -237,6 +240,9 @@ def main():
     # VARGP MODE: Use original varGP implementation
     # =========================================================================
     if args.mode == 'vargp_old':
+        # Lazy import to avoid side effects (utils.py disables gradients at module level)
+        from gaussian_processes.Spatial_GP_repo import utils as GP_utils
+
         print(f"\nRunning original varGP (reference implementation)")
         print(f"  maxiter={args.n_iterations}, nEstep={args.n_estep}, nMstep={args.n_mstep}, nFparamstep={args.n_fstep}")
 
@@ -373,56 +379,59 @@ def main():
         print(f"  outputscale: {kernel.outputscale.item():.6f}")
 
         # Train with selected mode
+        # Note: GP_utils import disables gradients globally (utils.py line 2).
+        # Must use torch.enable_grad() to re-enable for training.
         print(f"\nTraining with mode='{args.mode}':")
         print_every = max(1, args.n_iterations // 5)
         start_time = time.time()
 
-        if args.mode == 'adam':
-            print(f"  n_iterations={args.n_iterations}, lr={args.lr}")
-            losses = train_adam(
-                model, likelihood, X_train, r_train,
-                n_iterations=args.n_iterations,
-                lr=args.lr,
-                print_every=print_every,
-                device=device
-            )
-        elif args.mode == 'efm':
-            print(f"  n_iterations={args.n_iterations}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}, lr={args.lr}")
-            losses = train_efm(
-                model, likelihood, X_train, r_train,
-                n_iterations=args.n_iterations,
-                n_fstep=args.n_fstep,
-                n_mstep=args.n_mstep,
-                lr=args.lr,
-                print_every=print_every,
-                device=device
-            )
-        else:  # vargp_style
-            # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
-            print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
-            print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
-            print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
-            # Whitening: OFF if unwhitened strategy, otherwise depends on --no-whitening flag
-            whitening_status = 'OFF (unwhitened strategy)' if args.unwhitened else ('DISABLED' if args.no_whitening else 'enabled')
-            print(f"  whitening: {whitening_status}")
-            result = train_varGP_style(
-                model, likelihood, X_train, r_train,
-                n_iterations=args.n_iterations,
-                n_estep=args.n_estep,
-                n_fstep=args.n_fstep,
-                n_mstep=args.n_mstep,
-                lr_f=0.1,  # varGP default
-                lr_m=0.1,  # varGP default
-                print_every=print_every,
-                device=device,
-                use_cache=args.use_cache,  # Kernel caching for E-step performance
-                # If unwhitened strategy, let auto-detect handle it (will be False)
-                # Otherwise use --no-whitening flag for whitening conversions
-                use_whitening=None if args.unwhitened else (not args.no_whitening),
-            )
-            losses = result['losses']
-            time_estep_total = result['time_estep_total']
-            time_mstep_total = result['time_mstep_total']
+        with torch.enable_grad():
+            if args.mode == 'adam':
+                print(f"  n_iterations={args.n_iterations}, lr={args.lr}")
+                losses = train_adam(
+                    model, likelihood, X_train, r_train,
+                    n_iterations=args.n_iterations,
+                    lr=args.lr,
+                    print_every=print_every,
+                    device=device
+                )
+            elif args.mode == 'efm':
+                print(f"  n_iterations={args.n_iterations}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}, lr={args.lr}")
+                losses = train_efm(
+                    model, likelihood, X_train, r_train,
+                    n_iterations=args.n_iterations,
+                    n_fstep=args.n_fstep,
+                    n_mstep=args.n_mstep,
+                    lr=args.lr,
+                    print_every=print_every,
+                    device=device
+                )
+            else:  # vargp_style
+                # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
+                print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
+                print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
+                print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
+                # Whitening: OFF if unwhitened strategy, otherwise depends on --no-whitening flag
+                whitening_status = 'OFF (unwhitened strategy)' if args.unwhitened else ('DISABLED' if args.no_whitening else 'enabled')
+                print(f"  whitening: {whitening_status}")
+                result = train_varGP_style(
+                    model, likelihood, X_train, r_train,
+                    n_iterations=args.n_iterations,
+                    n_estep=args.n_estep,
+                    n_fstep=args.n_fstep,
+                    n_mstep=args.n_mstep,
+                    lr_f=0.1,  # varGP default
+                    lr_m=0.1,  # varGP default
+                    print_every=print_every,
+                    device=device,
+                    use_cache=args.use_cache,  # Kernel caching for E-step performance
+                    # If unwhitened strategy, let auto-detect handle it (will be False)
+                    # Otherwise use --no-whitening flag for whitening conversions
+                    use_whitening=None if args.unwhitened else (not args.no_whitening),
+                )
+                losses = result['losses']
+                time_estep_total = result['time_estep_total']
+                time_mstep_total = result['time_mstep_total']
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")

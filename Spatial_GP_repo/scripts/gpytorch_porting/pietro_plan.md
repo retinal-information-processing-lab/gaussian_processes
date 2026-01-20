@@ -7,7 +7,7 @@ Things to remember having claude check:
 [X] Visualization -> first version in tes_fit prints in imgs/
 [ ] Comparison with one_cell_fit script
 [ ] I think hyperparameters are still parametrized as weird log expressions ( like beta for example) and they do not use the gpytorch link functions. to change
-[ ] Documentation refers too many times to "PNAS data" , we should remove it.
+[X] Documentation refers too many times to "PNAS data" , we should remove it, maybe not, to keep it standard
 [ ] has_lengthscale parameter in acosker
 [ ] for efficiency, we should check that we are not computing the C matrix again when its not used
 [ ] Clamping of acosker ( cos_theta = torch.clamp(C12 / M, -1.0 + eps, 1.0 - eps)) in ArcCosineKernel
@@ -39,3 +39,15 @@ Things to remember having claude check:
 [X]   from gpytorch.constraints import Positive IMPLEMENTED
   Positive(transform=torch.exp, inv_transform=torch.log)    
 -> htis might be a way to define a likelihood that optimized logA instead of A, globally.
+
+[ ] vargp_style is skipping last iteraiton of m step for no reason
+[ ] is cached version hard coded default?compa
+[ ] if unwhitening works remember to remove teh "m does not neew unwhitening from everywhere"
+[ ] in cached vs non cached testing n of iterations was not the same?
+[ ] when returning     return torch.linalg.cholesky(K_tilde_j)in compute L_K , maybe we could add a check to make sure is uppper triangular? 
+
+[ ] Are we updating log parameters instead of parameters ( hyperparaemters but also A dna lambda0 ) 
+
+
+
+

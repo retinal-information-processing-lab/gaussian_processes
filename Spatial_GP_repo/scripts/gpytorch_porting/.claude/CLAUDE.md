@@ -20,7 +20,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
-| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below) |
+| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below); **Whitened mode is seed-sensitive** (see `investigations/INVESTIGATION_whitening_collapse_M75.md`) |
 | **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 

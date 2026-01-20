@@ -48,6 +48,31 @@ Track performance across development milestones. Update after significant change
 3. **Gradient mode has minimal impact on accuracy** - autograd vs vjp produce similar results
 4. **vjp is slightly slower** (~20-30% overhead) - autograd recommended for speed
 5. **adam is fastest but weakest** (~0.67 regardless of M or gradient mode)
+
+---
+
+## Benchmark: 2026-01-20 (Seed Sensitivity - MAJOR FINDING)
+
+**Command**: `python run_single_mode.py --mode MODE --ntilde M --seed S`
+
+| M | Seed | varGP | whitened | legacy |
+|---|------|-------|----------|--------|
+| 50 | 42 | 0.86 | 0.84 | 0.69 |
+| 50 | 123 | 0.89 | 0.83 | 0.90 |
+| 50 | 456 | 0.67 | **-0.00** | 0.66 |
+| 75 | 42 | 0.69 | **0.08** | 0.66 |
+| 75 | 123 | 0.90 | 0.83 | 0.88 |
+| 75 | 456 | 0.65 | **nan** | 0.72 |
+
+### Key Finding
+
+**Whitened mode collapse is SEED-DEPENDENT, not M-dependent.**
+- Seed 456 causes collapse at both M=50 and M=75
+- Seed 123 works fine at all M values
+- Legacy (unwhitened) mode never collapses
+- Original "M=75 collapse" was actually bad inducing point selection at seed=42
+
+See `investigations/INVESTIGATION_whitening_collapse_M75.md` for details.
 6. **vargp_style M=100 autograd achieves best overall** (0.87 ExplVar)
 
 ### Timing Anomalies
