@@ -86,3 +86,59 @@ Track performance across development milestones. Update after significant change
 - Decision Log: Q25 in CLAUDE.md
 - Details: `HANDOFF_2026-01-18.md`, `results/PROFILING_2026-01-18.md`
 - Original non-cached commit: `44d9227`
+
+---
+
+## Benchmark: 2026-01-20 (Whitening + Caching Comparison)
+
+**Commit**: `7f27b01`
+**Command**: `python tests/test_estep_comparison.py --ntilde M`
+
+Tests whitened+cached (new default) vs legacy (no-whitening+cached) implementations.
+
+### Results Table (Explained Variance)
+
+| M | varGP | vargp_style (whitened) | vargp_style (legacy) | efm | adam |
+|---|-------|------------------------|----------------------|-----|------|
+| 50 | **0.87** | 0.84 | 0.84 | 0.86 | 0.67 |
+| 75 | 0.70 | ⚠️ 0.08 | **0.80** | 0.40 | 0.66 |
+| 100 | 0.67 | **0.85** | 0.77 | 0.41 | 0.68 |
+| 200 | 0.35 | **0.82** | 0.56 | 0.51 | 0.67 |
+
+### Timing Breakdown (seconds)
+
+| M | varGP (E/M/Total) | vargp_style whitened (E/M/Total) | vargp_style legacy (E/M/Total) |
+|---|-------------------|----------------------------------|-------------------------------|
+| 50 | 1.2 / 4.1 / 5.6 | 0.7 / 6.2 / 7.3 | 0.7 / 5.6 / 6.7 |
+| 75 | 1.2 / 4.8 / 6.3 | 1.0 / 7.2 / 8.7 | 0.8 / 5.8 / 7.0 |
+| 100 | 1.2 / 5.1 / 6.6 | 1.1 / 8.0 / 9.6 | 0.9 / 6.2 / 7.5 |
+| 200 | 1.2 / 6.9 / 8.6 | 2.1 / 17.7 / 20.9 | 1.6 / 10.2 / 12.4 |
+
+### Key Findings
+
+1. **E-step caching works well**: GPyTorch E-step (0.7-2.1s) is faster than varGP (1.2s) for M≤100
+
+2. **Whitening is unstable at M=75**: Collapsed to 0.08 explained variance
+   - This specific M value triggers numerical issues
+   - Legacy (no-whitening) works fine at M=75 (0.80)
+
+3. **Whitening helps at M≥100**: Outperforms both varGP and legacy
+   - M=100: whitened 0.85 vs legacy 0.77 vs varGP 0.67
+   - M=200: whitened 0.82 vs legacy 0.56 vs varGP 0.35
+
+4. **varGP degrades severely at M>50**: Confirmed again (0.87 → 0.35)
+
+5. **adam is stable but weak**: ~0.67 regardless of M (no kernel learning benefit)
+
+### Recommendations
+
+- **For M=50**: Use varGP or any GPyTorch mode (all perform well)
+- **For M=75**: Use legacy (no-whitening) - whitening has numerical issues
+- **For M≥100**: Use whitened vargp_style - significantly better than varGP
+
+### ⚠️ Known Issue: M=75 Whitening Collapse
+
+The whitened implementation collapses at M=75 specifically. This warrants investigation:
+- May be related to L_K mismatch when kernel params change (see HANDOFF Section 14)
+- The loss trajectory shows instability: 435 → 510 (diverging)
+- A values grow large: 0.40 → 3.58 → 2.16 (oscillating)
