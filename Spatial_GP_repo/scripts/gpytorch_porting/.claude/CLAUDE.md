@@ -46,7 +46,7 @@ This document tracks the porting effort from the custom variational GP implement
 > **We don't understand why this works.** The assignment to `torch.pi` (a built-in constant since
 > PyTorch 1.8) somehow affects random state. This is cargo cult programming.
 >
-> See `ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` Section 17 for full details and what we tried that didn't work.
+> See `.claude/archive/ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` Section 17 for full details and what we tried that didn't work.
 
 **Jitter Consistency (Critical - January 2025):**
 > All jitter values MUST match `model.jitter` (default 1e-4). Mismatched jitter causes whitening
@@ -408,6 +408,8 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 
 **Metrics**: All modes report standardized metrics (test_corr, explained_var, reliability) computed identically.
 
+**Timing Note**: GPU warmup within a Python session can affect timing (~0.5s). First runs are slower due to CUDA kernel compilation.
+
 #### CRITICAL: Parameter Equivalence
 
 **GPyTorch `vargp_style` mode MUST mirror original varGP parameters exactly:**
@@ -570,7 +572,7 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `tests/test_analytical_gradients.py` | Analytical gradient validation |
 | `results/BENCHMARK_LOG.md` | Performance tracking across milestones |
 | `results/PROFILING_2026-01-18.md` | E-step profiling results (kernel caching optimization) |
-| `ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Kernel caching implementation details and whitening analysis (historical) |
+| `.claude/archive/ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Kernel caching implementation details and whitening analysis (historical) |
 
 ---
 

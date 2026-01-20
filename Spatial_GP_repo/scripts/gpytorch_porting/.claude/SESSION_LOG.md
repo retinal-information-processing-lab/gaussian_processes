@@ -60,9 +60,9 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 - `.claude/CLAUDE.md` - added UnwhitenedVariationalStrategy callout
 
 **Archive Files (reasoning history):**
-- `.claude/ARCHIVE_2026-01-20_unwhitened_implementation_plan.md` - original plan before implementation
-- `.claude/ARCHIVE_2026-01-20_unwhitened_investigation.md` - investigation notes and reproduction commands
-- `.claude/ARCHIVE_2026-01-20_whitening_research_notes.md` - raw research notes from subagent exploration
+- `.claude/archive/ARCHIVE_2026-01-20_unwhitened_implementation_plan.md` - original plan before implementation
+- `.claude/archive/ARCHIVE_2026-01-20_unwhitened_investigation.md` - investigation notes and reproduction commands
+- `.claude/archive/ARCHIVE_2026-01-20_whitening_research_notes.md` - raw research notes from subagent exploration
 
 ---
 
