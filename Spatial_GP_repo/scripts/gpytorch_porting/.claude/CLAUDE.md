@@ -230,7 +230,7 @@ Note: Avaid using the .data parameter and if you need to, raise it to the user. 
 - `kernels.py` - ArcCosineKernel class (verified against reference)
 - `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
 - `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
-- `train.py` - Training and evaluation utilities
+- `train.py` - All training loops (`train_adam`, `train_efm`, `train_varGP_style`) + evaluation
 - `archive/test_stage1_cI.py` - Stage 1 (C=I) testing script (archived, superseded by run_single_mode.py)
 
 ### Stage 2: Structured Covariance Matrix C
@@ -557,8 +557,8 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `kernels.py` | ArcCosineKernel with RF structure, masking, `gradient_mode` selection |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
-| `train.py` | Training utilities (Adam-based) |
-| `estep.py` | Custom E-step Newton update + `train_efm()` + kernel caching (`compute_kernel_cache`, `compute_moments_from_kernel_cache`, `e_step_with_kernel_cache`) |
+| `train.py` | All training loops (`train_adam`, `train_efm`, `train_varGP_style`) + evaluation utilities |
+| `estep.py` | E-step, F-step, M-step functions + kernel caching |
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |

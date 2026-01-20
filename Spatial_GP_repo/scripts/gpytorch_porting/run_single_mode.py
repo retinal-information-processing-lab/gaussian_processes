@@ -53,7 +53,7 @@ from gaussian_processes.Spatial_GP_repo import utils as GP_utils
 from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from estep import train_efm, train_varGP_style
+from train import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
 

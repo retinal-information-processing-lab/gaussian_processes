@@ -77,7 +77,7 @@ import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel #( /ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/model.py)
-from estep import train_efm, train_varGP_style
+from train import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
 
