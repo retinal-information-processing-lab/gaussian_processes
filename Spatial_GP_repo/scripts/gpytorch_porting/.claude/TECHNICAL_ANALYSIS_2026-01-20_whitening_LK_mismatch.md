@@ -747,7 +747,7 @@ print(f"GPyTorch source: {gpytorch_path}/variational/")
 | `tests/test_whitening_paths.py` | Whitening path validation |
 | `tests/test_m_whitening.py` | Parameter conversion tests |
 | `tests/test_whitening_hypothesis.py` | Corruption hypothesis tests |
-| `HANDOFF_2026-01-18.md` | Previous session's whitening analysis |
+| `ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Previous session's whitening analysis (historical) |
 
 ---
 

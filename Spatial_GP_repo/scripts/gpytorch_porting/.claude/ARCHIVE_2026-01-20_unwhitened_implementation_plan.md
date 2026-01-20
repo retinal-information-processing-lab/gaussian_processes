@@ -81,7 +81,7 @@ GPyTorch's `UnwhitenedVariationalStrategy` has identical API to `VariationalStra
 | `model.py` | Where VariationalStrategy is created | HIGH (modify) |
 | `estep.py` | Where whitening conversions happen | HIGH (modify) |
 | `test_estep_pnas.py` | Main test script | MEDIUM (modify) |
-| `.claude/HANDOFF_2026-01-18.md` | Previous session's whitening analysis (historical) | LOW |
+| `ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Previous session's whitening analysis (historical) | LOW |
 
 ---
 

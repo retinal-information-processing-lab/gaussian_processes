@@ -1,3 +1,14 @@
+> **DISCLAIMER (added 2026-01-20)**: This archive document contains some overconfident language
+> (e.g., "FULLY UNDERSTOOD", "UNDERSTANDING VERIFIED") that overstates the certainty of conclusions.
+> The core technical analysis of GPyTorch whitening behavior appears correct, but:
+> - Section 7b recommendation ("keep natural params") was later superseded by whitening implementation (Section 12)
+> - The "acceptable for production use" claim (Section 7b) does not account for L_K mismatch issues documented in Section 14
+> - Section 17 honestly admits the torch.pi workaround is "cargo cult programming"
+>
+> Later sections (12, 14, 17) contain important corrections to earlier sections. Read the whole document
+> for the full evolution of understanding during this session.
+
+
 # Handoff Document: E-step Kernel Caching Optimization
 
 **Date**: 2026-01-18

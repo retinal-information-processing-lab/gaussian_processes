@@ -232,7 +232,7 @@ For project status and quick reference, see `CLAUDE.md`.
 >
 > **Note**: Small performance difference (r=0.7752 vs r=0.7870) between cached and non-cached paths may warrant investigation. Reference commit for original non-cached code: `44d9227`.
 >
-> **Documentation**: See `HANDOFF_2026-01-18.md` and `results/PROFILING_2026-01-18.md` for details.
+> **Documentation**: See `ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` and `results/PROFILING_2026-01-18.md` for details.
 
 ## Session 9: Whitening Investigation (January 2025)
 
