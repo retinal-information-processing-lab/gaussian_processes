@@ -46,11 +46,13 @@ class VariationalGPModel(ApproximateGP):
         )
 
         # Variational strategy: how to compute q(f) from q(u)
+        # IMPORTANT: Pass jitter_val to ensure GPyTorch uses the same jitter as our code
         variational_strategy = VariationalStrategy(
             self,
             inducing_points,
             variational_distribution,
-            learn_inducing_locations=learn_inducing_locations
+            learn_inducing_locations=learn_inducing_locations,
+            jitter_val=jitter
         )
 
         super().__init__(variational_strategy)
