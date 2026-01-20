@@ -184,6 +184,8 @@ For project status and quick reference, see `CLAUDE.md`.
 > - End-to-end fit: Pearson r difference < 0.05 between masked and full
 >
 > **Memory reduction**: 11664×11664 (~1GB) → ~2480×2480 (~50MB) = ~20x reduction
+>
+> **Session notes**: `.claude/archive/ARCHIVE_2026-01-14_pixel_masking_session_notes.md`
 
 ## Session 7: Training Loop Comparison (January 2025)
 
