@@ -2,7 +2,7 @@
 
 Track performance across development milestones. Update after significant changes.
 
-**How to update**: Run `python tests/test_estep_comparison.py` and copy results here.
+**How to update**: Run `python run_benchmark.py` and copy results here.
 
 ---
 
@@ -31,7 +31,7 @@ Track performance across development milestones. Update after significant change
 
 ## Benchmark: 2026-01-18 (Gradient Mode Comparison)
 
-**Command**: `python test_estep_pnas.py --mode MODE --gradient-mode GRAD --ntilde M`
+**Command**: `python run_single_mode.py --mode MODE --gradient-mode GRAD --ntilde M`
 
 | Mode        | Gradient | M=50 (ExplVar/Time) | M=75         | M=100            | M=200 |
 |------       |----------|---------------------|------        |-------           |-------|
@@ -64,7 +64,7 @@ Track performance across development milestones. Update after significant change
 
 **Solution**: Cache K, K̃ matrices and reuse across Newton iterations.
 
-**Command**: `python test_estep_pnas.py --mode vargp_style --ntilde 50 [--no-cache]`
+**Command**: `python run_single_mode.py --mode vargp_style --ntilde 50 [--no-cache]`
 
 ### Performance Results (M=50, N=500)
 
@@ -92,7 +92,7 @@ Track performance across development milestones. Update after significant change
 ## Benchmark: 2026-01-20 (Whitening + Caching Comparison)
 
 **Commit**: `7f27b01`
-**Command**: `python tests/test_estep_comparison.py --ntilde M`
+**Command**: `python run_benchmark.py --ntilde M`
 
 Tests whitened+cached (new default) vs legacy (no-whitening+cached) implementations.
 
@@ -148,7 +148,7 @@ The whitened implementation collapses at M=75 specifically. This warrants invest
 ## Benchmark: 2026-01-20 (n_train=2000 Comparison)
 
 **Commit**: `39b04c9`
-**Command**: `python tests/test_estep_comparison.py --ntilde M --n-train 2000`
+**Command**: `python run_benchmark.py --ntilde M --n-train 2000`
 
 Tests with 4x more training data (2000 vs 500) to see if varGP degradation at high M persists.
 

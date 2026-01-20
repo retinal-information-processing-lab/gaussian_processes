@@ -13,8 +13,9 @@ This document tracks the porting effort from the custom variational GP implement
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
 | **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy COMPLETE |
-| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `test_estep_pnas.py`, `tests/` |
-| **Run test** | `conda run -n pytorch_gpytorch python test_estep_pnas.py` (modes: vargp_old, adam, efm, vargp_style) |
+| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `run_single_mode.py`, `run_benchmark.py` |
+| **Run benchmark** | `python run_benchmark.py` - compares all 4 modes, canonical results |
+| **Run single mode** | `python run_single_mode.py --mode vargp_style` - experimentation with one mode |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
@@ -41,7 +42,7 @@ This document tracks the porting effort from the custom variational GP implement
 > torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
 > ```
 > This replicates a side effect from `GP_utils.py` line 49. Without it, `test_kernel_cache.py` fails
-> while `test_estep_pnas.py` succeeds - same code, different random sequences.
+> while `run_single_mode.py` succeeds - same code, different random sequences.
 >
 > **We don't understand why this works.** The assignment to `torch.pi` (a built-in constant since
 > PyTorch 1.8) somehow affects random state. This is cargo cult programming.
@@ -73,7 +74,7 @@ This document tracks the porting effort from the custom variational GP implement
 > - `whitening=True`: Use `VariationalStrategy` (default, stores whitened params, faster)
 > - `whitening=False`: Use `UnwhitenedVariationalStrategy` (stores natural params directly)
 >
-> **CLI usage**: `python test_estep_pnas.py --mode vargp_style --unwhitened`
+> **CLI usage**: `python run_single_mode.py --mode vargp_style --unwhitened`
 >
 > **When to use unwhitened**: Investigating EM-style optimization, debugging whitening issues.
 >
@@ -230,7 +231,7 @@ Note: Avaid using the .data parameter and if you need to, raise it to the user. 
 - `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
 - `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
 - `train.py` - Training and evaluation utilities
-- `test_stage1_cI.py` - Stage 1 (C=I) testing script, supports `--no-rf` flag
+- `archive/test_stage1_cI.py` - Stage 1 (C=I) testing script (archived, superseded by run_single_mode.py)
 
 ### Stage 2: Structured Covariance Matrix C
 **Status**: COMPLETE (January 2025)
@@ -272,7 +273,7 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 
 **Files modified**:
 - `kernels.py` - added RF parameters, `_setup_pixel_coords()`, `_compute_C_matrix()`
-- `test_stage1_cI.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags
+- `archive/test_stage1_cI.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags (archived)
 
 ### Stage 3: Custom E-step (Deferred)
 **Status**: DEFERRED
@@ -311,7 +312,7 @@ All tasks completed. Validations passed: C=I equivalence, gradient flow, perform
 
 **Usage**:
 ```bash
-python test_estep_pnas.py --mode vargp_style --gradient-mode jacobian
+python run_single_mode.py --mode vargp_style --gradient-mode jacobian
 ```
 
 **Performance characteristics** (old Jacobian-materialization approach):
@@ -346,9 +347,9 @@ kernel = ArcCosineKernel(n_px_side=108, gradient_mode='autograd')
 
 **CLI usage**:
 ```bash
-python test_estep_pnas.py --gradient-mode vjp       # Fast analytical
-python test_estep_pnas.py --gradient-mode jacobian  # Slow reference
-python test_estep_pnas.py --gradient-mode autograd  # PyTorch autograd (default)
+python run_single_mode.py --gradient-mode vjp       # Fast analytical
+python run_single_mode.py --gradient-mode jacobian  # Slow reference
+python run_single_mode.py --gradient-mode autograd  # PyTorch autograd (default)
 ```
 
 **Performance comparison**:
@@ -395,10 +396,10 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 
 | Script | Role | Description |
 |--------|------|-------------|
-| `tests/test_estep_comparison.py` | **Canonical comparison** - runs all 4 implementations | varGP + 3 GPyTorch modes |
-| `test_estep_pnas.py` | **Active development** - experiment with training modes | Single-mode testing |
+| `run_benchmark.py` | **Canonical comparison** - runs all 4 implementations | varGP + 3 GPyTorch modes |
+| `run_single_mode.py` | **Active development** - experiment with training modes | Single-mode testing |
 
-**Run canonical test:** `python tests/test_estep_comparison.py` (M=50 default)
+**Run canonical test:** `python run_benchmark.py` (M=50 default)
 
 **Training modes:**
 - `vargp_old`: Original varGP implementation (reference baseline)
@@ -476,7 +477,7 @@ E-step now caches kernel matrices to avoid redundant computation. See Q25 in Dec
 ```python
 kernel = ArcCosineKernel(n_px_side=108, gradient_mode='vjp')
 ```
-Or CLI: `python test_estep_pnas.py --gradient-mode vjp`
+Or CLI: `python run_single_mode.py --gradient-mode vjp`
 
 **Reference formulas in**:
 - `latex_summaries/acosker_kernel_def_and_gradients.tex`
@@ -561,10 +562,10 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
-| `test_stage1_cI.py` | Stage 1 (C=I) testing with Adam, supports `--no-rf` for identity covariance |
-| `test_estep_pnas.py` | **Main test script** - all training modes, supports `--gradient-mode`, `--no-cache`, `--no-whitening` |
-| `tests/test_estep_comparison.py` | **Canonical test** - compares varGP + 3 GPyTorch modes |
-| `tests/test_whitening_paths.py` | Whitening path validation (cached vs non-cached, whitening on/off) |
+| `run_single_mode.py` | **Main test script** - all training modes, supports `--gradient-mode`, `--no-cache`, `--no-whitening` |
+| `run_benchmark.py` | **Canonical benchmark** - compares varGP + 3 GPyTorch modes |
+| `archive/test_stage1_cI.py` | Stage 1 (C=I) testing with Adam (archived, superseded) |
+| `investigations/test_whitening_paths.py` | Whitening path validation (debug script) |
 | `tests/test_kernel_cache.py` | Kernel caching validation |
 | `tests/test_m_whitening.py` | Whitening conversion unit tests |
 | `tests/test_mask_validation.py` | Pixel masking validation |

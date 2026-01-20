@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-Test training loops on real PNAS neural data.
+run_single_mode.py - Run a single training mode on PNAS neural data.
 
-Created by Claude to compare training modes:
+For experimentation and development. Run ONE training mode with full CLI control.
+For canonical benchmarks comparing all modes, use run_benchmark.py instead.
+
+Training modes:
   - vargp_old: Original varGP implementation (reference)
   - adam: Pure Adam optimization (no E-step)
   - efm: E-F-M loop (1 E-step, n F-steps, n M-steps per iteration)
   - vargp_style: GPyTorch matching original varGP training structure
 
 Usage:
-    python test_estep_pnas.py --ntilde 50 --mode vargp_old       # Reference implementation
-    python test_estep_pnas.py --ntilde 50 --mode adam
-    python test_estep_pnas.py --ntilde 50 --mode efm
-    python test_estep_pnas.py --ntilde 50 --mode vargp_style
-    python test_estep_pnas.py  # Uses defaults: M=50, mode=efm
+    python run_single_mode.py --ntilde 50 --mode vargp_old       # Reference implementation
+    python run_single_mode.py --ntilde 50 --mode adam
+    python run_single_mode.py --ntilde 50 --mode efm
+    python run_single_mode.py --ntilde 50 --mode vargp_style
+    python run_single_mode.py  # Uses defaults: M=50, mode=efm
 
 Gradient modes (for GPyTorch modes only):
     --gradient-mode autograd   # PyTorch autograd (default)

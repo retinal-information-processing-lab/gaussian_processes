@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-E-step Implementation Comparison: varGP vs GPyTorch
+run_benchmark.py - Canonical benchmark comparing all training modes.
 
-This is the CANONICAL test script for comparing the reference varGP implementation
-with the GPyTorch port. All parameters are frozen to match one_cell_fit.py defaults.
+This is THE benchmark script for comparing varGP vs GPyTorch implementations.
+Runs all 4 modes and produces a comparison table. Parameters are frozen.
+For single-mode experimentation, use run_single_mode.py instead.
 
 Usage:
-    python tests/test_estep_comparison.py
-    python tests/test_estep_comparison.py --ntilde 75  # Test different M values
-    python tests/test_estep_comparison.py --no-whitening --no-cache  # Test legacy mode
+    python run_benchmark.py
+    python run_benchmark.py --ntilde 75  # Test different M values
+    python run_benchmark.py --no-whitening --no-cache  # Test legacy mode
 
 Whitening/Caching options (vargp_style only):
     --use-whitening / --no-whitening  (default: whitening ON)
@@ -129,7 +130,7 @@ PARAMS = {
 
 def load_data(device, dtype=torch.float32):
     """Load PNAS data with consistent preprocessing."""
-    data_path = Path(__file__).parent.parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
+    data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
     data = np.load(data_path)
 
     # Combine train + val
