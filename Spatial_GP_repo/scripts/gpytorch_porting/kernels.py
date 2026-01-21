@@ -181,6 +181,40 @@ class ArcCosineKernel(Kernel):
             value = torch.as_tensor(value).to(self.raw_sigma_0)
         self.initialize(raw_sigma_0=self.raw_sigma_0_constraint.inverse_transform(value))
 
+    @property
+    def beta(self):
+        """Get the natural beta parameter (RF size).
+
+        Transforms from raw parameterization:
+            raw_m2log2beta = -2 * log(2 * beta)
+            beta = exp(-raw / 2) / 2
+
+        Returns
+        -------
+        Tensor
+            Natural beta value
+        """
+        if not hasattr(self, 'raw_m2log2beta'):
+            raise AttributeError("beta property only available when n_px_side is set")
+        return torch.exp(-self.raw_m2log2beta / 2) * 0.5
+
+    @property
+    def rho(self):
+        """Get the natural rho parameter (smoothness length scale).
+
+        Transforms from raw parameterization:
+            raw_mlog2rho2 = -log(2 * rho^2)
+            rho = exp(-raw / 2) / sqrt(2)
+
+        Returns
+        -------
+        Tensor
+            Natural rho value
+        """
+        if not hasattr(self, 'raw_mlog2rho2'):
+            raise AttributeError("rho property only available when n_px_side is set")
+        return torch.exp(-self.raw_mlog2rho2 / 2) / np.sqrt(2)
+
     def _setup_pixel_coords(self):
         """Setup normalized pixel coordinate grid on [-1, 1] × [-1, 1].
 
