@@ -2,7 +2,59 @@
 
 Track performance across development milestones. Update after significant changes.
 
-**How to update**: Run `python run_benchmark.py` and copy results here.
+---
+
+## REQUIRED FORMAT FOR NEW ENTRIES
+
+**All new benchmark entries MUST follow this template to ensure reproducibility.**
+
+### Template
+
+```markdown
+## Benchmark: YYYY-MM-DD (Title)
+
+### Environment
+| Field | Value |
+|-------|-------|
+| **Commit hash** | `abc1234def5678` (min 7-char) |
+| **Branch** | `pietro/workingbranch` |
+| **Conda env** | `pytorch_gpytorch` |
+| **GPU** | NVIDIA RTX 3090 |
+
+### Training Parameters
+| Parameter | Value |
+|-----------|-------|
+| **n_train** | 500 |
+| **M (ntilde)** | 50 |
+| **n_iter** | 50 |
+| **n_estep** | 10 |
+| **n_mstep** | 10 |
+| **n_fstep** | 10 |
+| **cell_id** | 8 |
+| **seed** | 123 |
+
+### Exact Command
+```
+python run_single_mode.py --mode vargp_style --ntilde 50 --seed 123
+```
+
+### Results
+
+| Mode | M | Seed | Options | Test r | Expl Var | Time | Loss |
+|------|---|------|---------|--------|----------|------|------|
+| vargp_style | 50 | 123 | whitened | 0.7992 | 0.84 | 7.1s | 419.99 |
+
+### Notes
+- Any observations or anomalies
+```
+
+**Why this matters**: Previous benchmarks lack parameter details (n_train, n_iter, etc.), making results non-reproducible and comparisons invalid.
+
+---
+
+## Legacy Results (pre-template)
+
+The following results were logged before this template was established. Parameters may vary and are not fully documented.
 
 ---
 
