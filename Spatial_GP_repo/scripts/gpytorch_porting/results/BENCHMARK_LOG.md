@@ -285,82 +285,66 @@ Tests with 4x more training data (2000 vs 500) to see if varGP degradation at hi
 
 ---
 
-## Benchmark: 2026-01-21 (Hyperparameter Bounds Merge Verification)
+## Benchmark: 2026-01-21 (Hyperparameter Bounds Post-Merge Verification)
 
-**Commit**: `77e6133` (merged hyperparameters-clean-reparametrization → pietro/workingbranch)
-**Purpose**: Verify that adding hyperparameter bounds (beta, rho, epsilon) didn't break existing functionality.
+### Environment
 
-**Command**: `python run_single_mode.py --mode MODE --ntilde M --seed S [OPTIONS]`
+| Field | Value |
+|-------|-------|
+| **Commit hash** | `8855fc9` |
+| **Branch** | `pietro/workingbranch` |
+| **Conda env** | `pytorch_gpytorch` |
+| **GPU** | NVIDIA GeForce RTX 4090 |
 
-### Test Results
+### Training Parameters
 
-| Test | Mode | M | Seed | Options | Test r | Expl Var | Time | Status |
-|------|------|---|------|---------|--------|----------|------|--------|
-| 1 | vargp_style | 50 | 123 | - | 0.7992 | 0.8427 | 6.7s | OK |
-| 2 | vargp_style | 50 | 42 | - | 0.7845 | 0.8283 | 7.0s | OK |
-| 3 | vargp_style | 75 | 123 | - | 0.7928 | 0.8372 | 7.4s | OK |
-| 4 | vargp_style | 50 | 456 | - | nan | nan | 5.4s | KNOWN BAD |
-| 5 | vargp_style | 50 | 123 | --gradient-mode vjp | 0.7114 | 0.7509 | 8.0s | OK |
-| 6 | vargp_style | 50 | 123 | --unwhitened | 0.8511 | 0.8960 | 44.6s | OK |
-| 7 | efm | 50 | 123 | - | 0.8012 | 0.8463 | 31.9s | OK |
-| 8 | adam | 50 | 123 | - | 0.6858 | 0.7228 | 1.9s | OK |
+| Parameter | Value |
+|-----------|-------|
+| **n_train** | 500 |
+| **n_iter** | 50 |
+| **n_estep** | 10 |
+| **n_mstep** | 10 |
+| **n_fstep** | 10 |
+| **cell_id** | 8 |
 
-### Features Verified
+### Exact Commands
 
-1. **Bounds constants**: beta [0.01, 1.0], rho [0.01, 0.5], eps [-1.0, 1.0]
-2. **Property accessors**: `kernel.beta`, `kernel.rho` return natural values
-3. **Clamping**: `clamp_hyperparameters()` correctly clamps out-of-bounds values
-4. **All training modes**: vargp_style, efm, adam work correctly
-5. **Gradient modes**: autograd, vjp both work
-6. **Whitening modes**: whitened, unwhitened both work
+```
+python run_single_mode.py --mode vargp_style --ntilde M --seed S
+python run_single_mode.py --mode vargp_style --ntilde M --seed S --unwhitened
+python run_single_mode.py --mode efm --ntilde M --seed S
+python run_single_mode.py --mode adam --ntilde M --seed S
+```
 
-### Known Issue (Unchanged)
+### Results: vargp_style (whitened, default)
 
-- Seed 456 still causes collapse (nan results) - NOT caused by hyperparameter bounds
-- Root cause is elsewhere (A/lambda0 dynamics, whitening, or inducing point selection)
+| Mode | M | Seed | Options | Test r | Expl Var | Time | Loss |
+|------|---|------|---------|--------|----------|------|------|
+| vargp_style | 50 | 42 | whitened | 0.7845 | 0.83 | 7.1s | 421.54 |
+| vargp_style | 50 | 123 | whitened | 0.7992 | 0.84 | 7.1s | 419.99 |
+| vargp_style | 50 | 456 | whitened | nan | nan | 5.7s | 496.25 |
+| vargp_style | 75 | 42 | whitened | 0.3317 | 0.35 | 8.2s | 514.41 |
+| vargp_style | 75 | 123 | whitened | 0.7928 | 0.84 | 7.8s | 414.19 |
+| vargp_style | 75 | 456 | whitened | -0.0000 | 0.00 | 6.4s | 496.25 |
+| vargp_style | 100 | 123 | whitened | 0.7941 | 0.84 | 8.1s | 422.17 |
+| vargp_style | 200 | 123 | whitened | 0.7763 | 0.82 | 11.4s | 418.40 |
 
-### Pending Issue Discovered
+### Results: vargp_style (unwhitened/legacy)
 
-- **Amp placement**: GPyTorch uses ScaleKernel (Amp outside K) vs varGP uses Amp inside C
-- These are mathematically different (sigma_0 interaction differs)
-- Fix planned: move Amp inside `_compute_C_matrix()`
+| Mode | M | Seed | Options | Test r | Expl Var | Time | Loss |
+|------|---|------|---------|--------|----------|------|------|
+| vargp_style | 50 | 42 | --unwhitened | 0.6490 | 0.69 | 30.9s | 410.62 |
+| vargp_style | 50 | 123 | --unwhitened | 0.8511 | 0.90 | 47.0s | 419.52 |
+| vargp_style | 50 | 456 | --unwhitened | 0.6319 | 0.66 | 54.0s | 430.57 |
 
+### Results: Other Modes
 
----
-
-## Benchmark: 2026-01-21 (Post-Merge Comprehensive Verification)
-
-**Commit**: `8855fc9`
-**Command**: `python run_single_mode.py --mode MODE --ntilde M --seed S [--unwhitened]`
-
-### Seed Sensitivity: vargp_style (whitened)
-
-| M | Seed | Test r | Expl Var | Time | Loss |
-|---|------|--------|----------|------|------|
-| 50 | 42 | 0.7845 | 0.83 | 7.1s | 421.54 |
-| 50 | 123 | 0.7992 | 0.84 | 7.1s | 419.99 |
-| 50 | 456 | nan | nan | 5.7s | 496.25 |
-| 75 | 42 | 0.3317 | 0.35 | 8.2s | 514.41 |
-| 75 | 123 | 0.7928 | 0.84 | 7.8s | 414.19 |
-| 75 | 456 | -0.0000 | 0.00 | 6.4s | 496.25 |
-| 100 | 123 | 0.7941 | 0.84 | 8.1s | 422.17 |
-| 200 | 123 | 0.7763 | 0.82 | 11.4s | 418.40 |
-
-### Legacy (unwhitened) M=50
-
-| Seed | Test r | Expl Var | Time | Loss |
-|------|--------|----------|------|------|
-| 42 | 0.6490 | 0.69 | 30.9s | 410.62 |
-| 123 | 0.8511 | 0.90 | 47.0s | 419.52 |
-| 456 | 0.6319 | 0.66 | 54.0s | 430.57 |
-
-### Other Modes (M=50, seed=123)
-
-| Mode | Test r | Expl Var | Time | Loss |
-|------|--------|----------|------|------|
-| efm | 0.8012 | 0.85 | 33.2s | 505.29 |
-| adam | 0.6858 | 0.72 | 2.0s | 493.02 |
-| efm (M=75) | 0.8176 | 0.86 | 37.5s | 553.16 |
+| Mode | M | Seed | Options | Test r | Expl Var | Time | Loss |
+|------|---|------|---------|--------|----------|------|------|
+| efm | 50 | 123 | - | 0.8012 | 0.85 | 33.2s | 505.29 |
+| efm | 75 | 123 | - | 0.8176 | 0.86 | 37.5s | 553.16 |
+| adam | 50 | 123 | - | 0.6858 | 0.72 | 2.0s | 493.02 |
+| vargp_style | 50 | 123 | --gradient-mode vjp | 0.7114 | 0.75 | 8.0s | 427.47 |
 
 ### Comparison with Previous Results
 
@@ -373,11 +357,11 @@ Tests with 4x more training data (2000 vs 500) to see if varGP degradation at hi
 | M=50 seed=123 legacy | 0.90 | 0.90 | 0.00 |
 | M=50 seed=456 legacy | 0.66 | 0.66 | 0.00 |
 
-### Key Findings
+### Notes
 
-1. **No regression**: Whitened mode unchanged for good seeds (±0.01)
-2. **M=75 seed=42 improved**: 0.08 → 0.35 (bounds helped partial collapse)
-3. **Collapse seeds unchanged**: 456 still collapses in whitened mode
-4. **Legacy mode stable**: Never collapses, handles all seeds
-5. **EFM/Adam consistent**: Same as before
+1. **No regression**: Whitened mode unchanged for good seeds (within ±0.01)
+2. **M=75 seed=42 improved**: 0.08 → 0.35 (bounds helped partial collapse case)
+3. **Collapse seeds unchanged**: Seed 456 still collapses in whitened mode
+4. **Legacy mode stable**: Never collapses, handles all seeds correctly
+5. **Pending issue**: Amp placement differs from varGP (ScaleKernel vs inside C)
 
