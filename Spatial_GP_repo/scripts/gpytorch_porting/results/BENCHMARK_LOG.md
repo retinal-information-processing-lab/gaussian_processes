@@ -273,3 +273,59 @@ Tests with 4x more training data (2000 vs 500) to see if varGP degradation at hi
 - These are mathematically different (sigma_0 interaction differs)
 - Fix planned: move Amp inside `_compute_C_matrix()`
 
+
+---
+
+## Benchmark: 2026-01-21 (Post-Merge Comprehensive Verification)
+
+**Commit**: `8855fc9`
+**Command**: `python run_single_mode.py --mode MODE --ntilde M --seed S [--unwhitened]`
+
+### Seed Sensitivity: vargp_style (whitened)
+
+| M | Seed | Test r | Expl Var | Time | Loss |
+|---|------|--------|----------|------|------|
+| 50 | 42 | 0.7845 | 0.83 | 7.1s | 421.54 |
+| 50 | 123 | 0.7992 | 0.84 | 7.1s | 419.99 |
+| 50 | 456 | nan | nan | 5.7s | 496.25 |
+| 75 | 42 | 0.3317 | 0.35 | 8.2s | 514.41 |
+| 75 | 123 | 0.7928 | 0.84 | 7.8s | 414.19 |
+| 75 | 456 | -0.0000 | 0.00 | 6.4s | 496.25 |
+| 100 | 123 | 0.7941 | 0.84 | 8.1s | 422.17 |
+| 200 | 123 | 0.7763 | 0.82 | 11.4s | 418.40 |
+
+### Legacy (unwhitened) M=50
+
+| Seed | Test r | Expl Var | Time | Loss |
+|------|--------|----------|------|------|
+| 42 | 0.6490 | 0.69 | 30.9s | 410.62 |
+| 123 | 0.8511 | 0.90 | 47.0s | 419.52 |
+| 456 | 0.6319 | 0.66 | 54.0s | 430.57 |
+
+### Other Modes (M=50, seed=123)
+
+| Mode | Test r | Expl Var | Time | Loss |
+|------|--------|----------|------|------|
+| efm | 0.8012 | 0.85 | 33.2s | 505.29 |
+| adam | 0.6858 | 0.72 | 2.0s | 493.02 |
+| efm (M=75) | 0.8176 | 0.86 | 37.5s | 553.16 |
+
+### Comparison with Previous Results
+
+| Config | OLD | NEW | Delta |
+|--------|-----|-----|-------|
+| M=50 seed=42 whitened | 0.84 | 0.83 | -0.01 |
+| M=50 seed=123 whitened | 0.83 | 0.84 | +0.01 |
+| M=75 seed=42 whitened | 0.08 | 0.35 | **+0.27** |
+| M=75 seed=123 whitened | 0.83 | 0.84 | +0.01 |
+| M=50 seed=123 legacy | 0.90 | 0.90 | 0.00 |
+| M=50 seed=456 legacy | 0.66 | 0.66 | 0.00 |
+
+### Key Findings
+
+1. **No regression**: Whitened mode unchanged for good seeds (±0.01)
+2. **M=75 seed=42 improved**: 0.08 → 0.35 (bounds helped partial collapse)
+3. **Collapse seeds unchanged**: 456 still collapses in whitened mode
+4. **Legacy mode stable**: Never collapses, handles all seeds
+5. **EFM/Adam consistent**: Same as before
+
