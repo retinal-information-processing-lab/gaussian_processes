@@ -226,6 +226,7 @@ This prevents losing results during session compaction. Complements Section 5.5 
 3. **Include reproduction command** in the script's docstring or in CLAUDE.md
 
 **Script requirements**:
+- DOES NOT ALLOW RANDOM ELEMENTS . seeds are controlled and same code execution should produce EXACTLY THE SAME RESULTS.
 - Self-contained (loads data, runs test, prints results)
 - Configurable via command-line args for key parameters
 - Prints the metrics that are documented
@@ -277,6 +278,10 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 - One reminder per natural milestone is enough
 - If the user ignores the suggestion, move on
 - Git is a tool, not the goal
+
+## 8.4 Git safety
+   Always run `git branch --show-current` before making commits or 
+   switching branches. Confirm with me before any branch operations.
 
 ---
 

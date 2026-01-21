@@ -1202,7 +1202,15 @@ def m_step_lbfgs(
         lr: Learning rate for LBFGS (default 0.1 matches varGP)
         verbose: Print debug info
         debug: Print detailed debugging info
+
+    DEPRECATED: This function does not support hyperparameter clamping.
+    Use m_step() instead.
     """
+    raise NotImplementedError(
+        "m_step_lbfgs() is deprecated and does not support hyperparameter clamping. "
+        "Use m_step() (Adam-based) instead."
+    )
+
     if n_mstep == 0:
         return
 
@@ -1348,7 +1356,15 @@ def m_step_lbfgs_grouped(
         lr_sigma0: Learning rate for sigma_0 (default 10x larger)
         lr_other: Learning rate for other parameters
         verbose: Print debug info
+
+    DEPRECATED: This function does not support hyperparameter clamping.
+    Use m_step() instead.
     """
+    raise NotImplementedError(
+        "m_step_lbfgs_grouped() is deprecated and does not support hyperparameter clamping. "
+        "Use m_step() (Adam-based) instead."
+    )
+
     if n_mstep == 0:
         return
 
