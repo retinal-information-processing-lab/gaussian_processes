@@ -108,6 +108,20 @@ class ArcCosineKernel(Kernel):
     has_lengthscale = False  # Arc-cosine doesn't have a lengthscale
     MASK_THRESHOLD = 0.001  # Pixels with α >= threshold are included
 
+    # Bounds for beta (RF size parameter)
+    # beta ∈ [0.01, 1.0] → raw ∈ [-1.39, 7.82]
+    BETA_MIN = 0.01
+    BETA_MAX = 1.0
+    RAW_BETA_MIN = -2 * np.log(2 * BETA_MAX)   # ≈ -1.39
+    RAW_BETA_MAX = -2 * np.log(2 * BETA_MIN)   # ≈ 7.82
+
+    # Bounds for rho (smoothness parameter)
+    # rho ∈ [0.01, 0.5] → raw ∈ [0.69, 8.52]
+    RHO_MIN = 0.01
+    RHO_MAX = 0.5
+    RAW_RHO_MIN = -np.log(2 * RHO_MAX**2)      # ≈ 0.69
+    RAW_RHO_MAX = -np.log(2 * RHO_MIN**2)      # ≈ 8.52
+
     def __init__(self, sigma_0=1.0, C=None, n_px_side=None,
                  eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
                  use_mask=True, gradient_mode='autograd', **kwargs):
@@ -214,6 +228,24 @@ class ArcCosineKernel(Kernel):
         if not hasattr(self, 'raw_mlog2rho2'):
             raise AttributeError("rho property only available when n_px_side is set")
         return torch.exp(-self.raw_mlog2rho2 / 2) / np.sqrt(2)
+
+    def clamp_hyperparameters(self):
+        """Clamp raw hyperparameters to valid bounds (projected gradient descent).
+
+        Call this after optimizer.step() to enforce parameter bounds.
+        This keeps the log-space parameterization while preventing
+        beta/rho from reaching pathological values.
+
+        Bounds:
+            beta ∈ [BETA_MIN, BETA_MAX] = [0.01, 1.0]
+            rho ∈ [RHO_MIN, RHO_MAX] = [0.01, 0.5]
+        """
+        if hasattr(self, 'raw_m2log2beta'):
+            with torch.no_grad():
+                self.raw_m2log2beta.clamp_(self.RAW_BETA_MIN, self.RAW_BETA_MAX)
+        if hasattr(self, 'raw_mlog2rho2'):
+            with torch.no_grad():
+                self.raw_mlog2rho2.clamp_(self.RAW_RHO_MIN, self.RAW_RHO_MAX)
 
     def _setup_pixel_coords(self):
         """Setup normalized pixel coordinate grid on [-1, 1] × [-1, 1].

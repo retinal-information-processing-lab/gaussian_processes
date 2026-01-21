@@ -1166,6 +1166,14 @@ def m_step(
         loss.backward()
         optimizer.step()
 
+        # Clamp hyperparameters to valid bounds (projected gradient descent)
+        # Check both direct kernel and ScaleKernel wrapper cases
+        kernel = model.covar_module
+        if hasattr(kernel, 'clamp_hyperparameters'):
+            kernel.clamp_hyperparameters()
+        elif hasattr(kernel, 'base_kernel') and hasattr(kernel.base_kernel, 'clamp_hyperparameters'):
+            kernel.base_kernel.clamp_hyperparameters()
+
 
 def m_step_lbfgs(
     model: gpytorch.models.ApproximateGP,
