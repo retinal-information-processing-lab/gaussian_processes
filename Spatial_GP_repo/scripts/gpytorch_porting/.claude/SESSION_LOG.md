@@ -5,6 +5,48 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-22: Whitening Instability Confirmation (seed 456)
+
+**Finding:** Whitening confirmed as cause of seed 456 instability.
+
+| Seed | Whitening | Test r |
+|------|-----------|--------|
+| 123 | ON | 0.77 |
+| 123 | OFF | 0.86 |
+| 456 | ON | **0.11** (collapsed) |
+| 456 | OFF | 0.59 |
+
+Unwhitened mode is stable across seeds. Whitened mode fails for certain inducing point configurations.
+
+---
+
+## 2026-01-22: Amp Parameter Implementation (COMPLETE)
+
+**Accomplished:**
+- Implemented `Amp` parameter in `ArcCosineKernel` to match legacy varGP exactly
+- Replaced `ScaleKernel` (linear output scaling) with internal `Amp*C` (non-linear, inside kernel)
+- Updated analytical gradients (VJP and Jacobian modes) with correct `grad_Amp = (dL_dC * C).sum() / Amp`
+- Updated all test files and investigation scripts (15+ files)
+- Validated against legacy: unwhitened mode achieves 0.86 vs varGP's 0.87 explained variance
+- Ran canonical tests with seeds 123 and 456
+
+**Key Findings:**
+- Amp inside C affects kernel non-linearly through sqrt and arccos operations
+- ScaleKernel's linear scaling cannot replicate this behavior
+- Whitening instability at seed 456 is a separate pre-existing issue (not fixed by Amp change)
+- Kernel matrices match reference exactly (max diff = 0.0)
+
+**Files Changed (core):**
+- `kernels.py` - Amp parameter with Positive() constraint, clamp at 1000
+- `analytical_gradients_vjp.py` - Forward/backward with Amp
+- `analytical_gradients.py` - Forward/backward with Amp
+- `run_single_mode.py`, `run_benchmark.py`, `estep.py` - ScaleKernel removal
+- 10+ test/investigation files updated
+
+**Branch:** `bugfix/amp-parameter-mismatch` (ready to commit)
+
+---
+
 ## 2026-01-20: Whitening Collapse Seed Sensitivity Investigation
 
 **Accomplished:**

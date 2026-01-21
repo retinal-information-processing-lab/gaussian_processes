@@ -261,8 +261,11 @@ def test_end_to_end_fit(quick=True):
     for use_mask in [True, False]:
         print(f"\nTraining with use_mask={use_mask}...")
 
-        base_kernel = ArcCosineKernel(
+        # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+        # No need for ScaleKernel wrapper
+        kernel = ArcCosineKernel(
             sigma_0=1.0,
+            Amp=1e-4,  # Amplitude inside C matrix
             n_px_side=108,
             eps_0x=0.0,
             eps_0y=0.0,
@@ -270,8 +273,6 @@ def test_end_to_end_fit(quick=True):
             rho=0.1,
             use_mask=use_mask
         )
-        kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-        kernel.outputscale = 1e-4
 
         model = VariationalGPModel(inducing_points, kernel, jitter=1e-4).double()
         likelihood = PoissonLikelihood(A_init=1.0, lambda0_init=0.0).double()

@@ -67,13 +67,13 @@ def create_model_and_likelihood(X_train, ntilde=50):
     indices = torch.randperm(X_train.shape[0], device=DEVICE)[:ntilde]
     inducing_points = X_train[indices].clone()
 
-    base_kernel = ArcCosineKernel(
-        sigma_0=1.0, n_px_side=108,
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
+    kernel = ArcCosineKernel(
+        sigma_0=1.0, Amp=1e-4, n_px_side=108,
         eps_0x=0.0, eps_0y=0.0,
         beta=0.1, rho=0.1, use_mask=True
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
 
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-6).double().to(DEVICE)
     likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0).double().to(DEVICE)

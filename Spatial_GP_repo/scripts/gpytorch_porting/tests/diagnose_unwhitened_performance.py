@@ -60,8 +60,11 @@ def load_data(device, dtype=torch.float64):
 
 def create_model(inducing_points, params, device, whitening=True):
     """Create model with specified whitening setting."""
-    base_kernel = ArcCosineKernel(
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
+    kernel = ArcCosineKernel(
         sigma_0=params['sigma_0'],
+        Amp=1e-4,  # Amplitude inside C matrix
         n_px_side=params['n_px_side'],
         eps_0x=params['eps_0x'],
         eps_0y=params['eps_0y'],
@@ -69,8 +72,6 @@ def create_model(inducing_points, params, device, whitening=True):
         rho=params['rho'],
         use_mask=True,
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
 
     model = VariationalGPModel(inducing_points.clone(), kernel, jitter=1e-4, whitening=whitening)
     likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0)

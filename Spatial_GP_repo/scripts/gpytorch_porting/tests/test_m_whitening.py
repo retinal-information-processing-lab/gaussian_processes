@@ -72,8 +72,11 @@ def create_model_and_cache(X_train, ntilde=50, device='cuda'):
     inducing_points = X_train[indices].clone()
 
     # Create model with RF structure
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
     kernel = ArcCosineKernel(
         sigma_0=1.0,
+        Amp=1e-4,  # Amplitude inside C matrix
         n_px_side=108,
         beta=0.1,
         rho=0.1,
@@ -82,11 +85,7 @@ def create_model_and_cache(X_train, ntilde=50, device='cuda'):
         use_mask=True
     )
 
-    from gpytorch.kernels import ScaleKernel
-    scaled_kernel = ScaleKernel(kernel)
-    scaled_kernel.outputscale = 1e-4
-
-    model = VariationalGPModel(inducing_points, scaled_kernel).double().to(device)
+    model = VariationalGPModel(inducing_points, kernel).double().to(device)
     likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0).double().to(device)
 
     # Compute kernel cache
@@ -263,7 +262,6 @@ def test_training_runs():
 
     # Import training function
     from estep import train_varGP_style
-    from gpytorch.kernels import ScaleKernel
 
     print("\n  Creating model...")
 
@@ -272,14 +270,14 @@ def test_training_runs():
     indices = torch.randperm(X_train.shape[0])[:50]
     inducing_points = X_train[indices].clone()
 
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
     kernel = ArcCosineKernel(
-        sigma_0=1.0, n_px_side=108, beta=0.1, rho=0.1,
+        sigma_0=1.0, Amp=1e-4, n_px_side=108, beta=0.1, rho=0.1,
         eps_0x=0.0, eps_0y=0.0, use_mask=True
     )
-    scaled_kernel = ScaleKernel(kernel)
-    scaled_kernel.outputscale = 1e-4
 
-    model = VariationalGPModel(inducing_points, scaled_kernel).double().to(device)
+    model = VariationalGPModel(inducing_points, kernel).double().to(device)
     likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0).double().to(device)
 
     # Train with cached path (reduced iterations for faster test)

@@ -68,6 +68,12 @@ class ArcCosineKernel(Kernel):
     sigma_0 : float, optional
         Bias variance parameter (default: 1.0). Controls the kernel value
         when inputs are zero.
+    Amp : float, optional
+        Amplitude parameter (default: 1.0). Multiplies the C matrix directly:
+        C = Amp * alpha * C_smooth * alpha^T. This affects the kernel non-linearly
+        through the sqrt and arccos operations (matching legacy varGP).
+        Different from ScaleKernel which scales output linearly.
+        Clamped at max 1000.0 by clamp_hyperparameters().
     C : Tensor, optional
         Structured covariance matrix (n_features, n_features).
         If None and n_px_side is None, uses identity matrix (Stage 1).
@@ -101,12 +107,19 @@ class ArcCosineKernel(Kernel):
         Unconstrained parameter for sigma_0
     sigma_0 : Property
         Constrained (positive) sigma_0 value
+    raw_Amp : Parameter
+        Unconstrained parameter for Amp
+    Amp : Property
+        Constrained (positive) Amp value
     gradient_mode : str
         Current gradient computation mode
     """
 
     has_lengthscale = False  # Arc-cosine doesn't have a lengthscale
     MASK_THRESHOLD = 0.001  # Pixels with α >= threshold are included
+
+    # Amp (amplitude) max bound for clamping
+    AMP_MAX = 1000.0
 
     # Bounds for beta (RF size parameter)
     # beta ∈ [0.01, 1.0] → raw ∈ [-1.39, 7.82]
@@ -127,7 +140,7 @@ class ArcCosineKernel(Kernel):
     EPS_MIN = -1.0
     EPS_MAX = 1.0
 
-    def __init__(self, sigma_0=1.0, C=None, n_px_side=None,
+    def __init__(self, sigma_0=1.0, Amp=1.0, C=None, n_px_side=None,
                  eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
                  use_mask=True, gradient_mode='autograd', **kwargs):
         super().__init__(**kwargs)
@@ -142,6 +155,16 @@ class ArcCosineKernel(Kernel):
 
         # Now set the actual value via the property (applies inverse transform)
         self.sigma_0 = sigma_0
+
+        # Register Amp parameter (amplitude scaling for C matrix)
+        # Amp multiplies C directly: C = Amp * alpha * C_smooth * alpha^T
+        # This is different from ScaleKernel which scales the output linearly
+        self.register_parameter(
+            name='raw_Amp',
+            parameter=torch.nn.Parameter(torch.zeros(1))
+        )
+        self.register_constraint('raw_Amp', Positive())
+        self.Amp = Amp
 
         # Store C matrix (None = identity for Stage 1)
         self.C = C
@@ -201,6 +224,18 @@ class ArcCosineKernel(Kernel):
         self.initialize(raw_sigma_0=self.raw_sigma_0_constraint.inverse_transform(value))
 
     @property
+    def Amp(self):
+        """Get the constrained Amp value (amplitude scaling for C matrix)."""
+        return self.raw_Amp_constraint.transform(self.raw_Amp)
+
+    @Amp.setter
+    def Amp(self, value):
+        """Set Amp value."""
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value).to(self.raw_Amp)
+        self.initialize(raw_Amp=self.raw_Amp_constraint.inverse_transform(value))
+
+    @property
     def beta(self):
         """Get the natural beta parameter (RF size).
 
@@ -240,11 +275,18 @@ class ArcCosineKernel(Kernel):
         Call this after optimizer.step() to enforce parameter bounds.
 
         Bounds:
+            Amp ∈ (0, 1000] (via raw parameter)
             beta ∈ [0.01, 1.0] (via raw parameter)
             rho ∈ [0.01, 0.5] (via raw parameter)
             eps_0x, eps_0y ∈ [-1.0, 1.0] (direct)
         """
         with torch.no_grad():
+            # Clamp Amp at max 1000.0
+            if hasattr(self, 'raw_Amp'):
+                max_raw_Amp = self.raw_Amp_constraint.inverse_transform(
+                    torch.tensor(self.AMP_MAX, device=self.raw_Amp.device, dtype=self.raw_Amp.dtype)
+                )
+                self.raw_Amp.clamp_(max=max_raw_Amp.item())
             if hasattr(self, 'raw_m2log2beta'):
                 self.raw_m2log2beta.clamp_(self.RAW_BETA_MIN, self.RAW_BETA_MAX)
             if hasattr(self, 'raw_mlog2rho2'):
@@ -296,11 +338,16 @@ class ArcCosineKernel(Kernel):
     def _compute_C_matrix(self, apply_mask=False):
         """Compute structured covariance matrix C encoding RF properties.
 
-        C = α_local[:, None] · C_smooth · α_local[None, :]
+        C = Amp · α_local[:, None] · C_smooth · α_local[None, :]
 
         where:
+            Amp = amplitude scaling (matches legacy varGP, NOT same as ScaleKernel)
             α_local[i] = exp(-β · ||ξᵢ - ξ₀||²)
             C_smooth[i,j] = exp(-ρ² · ||ξᵢ - ξⱼ||²)
+
+        Note: Amp is multiplied INTO C, affecting the kernel non-linearly through
+        the sqrt and arccos operations. This is different from ScaleKernel which
+        scales the output linearly.
 
         Parameters
         ----------
@@ -342,8 +389,9 @@ class ArcCosineKernel(Kernel):
         dist_sq_pairwise = dx**2 + dy**2
         C_smooth = torch.exp(-rho2 * dist_sq_pairwise)
 
-        # Full C matrix: outer product of alpha weighted by C_smooth
-        C = alpha[:, None] * C_smooth * alpha[None, :]
+        # Full C matrix: Amp * outer product of alpha weighted by C_smooth
+        # This matches legacy varGP: C = theta['Amp'] * alpha * C_smooth * alpha^T
+        C = self.Amp * alpha[:, None] * C_smooth * alpha[None, :]
 
         # Symmetrize for numerical stability
         C = (C + C.T) / 2
@@ -378,6 +426,7 @@ class ArcCosineKernel(Kernel):
             K = GradFunction.apply(
                 x1, x2,
                 self.sigma_0,
+                self.Amp,
                 self.eps_0x, self.eps_0y,
                 self.raw_m2log2beta, self.raw_mlog2rho2,
                 self.n_px_side, self.use_mask, diag

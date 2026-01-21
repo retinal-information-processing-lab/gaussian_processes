@@ -13,9 +13,10 @@ This document tracks the porting effort from the custom variational GP implement
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
 | **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy COMPLETE |
-| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `run_single_mode.py`, `run_benchmark.py` |
-| **Run benchmark** | `python run_benchmark.py` - compares all 4 modes, canonical results |
-| **Run single mode** | `python run_single_mode.py --mode vargp_style` - experimentation with one mode |
+| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `run_single_mode.py`, `run_canonical_tests.py` |
+| **Run canonical benchmark** | `python run_canonical_tests.py --seed 123` - 12-config matrix to JSONL |
+| **Run single mode** | `python run_single_mode.py --mode vargp_style --json-append results/benchmark_results.jsonl` |
+| **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
@@ -562,8 +563,10 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
-| `run_single_mode.py` | **Main test script** - all training modes, supports `--gradient-mode`, `--no-cache`, `--no-whitening` |
-| `run_benchmark.py` | **Canonical benchmark** - compares varGP + 3 GPyTorch modes |
+| `run_single_mode.py` | **Main test script** - all training modes, `--json-append` for benchmark tracking |
+| `run_canonical_tests.py` | **Canonical benchmark runner** - 12-config matrix per seed, outputs to JSONL |
+| `query_benchmark.py` | **Query tool** - filter/compare benchmark results from JSONL |
+| `run_benchmark.py` | Legacy benchmark - compares varGP + 3 GPyTorch modes (stdout only) |
 | `archive/test_stage1_cI.py` | Stage 1 (C=I) testing with Adam (archived, superseded) |
 | `investigations/test_whitening_paths.py` | Whitening path validation (debug script) |
 | `tests/test_kernel_cache.py` | Kernel caching validation |
@@ -571,7 +574,8 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `tests/test_mask_validation.py` | Pixel masking validation |
 | `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
 | `tests/test_analytical_gradients.py` | Analytical gradient validation |
-| `results/BENCHMARK_LOG.md` | Performance tracking across milestones |
+| `results/benchmark_results.jsonl` | **Primary benchmark output** - machine-readable, append-only |
+| `results/BENCHMARK_LOG.md` | Legacy performance tracking (frozen, historical only) |
 | `results/PROFILING_2026-01-18.md` | E-step profiling results (kernel caching optimization) |
 | `.claude/archive/ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Kernel caching implementation details and whitening analysis (historical) |
 

@@ -100,13 +100,13 @@ def load_data(n_train=500, cellid=8):
 
 def create_model_and_likelihood(inducing_points, A_init=0.01, lambda0_init=1.0):
     """Create model and likelihood for GPyTorch modes."""
-    base_kernel = ArcCosineKernel(
-        sigma_0=1.0, n_px_side=N_PX_SIDE,
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
+    kernel = ArcCosineKernel(
+        sigma_0=1.0, Amp=1e-4, n_px_side=N_PX_SIDE,
         eps_0x=0.0, eps_0y=0.0,
         beta=0.1, rho=0.1, use_mask=True
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
 
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4).double().to(DEVICE)
     likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init).double().to(DEVICE)

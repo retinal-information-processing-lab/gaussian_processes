@@ -17,7 +17,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernels import ArcCosineKernel
-from gpytorch.kernels import ScaleKernel
 
 
 def test_gradient_correctness():
@@ -220,14 +219,15 @@ def test_training_equivalence():
 
     def train_kernel(gradient_mode, n_steps=50, lr=0.01):
         """Train kernel parameters and return loss trajectory."""
-        kernel = ScaleKernel(
-            ArcCosineKernel(
-                sigma_0=1.0,
-                n_px_side=n_px_side,
-                eps_0x=0.0, eps_0y=0.0,
-                beta=0.1, rho=0.1,
-                gradient_mode=gradient_mode
-            )
+        # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+        # No need for ScaleKernel wrapper
+        kernel = ArcCosineKernel(
+            sigma_0=1.0,
+            Amp=1e-4,  # Amplitude inside C matrix
+            n_px_side=n_px_side,
+            eps_0x=0.0, eps_0y=0.0,
+            beta=0.1, rho=0.1,
+            gradient_mode=gradient_mode
         ).to(device).double()
 
         # Simple loss: distance from target kernel norm

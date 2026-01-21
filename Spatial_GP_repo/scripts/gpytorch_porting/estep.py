@@ -1167,12 +1167,11 @@ def m_step(
         optimizer.step()
 
         # Clamp hyperparameters to valid bounds (projected gradient descent)
-        # Check both direct kernel and ScaleKernel wrapper cases
+        # Since kernel is now ArcCosineKernel directly (not ScaleKernel wrapper),
+        # clamp_hyperparameters is called on model.covar_module directly
         kernel = model.covar_module
         if hasattr(kernel, 'clamp_hyperparameters'):
             kernel.clamp_hyperparameters()
-        elif hasattr(kernel, 'base_kernel') and hasattr(kernel.base_kernel, 'clamp_hyperparameters'):
-            kernel.base_kernel.clamp_hyperparameters()
 
 
 def m_step_lbfgs(
@@ -1214,7 +1213,7 @@ def m_step_lbfgs(
     if n_mstep == 0:
         return
 
-    # Get kernel parameters (from ScaleKernel wrapper)
+    # Get kernel parameters (kernel is ArcCosineKernel directly, not wrapped)
     kernel_params = list(model.covar_module.parameters())
 
     # Debug: capture initial state
@@ -1251,21 +1250,21 @@ def m_step_lbfgs(
         # Check parameter bounds (matching varGP behavior)
         # If bounds violated, set gradient to inf and return inf loss
         # This tells LBFGS to try a smaller step
-        base_kernel = model.covar_module.base_kernel
+        kernel = model.covar_module  # ArcCosineKernel directly (not wrapped)
         return_infinite_loss = False
-        if hasattr(base_kernel, 'eps_0x') and hasattr(base_kernel, 'eps_0y'):
-            eps_0x = base_kernel.eps_0x.item()
-            eps_0y = base_kernel.eps_0y.item()
+        if hasattr(kernel, 'eps_0x') and hasattr(kernel, 'eps_0y'):
+            eps_0x = kernel.eps_0x.item()
+            eps_0y = kernel.eps_0y.item()
             # Bounds: eps_0 should be in [-0.99, 0.99] (slightly inside image boundary)
             # Using 0.99 instead of 1.0 to keep RF center well inside image
             if not (-0.99 <= eps_0x <= 0.99):
                 return_infinite_loss = True
-                if base_kernel.eps_0x.requires_grad:
-                    base_kernel.eps_0x.grad = torch.full_like(base_kernel.eps_0x, float('inf'))
+                if kernel.eps_0x.requires_grad:
+                    kernel.eps_0x.grad = torch.full_like(kernel.eps_0x, float('inf'))
             if not (-0.99 <= eps_0y <= 0.99):
                 return_infinite_loss = True
-                if base_kernel.eps_0y.requires_grad:
-                    base_kernel.eps_0y.grad = torch.full_like(base_kernel.eps_0y, float('inf'))
+                if kernel.eps_0y.requires_grad:
+                    kernel.eps_0y.grad = torch.full_like(kernel.eps_0y, float('inf'))
 
         if return_infinite_loss:
             bounds_violations[0] += 1
@@ -1342,7 +1341,7 @@ def m_step_lbfgs_grouped(
     Splits kernel parameters into 3 groups with different learning rates:
     1. RF center (eps_0x, eps_0y): lr_center, with bounds checking
     2. sigma_0: lr_sigma0 (larger, since gradient is small)
-    3. Other (outputscale, beta, rho): lr_other
+    3. Other (Amp, beta, rho): lr_other
 
     This is block coordinate descent - each group optimized while others held fixed.
 
@@ -1368,7 +1367,7 @@ def m_step_lbfgs_grouped(
     if n_mstep == 0:
         return
 
-    base_kernel = model.covar_module.base_kernel
+    kernel = model.covar_module  # ArcCosineKernel directly (not wrapped)
 
     # Identify parameter groups
     center_params = []
@@ -1412,16 +1411,16 @@ def m_step_lbfgs_grouped(
                     p.grad.zero_()
 
             # Bounds check for eps_0
-            if hasattr(base_kernel, 'eps_0x') and hasattr(base_kernel, 'eps_0y'):
-                eps_0x = base_kernel.eps_0x.item()
-                eps_0y = base_kernel.eps_0y.item()
+            if hasattr(kernel, 'eps_0x') and hasattr(kernel, 'eps_0y'):
+                eps_0x = kernel.eps_0x.item()
+                eps_0y = kernel.eps_0y.item()
                 if not (-0.99 <= eps_0x <= 0.99):
-                    if base_kernel.eps_0x.requires_grad:
-                        base_kernel.eps_0x.grad = torch.full_like(base_kernel.eps_0x, float('inf'))
+                    if kernel.eps_0x.requires_grad:
+                        kernel.eps_0x.grad = torch.full_like(kernel.eps_0x, float('inf'))
                     return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
                 if not (-0.99 <= eps_0y <= 0.99):
-                    if base_kernel.eps_0y.requires_grad:
-                        base_kernel.eps_0y.grad = torch.full_like(base_kernel.eps_0y, float('inf'))
+                    if kernel.eps_0y.requires_grad:
+                        kernel.eps_0y.grad = torch.full_like(kernel.eps_0y, float('inf'))
                     return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
             output = model(X)
@@ -1468,7 +1467,7 @@ def m_step_lbfgs_grouped(
         optimizer.step(counted_closure)
         total_closures[0] += closure_count[0]
 
-    # Group 3: Other params (outputscale, beta, rho)
+    # Group 3: Other params (Amp, beta, rho)
     if other_params:
         optimizer = torch.optim.LBFGS(
             other_params, lr=lr_other, max_iter=n_mstep,

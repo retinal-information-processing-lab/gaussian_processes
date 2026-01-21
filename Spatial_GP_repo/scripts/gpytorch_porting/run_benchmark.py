@@ -290,8 +290,11 @@ def run_gpytorch_efm(X, R, X_test, R_test, params, device, gradient_mode='autogr
         use_mask=True,
         gradient_mode=gradient_mode,
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
+    # Use base_kernel directly with internal Amp parameter (matches legacy varGP)
+    # Amp multiplies C directly: C = Amp * alpha * C_smooth * alpha^T
+    # This is different from ScaleKernel which scales output linearly
+    kernel = base_kernel
+    kernel.Amp = 1e-4  # Match legacy varGP initialization
 
     # Create model and likelihood (GPyTorch defaults)
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
@@ -387,8 +390,11 @@ def run_gpytorch_vargp_style(X, R, X_test, R_test, params, device,
         use_mask=True,
         gradient_mode=gradient_mode,
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
+    # Use base_kernel directly with internal Amp parameter (matches legacy varGP)
+    # Amp multiplies C directly: C = Amp * alpha * C_smooth * alpha^T
+    # This is different from ScaleKernel which scales output linearly
+    kernel = base_kernel
+    kernel.Amp = 1e-4  # Match legacy varGP initialization
 
     # Create model and likelihood (varGP-style initialization)
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4, whitening=whitening)
@@ -494,8 +500,11 @@ def run_gpytorch_adam(X, R, X_test, R_test, params, device, gradient_mode='autog
         use_mask=True,
         gradient_mode=gradient_mode,
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = 1e-4
+    # Use base_kernel directly with internal Amp parameter (matches legacy varGP)
+    # Amp multiplies C directly: C = Amp * alpha * C_smooth * alpha^T
+    # This is different from ScaleKernel which scales output linearly
+    kernel = base_kernel
+    kernel.Amp = 1e-4  # Match legacy varGP initialization
 
     # Create model and likelihood (GPyTorch defaults)
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)

@@ -31,7 +31,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
+    def forward(ctx, x1, x2, sigma_0, Amp, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
                 n_px_side, use_mask, diag):
         """
         Forward pass: compute K and save intermediates.
@@ -40,6 +40,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
         """
         # Squeeze scalar parameters
         sigma_0_val = sigma_0.squeeze() if sigma_0.dim() > 0 else sigma_0
+        Amp_val = Amp.squeeze() if Amp.dim() > 0 else Amp
         eps_0x_val = eps_0x.squeeze() if eps_0x.dim() > 0 else eps_0x
         eps_0y_val = eps_0y.squeeze() if eps_0y.dim() > 0 else eps_0y
         beta_raw = raw_m2log2beta.squeeze() if raw_m2log2beta.dim() > 0 else raw_m2log2beta
@@ -51,6 +52,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
         # Check if we need gradients
         needs_grad = (
             (hasattr(sigma_0, 'requires_grad') and sigma_0.requires_grad) or
+            (hasattr(Amp, 'requires_grad') and Amp.requires_grad) or
             (hasattr(eps_0x, 'requires_grad') and eps_0x.requires_grad) or
             (hasattr(eps_0y, 'requires_grad') and eps_0y.requires_grad) or
             (hasattr(raw_m2log2beta, 'requires_grad') and raw_m2log2beta.requires_grad) or
@@ -108,8 +110,9 @@ class ArcCosineVJPGradients(torch.autograd.Function):
         logS = -rho2 * dist_pairwise
         S = torch.exp(logS)  # (nx, nx)
 
-        # Full C matrix (Amp=1.0 since ScaleKernel handles amplitude)
-        C = alpha[:, None] * S * alpha[None, :]  # (nx, nx)
+        # Full C matrix with Amp scaling (matches legacy varGP)
+        # C = Amp * alpha * C_smooth * alpha^T
+        C = Amp_val * alpha[:, None] * S * alpha[None, :]  # (nx, nx)
         C = (C + C.T) / 2  # Symmetrize for numerical stability
 
         # ===== Stage 3: Apply mask to inputs =====
@@ -171,7 +174,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
                     dist_center, dist_pairwise,
                     xcord, ycord,
                     # Parameters
-                    sigma_0_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw
+                    sigma_0_val, Amp_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw
                 )
                 ctx.n1 = n1
                 ctx.n2 = n2
@@ -179,12 +182,13 @@ class ArcCosineVJPGradients(torch.autograd.Function):
                 ctx.diag = False
                 # Save original input shapes for gradient reshaping
                 ctx.sigma0_shape = sigma_0.shape
+                ctx.Amp_shape = Amp.shape
                 ctx.eps0x_shape = eps_0x.shape
                 ctx.eps0y_shape = eps_0y.shape
                 ctx.beta_shape = raw_m2log2beta.shape
                 ctx.rho_shape = raw_mlog2rho2.shape
             else:
-                ctx.save_for_backward(*([torch.empty(0, device=device, dtype=dtype)] * 24))
+                ctx.save_for_backward(*([torch.empty(0, device=device, dtype=dtype)] * 25))
                 ctx.diag = False
 
             ctx.needs_grad = needs_grad
@@ -204,7 +208,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
                     alpha, S, C,
                     dist_center, dist_pairwise,
                     xcord, ycord,
-                    sigma_0_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw
+                    sigma_0_val, Amp_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw
                 )
                 ctx.n1 = n1
                 ctx.n2 = n1
@@ -212,12 +216,13 @@ class ArcCosineVJPGradients(torch.autograd.Function):
                 ctx.diag = True
                 # Save original input shapes for gradient reshaping
                 ctx.sigma0_shape = sigma_0.shape
+                ctx.Amp_shape = Amp.shape
                 ctx.eps0x_shape = eps_0x.shape
                 ctx.eps0y_shape = eps_0y.shape
                 ctx.beta_shape = raw_m2log2beta.shape
                 ctx.rho_shape = raw_mlog2rho2.shape
             else:
-                ctx.save_for_backward(*([torch.empty(0, device=device, dtype=dtype)] * 24))
+                ctx.save_for_backward(*([torch.empty(0, device=device, dtype=dtype)] * 25))
                 ctx.diag = True
 
             ctx.needs_grad = needs_grad
@@ -234,7 +239,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
         gradients via element-wise operations with dL/dC.
         """
         if not ctx.needs_grad:
-            return (None,) * 10
+            return (None,) * 11
 
         # Retrieve saved tensors
         (x1_t, x2_t, Cx1, Cx2,
@@ -243,7 +248,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
          alpha, S, C,
          dist_center, dist_pairwise,
          xcord, ycord,
-         sigma_0_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw) = ctx.saved_tensors
+         sigma_0_val, Amp_val, eps_0x_val, eps_0y_val, beta_raw, rho_raw) = ctx.saved_tensors
 
         n1, n2, nx = ctx.n1, ctx.n2, ctx.nx
         G = grad_output  # dL/dK, shape (n1, n2) or (n1,) for diag
@@ -310,11 +315,16 @@ class ArcCosineVJPGradients(torch.autograd.Function):
         dL_dC = (dL_dC + dL_dC.T) / 2
 
         # ===== Step 7: Chain dL/dC to hyperparameters =====
-        # C = alpha[:,None] * S * alpha[None,:] (Amp=1)
+        # C = Amp * alpha[:,None] * S * alpha[None,:]
 
-        # dL/dalpha: A = alpha ⊗ alpha, so dL/dA = dL/dC * S
+        # dL/dAmp: C = Amp * C_base, so dC/dAmp = C_base = C/Amp
+        # grad_Amp = sum(dL/dC * dC/dAmp) = sum(dL/dC * C) / Amp
+        # This matches legacy varGP: dC_Amp = C / theta['Amp']
+        grad_Amp = (dL_dC * C).sum() / Amp_val
+
+        # dL/dalpha: A = alpha ⊗ alpha, so dL/dA = dL/dC * S * Amp
         # For A = alpha ⊗ alpha: dL/dalpha = 2 * (dL/dA @ alpha)
-        dL_dA = dL_dC * S  # (nx, nx)
+        dL_dA = dL_dC * S * Amp_val  # (nx, nx)
         dL_dalpha = 2 * (dL_dA @ alpha)  # (nx,)
 
         # dL/dbeta_raw (through alpha)
@@ -331,9 +341,9 @@ class ArcCosineVJPGradients(torch.autograd.Function):
 
         # dL/drho_raw (through S)
         # S = exp(-rho2 * dist_pairwise), where rho2 = exp(rho_raw)
-        # dL/dS = dL/dC * alpha[:,None] * alpha[None,:] (since C = α*S*α)
+        # dL/dS = dL/dC * Amp * alpha[:,None] * alpha[None,:] (since C = Amp*α*S*α)
         A = alpha[:, None] * alpha[None, :]
-        dL_dS = dL_dC * A  # (nx, nx)
+        dL_dS = dL_dC * Amp_val * A  # (nx, nx)
 
         # dS/d(rho_raw) = S * (-dist_pairwise) * rho2
         grad_rho = (dL_dS * S * (-dist_pairwise) * rho2).sum()
@@ -344,6 +354,7 @@ class ArcCosineVJPGradients(torch.autograd.Function):
             None,  # x1
             None,  # x2
             grad_sigma0.reshape(ctx.sigma0_shape),
+            grad_Amp.reshape(ctx.Amp_shape),
             grad_eps0x.reshape(ctx.eps0x_shape),
             grad_eps0y.reshape(ctx.eps0y_shape),
             grad_beta.reshape(ctx.beta_shape),
@@ -374,11 +385,12 @@ def test_vjp_correctness():
     x1 = torch.randn(n1, n_px, device=device, dtype=dtype)
     x2 = torch.randn(n2, n_px, device=device, dtype=dtype)
 
-    config = {'sigma_0': 1.0, 'beta': 0.1, 'rho': 0.1, 'eps_0x': 0.0, 'eps_0y': 0.0}
+    config = {'sigma_0': 1.0, 'Amp': 1e-4, 'beta': 0.1, 'rho': 0.1, 'eps_0x': 0.0, 'eps_0y': 0.0}
 
     # Autograd reference
     kernel_auto = ArcCosineKernel(
         sigma_0=config['sigma_0'],
+        Amp=config['Amp'],
         n_px_side=n_px_side,
         eps_0x=config['eps_0x'],
         eps_0y=config['eps_0y'],
@@ -392,23 +404,26 @@ def test_vjp_correctness():
     loss_auto.backward()
 
     # Get raw gradients from autograd
-    # Note: sigma_0 uses Positive() constraint (softplus), so we need to account for this
+    # Note: sigma_0 and Amp use Positive() constraint (softplus), so we need to account for this
     # when comparing with VJP which operates on constrained values directly
     raw_sigma0 = kernel_auto.raw_sigma_0.clone().detach()
+    raw_Amp = kernel_auto.raw_Amp.clone().detach()
 
     auto_grads = {
         'raw_sigma_0': kernel_auto.raw_sigma_0.grad.item(),
+        'raw_Amp': kernel_auto.raw_Amp.grad.item(),
         'eps_0x': kernel_auto.eps_0x.grad.item(),
         'eps_0y': kernel_auto.eps_0y.grad.item(),
         'beta': kernel_auto.raw_m2log2beta.grad.item(),
         'rho': kernel_auto.raw_mlog2rho2.grad.item(),
     }
 
-    # VJP implementation - we pass constrained sigma_0 directly
+    # VJP implementation - we pass constrained sigma_0 and Amp directly
     # The VJP computes dL/d(sigma_0), not dL/d(raw_sigma_0)
     # To compare: dL/d(raw_sigma_0) = dL/d(sigma_0) * d(sigma_0)/d(raw_sigma_0)
     # For softplus: d(softplus(x))/dx = sigmoid(x)
     sigma_0 = kernel_auto.sigma_0.clone().detach().requires_grad_(True)
+    Amp = kernel_auto.Amp.clone().detach().requires_grad_(True)
     eps_0x = kernel_auto.eps_0x.clone().detach().requires_grad_(True)
     eps_0y = kernel_auto.eps_0y.clone().detach().requires_grad_(True)
     raw_beta = kernel_auto.raw_m2log2beta.clone().detach().requires_grad_(True)
@@ -416,19 +431,22 @@ def test_vjp_correctness():
 
     K_vjp = ArcCosineVJPGradients.apply(
         x1, x2,
-        sigma_0, eps_0x, eps_0y, raw_beta, raw_rho,
+        sigma_0, Amp, eps_0x, eps_0y, raw_beta, raw_rho,
         n_px_side, False, False  # use_mask=False, diag=False
     )
     loss_vjp = K_vjp.sum()
     loss_vjp.backward()
 
-    # Convert VJP sigma_0 gradient to raw_sigma_0 gradient for comparison
+    # Convert VJP gradients to raw gradients for comparison
     # d(sigma_0)/d(raw_sigma_0) = sigmoid(raw_sigma_0) for softplus constraint
-    sigmoid_raw = torch.sigmoid(raw_sigma0).item()
-    vjp_grad_raw_sigma0 = sigma_0.grad.item() * sigmoid_raw if sigma_0.grad is not None else 0
+    sigmoid_raw_sigma0 = torch.sigmoid(raw_sigma0).item()
+    sigmoid_raw_Amp = torch.sigmoid(raw_Amp).item()
+    vjp_grad_raw_sigma0 = sigma_0.grad.item() * sigmoid_raw_sigma0 if sigma_0.grad is not None else 0
+    vjp_grad_raw_Amp = Amp.grad.item() * sigmoid_raw_Amp if Amp.grad is not None else 0
 
     vjp_grads = {
         'raw_sigma_0': vjp_grad_raw_sigma0,
+        'raw_Amp': vjp_grad_raw_Amp,
         'eps_0x': eps_0x.grad.item() if eps_0x.grad is not None else 0,
         'eps_0y': eps_0y.grad.item() if eps_0y.grad is not None else 0,
         'beta': raw_beta.grad.item() if raw_beta.grad is not None else 0,
@@ -436,11 +454,11 @@ def test_vjp_correctness():
     }
 
     print(f"\nK matrix max diff: {(K_auto - K_vjp).abs().max().item():.2e}")
-    print(f"Softplus constraint derivative: sigmoid(raw_sigma0) = {sigmoid_raw:.4f}")
+    print(f"Softplus constraint derivatives: sigmoid(raw_sigma0) = {sigmoid_raw_sigma0:.4f}, sigmoid(raw_Amp) = {sigmoid_raw_Amp:.4f}")
     print("\nGradient comparison (autograd vs VJP):")
 
     all_pass = True
-    for name in ['raw_sigma_0', 'eps_0x', 'eps_0y', 'beta', 'rho']:
+    for name in ['raw_sigma_0', 'raw_Amp', 'eps_0x', 'eps_0y', 'beta', 'rho']:
         auto = auto_grads[name]
         vjp = vjp_grads[name]
         rel_err = abs(auto - vjp) / (abs(auto) + 1e-10)
@@ -484,6 +502,7 @@ def benchmark_implementations():
     def make_params(requires_grad=True):
         return (
             torch.tensor(1.0, device=device, dtype=dtype, requires_grad=requires_grad),  # sigma_0
+            torch.tensor(1e-4, device=device, dtype=dtype, requires_grad=requires_grad),  # Amp
             torch.tensor(0.0, device=device, dtype=dtype, requires_grad=requires_grad),  # eps_0x
             torch.tensor(0.0, device=device, dtype=dtype, requires_grad=requires_grad),  # eps_0y
             torch.tensor(3.22, device=device, dtype=dtype, requires_grad=requires_grad),  # beta_raw
@@ -493,7 +512,7 @@ def benchmark_implementations():
     # ===== Benchmark Autograd =====
     print("\n1. Autograd (no analytical gradients):")
     kernel_auto = ArcCosineKernel(
-        sigma_0=1.0, n_px_side=n_px_side, beta=0.1, rho=0.1,
+        sigma_0=1.0, Amp=1e-4, n_px_side=n_px_side, beta=0.1, rho=0.1,
         use_mask=True, gradient_mode='autograd'
     ).to(device).double()
 

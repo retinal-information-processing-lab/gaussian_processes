@@ -40,10 +40,10 @@ When gradient_mode='jacobian' in ArcCosineKernel:
 Gradients Computed
 ------------------
 - sigma_0: Direct derivative (σ₀ appears in K independently of C)
+- Amp: Chain rule through C (amplitude, dC/dAmp = C/Amp)
 - eps_0x, eps_0y: Chain rule through C (RF center position)
 - -2log2beta: Chain rule through C (RF size, log-parameterized)
 - -log2rho2: Chain rule through C (smoothness, log-parameterized)
-- Amp: Handled by ScaleKernel (gradient = K/Amp)
 
 Usage
 -----
@@ -393,13 +393,13 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
 
     Usage:
         K = ArcCosineJacobianGradients.apply(
-            x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
+            x1, x2, sigma_0, Amp, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
             n_px_side, use_mask, diag
         )
     """
 
     @staticmethod
-    def forward(ctx, x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
+    def forward(ctx, x1, x2, sigma_0, Amp, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
                 n_px_side, use_mask, diag):
         """
         Forward pass: compute K and save dK matrices for backward.
@@ -432,6 +432,7 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
         """
         # Ensure scalar tensors
         sigma_0_val = sigma_0.squeeze() if sigma_0.dim() > 0 else sigma_0
+        Amp_val = Amp.squeeze() if Amp.dim() > 0 else Amp
         eps_0x_val = eps_0x.squeeze() if eps_0x.dim() > 0 else eps_0x
         eps_0y_val = eps_0y.squeeze() if eps_0y.dim() > 0 else eps_0y
         beta_val = raw_m2log2beta.squeeze() if raw_m2log2beta.dim() > 0 else raw_m2log2beta
@@ -447,6 +448,7 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
         # So we must check requires_grad on the input tensors directly.
         needs_grad = (
             (hasattr(sigma_0, 'requires_grad') and sigma_0.requires_grad) or
+            (hasattr(Amp, 'requires_grad') and Amp.requires_grad) or
             (hasattr(eps_0x, 'requires_grad') and eps_0x.requires_grad) or
             (hasattr(eps_0y, 'requires_grad') and eps_0y.requires_grad) or
             (hasattr(raw_m2log2beta, 'requires_grad') and raw_m2log2beta.requires_grad) or
@@ -461,13 +463,10 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
         else:
             ArcCosineJacobianGradients._call_count['no_grad'] += 1
 
-        # Amplitude is handled by ScaleKernel (outputscale), so we set Amp=1.0
-        # in C matrix computation. The dK['Amp'] = K / Amp = K when Amp=1.
-        theta_Amp = torch.tensor(1.0, device=device, dtype=dtype)
-
         # Compute C (and dC only if needed)
+        # Amp is now passed directly (not handled by ScaleKernel anymore)
         C, dC, mask, coords = compute_C_and_gradients(
-            theta_Amp, beta_val, rho_val, eps_0x_val, eps_0y_val,
+            Amp_val, beta_val, rho_val, eps_0x_val, eps_0y_val,
             n_px_side, mask=None, compute_gradients=needs_grad
         )
 
@@ -488,6 +487,7 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
             # Save for backward
             ctx.save_for_backward(
                 dK['sigma_0'],
+                dK.get('Amp', torch.zeros_like(K)),
                 dK.get('eps_0x', torch.zeros_like(K)),
                 dK.get('eps_0y', torch.zeros_like(K)),
                 dK.get('-2log2beta', torch.zeros_like(K)),
@@ -498,6 +498,7 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
             K = compute_K_only(sigma_0_val, x1_masked, x2_masked, C, diag=diag)
             # Save empty tensors (backward won't be called)
             ctx.save_for_backward(
+                torch.empty(0, device=device, dtype=dtype),
                 torch.empty(0, device=device, dtype=dtype),
                 torch.empty(0, device=device, dtype=dtype),
                 torch.empty(0, device=device, dtype=dtype),
@@ -526,23 +527,25 @@ class ArcCosineJacobianGradients(torch.autograd.Function):
         -------
         Tuple of gradients for each forward input (or None if not needed)
         """
-        dK_sigma0, dK_eps0x, dK_eps0y, dK_beta, dK_rho = ctx.saved_tensors
+        dK_sigma0, dK_Amp, dK_eps0x, dK_eps0y, dK_beta, dK_rho = ctx.saved_tensors
 
         # Compute gradients via chain rule
         # grad_theta = sum(grad_output * dK/dtheta)
         grad_sigma0 = (grad_output * dK_sigma0).sum()
+        grad_Amp = (grad_output * dK_Amp).sum()
         grad_eps0x = (grad_output * dK_eps0x).sum()
         grad_eps0y = (grad_output * dK_eps0y).sum()
         grad_beta = (grad_output * dK_beta).sum()
         grad_rho = (grad_output * dK_rho).sum()
 
         # Return gradients for each input (None for non-tensor inputs)
-        # Order: x1, x2, sigma_0, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
+        # Order: x1, x2, sigma_0, Amp, eps_0x, eps_0y, raw_m2log2beta, raw_mlog2rho2,
         #        n_px_side, use_mask, diag
         return (
             None,  # x1 (no gradient needed)
             None,  # x2 (no gradient needed)
             grad_sigma0.unsqueeze(0),  # sigma_0
+            grad_Amp.unsqueeze(0),     # Amp
             grad_eps0x.unsqueeze(0),   # eps_0x
             grad_eps0y.unsqueeze(0),   # eps_0y
             grad_beta.unsqueeze(0),    # raw_m2log2beta

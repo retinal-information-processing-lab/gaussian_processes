@@ -35,7 +35,9 @@ IMPORTANT - Link Function Initialization:
 import sys
 import time
 import argparse
+import json
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 
 # Add paths for imports
@@ -56,6 +58,20 @@ from model import VariationalGPModel
 from train import train_efm, train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
+
+
+def get_git_commit():
+    """Get current git commit hash (short form)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, check=True,
+            cwd=Path(__file__).parent
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
 
 
 def load_pnas_data(data_path, dtype=torch.float64):
@@ -182,6 +198,10 @@ def main():
                         help='Save plot path. "auto" saves to imgs/{mode}_M{ntilde}.png, "none" to disable')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility (default: 42)')
+
+    # JSON output for benchmark tracking
+    parser.add_argument('--json-append', type=str, default=None,
+                        help='Append results as JSON line to specified file (for benchmark tracking)')
 
     args = parser.parse_args()
 
@@ -356,8 +376,11 @@ def main():
             use_mask=args.use_mask,
             gradient_mode=args.gradient_mode
         )
-        kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-        kernel.outputscale = 1e-4  # Prevent overflow
+        # Use base_kernel directly with internal Amp parameter
+        # Amp is multiplied into C (non-linear effect through sqrt/arccos)
+        # This is different from ScaleKernel which scales output linearly
+        kernel = base_kernel
+        kernel.Amp = 1e-4  # Match legacy varGP initialization
 
         # Create model and likelihood
         # vargp_style uses varGP's init values for fair comparison
@@ -376,7 +399,7 @@ def main():
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
         print(f"  A: {likelihood.A.item():.4f}")
         print(f"  lambda0: {likelihood.lambda0.item():.4f}")
-        print(f"  outputscale: {kernel.outputscale.item():.6f}")
+        print(f"  Amp: {kernel.Amp.item():.6f}")
 
         # Train with selected mode
         # Note: GP_utils import disables gradients globally (utils.py line 2).
@@ -509,17 +532,110 @@ def main():
                  test_corr, explained_var, reliability,
                  output_path=save_path)
 
-    return {
+    # Extract final hyperparameters based on mode
+    if args.mode == 'vargp_old':
+        # Extract from fit_model
+        theta = fit_model['hyperparams_tuple'][0]
+        f_p = fit_model['f_params']
+        # Convert from stored representation
+        raw_beta = theta['-2log2beta'].item() if hasattr(theta['-2log2beta'], 'item') else float(theta['-2log2beta'])
+        raw_rho = theta['-log2rho2'].item() if hasattr(theta['-log2rho2'], 'item') else float(theta['-log2rho2'])
+        final_beta = np.exp(-raw_beta / 2) / 2
+        final_rho = np.sqrt(np.exp(-raw_rho) / 2)
+        logA_val = f_p['logA'].item() if hasattr(f_p['logA'], 'item') else float(f_p['logA'])
+        final_A = np.exp(logA_val)
+        final_lambda0 = f_p['lambda0'].item() if hasattr(f_p['lambda0'], 'item') else float(f_p['lambda0'])
+        final_sigma_0 = theta['sigma_0'].item() if hasattr(theta['sigma_0'], 'item') else float(theta['sigma_0'])
+        final_Amp = theta['Amp'].item() if hasattr(theta['Amp'], 'item') else float(theta['Amp'])
+        final_eps_0x = theta['eps_0x'].item() if hasattr(theta['eps_0x'], 'item') else float(theta['eps_0x'])
+        final_eps_0y = theta['eps_0y'].item() if hasattr(theta['eps_0y'], 'item') else float(theta['eps_0y'])
+        # vargp_old doesn't expose E-step/M-step timing in returned dict
+        time_estep = None
+        time_mstep = None
+    else:
+        # GPyTorch modes: extract from model/likelihood
+        # kernel is now directly ArcCosineKernel (not wrapped in ScaleKernel)
+        final_A = likelihood.A.item()
+        final_lambda0 = likelihood.lambda0.item()
+        final_sigma_0 = kernel.sigma_0.item()
+        final_Amp = kernel.Amp.item()
+        final_beta = kernel.beta.item()
+        final_rho = kernel.rho.item()
+        final_eps_0x = kernel.eps_0x.item()
+        final_eps_0y = kernel.eps_0y.item()
+        # Timing breakdown only available for vargp_style
+        if args.mode == 'vargp_style':
+            time_estep = time_estep_total
+            time_mstep = time_mstep_total
+        else:
+            time_estep = None
+            time_mstep = None
+
+    # Build result dict
+    result = {
         'mode': args.mode,
         'M': args.ntilde,
         'train_time': train_time,
-        'train_r': train_corr,
-        'test_r': test_corr,
-        'explained_var': explained_var,
-        'reliability': reliability,
-        'final_loss': losses[-1],
+        'train_r': float(train_corr) if not np.isnan(train_corr) else None,
+        'test_r': float(test_corr) if not np.isnan(test_corr) else None,
+        'explained_var': float(explained_var) if not np.isnan(explained_var) else None,
+        'reliability': float(reliability) if not np.isnan(reliability) else None,
+        'final_loss': float(losses[-1]) if not np.isnan(losses[-1]) else None,
         'pred_std': pred_std,
+        'time_estep_s': time_estep,
+        'time_mstep_s': time_mstep,
+        'final_A': final_A,
+        'final_lambda0': final_lambda0,
+        'final_Amp': final_Amp,
+        'final_beta': final_beta,
+        'final_rho': final_rho,
+        'final_eps_0x': final_eps_0x,
+        'final_eps_0y': final_eps_0y,
+        'final_sigma_0': final_sigma_0,
     }
+
+    # Write JSON if requested
+    if args.json_append:
+        json_record = {
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'commit': get_git_commit(),
+            'seed': args.seed,
+            'mode': args.mode,
+            'M': args.ntilde,
+            'ntrain': n_train,
+            'niter': args.n_iterations,
+            'nestep': args.n_estep,
+            'nmstep': args.n_mstep,
+            'nfstep': args.n_fstep,
+            'cell_id': args.cell,
+            'gradient_mode': args.gradient_mode if args.mode != 'vargp_old' else None,
+            'test_r': result['test_r'],
+            'explained_var': result['explained_var'],
+            'final_loss': result['final_loss'],
+            'time_total_s': round(train_time, 2),
+            'time_estep_s': round(time_estep, 2) if time_estep is not None else None,
+            'time_mstep_s': round(time_mstep, 2) if time_mstep is not None else None,
+            'final_A': round(final_A, 6),
+            'final_lambda0': round(final_lambda0, 6),
+            'final_Amp': round(final_Amp, 6),
+            'final_beta': round(final_beta, 6),
+            'final_rho': round(final_rho, 6),
+            'final_eps_0x': round(final_eps_0x, 6),
+            'final_eps_0y': round(final_eps_0y, 6),
+            'final_sigma_0': round(final_sigma_0, 6),
+        }
+        # Round floats for cleaner output
+        for key in ['test_r', 'explained_var', 'final_loss']:
+            if json_record[key] is not None:
+                json_record[key] = round(json_record[key], 4)
+
+        json_path = Path(args.json_append)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(json_path, 'a') as f:
+            f.write(json.dumps(json_record) + '\n')
+        print(f"\nJSON result appended to: {json_path}")
+
+    return result
 
 
 if __name__ == '__main__':

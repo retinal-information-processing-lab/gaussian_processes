@@ -10,7 +10,7 @@ Created by Claude for validation testing.
 MATCHED PARAMETERS:
 - A_init = 0.01 (both)
 - lambda0_init = 1.0 (both)
-- Amp = 1.0 (reference) / outputscale = 1.0 (GPyTorch)
+- Amp = 1.0 (both) - GPyTorch now uses Amp directly inside C matrix (matching legacy)
 - beta = 0.1, rho = 0.1, sigma_0 = 1.0, eps_0 = (0, 0)
 
 CONVERGENCE SETTINGS:
@@ -55,8 +55,7 @@ CONFIG = {
     'sigma_0_init': 1.0,
     'eps_0x_init': 0.0,
     'eps_0y_init': 0.0,
-    'Amp_init': 1.0,       # Reference uses Amp
-    'outputscale_init': 1.0,  # GPyTorch uses outputscale (MATCHED to Amp)
+    'Amp_init': 1.0,       # Both use Amp (GPyTorch now matches legacy)
 
     # Initial link function parameters (MATCHED)
     'A_init': 0.01,
@@ -272,16 +271,17 @@ def run_gpytorch(X, R, X_test, R_test, device):
     print(f"  Inducing points: {inducing_points.shape[0]}")
 
     # Create model with RF structure - MATCHED to reference
-    base_kernel = ArcCosineKernel(
+    # ArcCosineKernel now has internal Amp parameter (matches legacy varGP)
+    # No need for ScaleKernel wrapper
+    kernel = ArcCosineKernel(
         sigma_0=cfg['sigma_0_init'],
+        Amp=cfg['Amp_init'],  # MATCHED to legacy
         n_px_side=cfg['n_px_side'],
         eps_0x=cfg['eps_0x_init'],
         eps_0y=cfg['eps_0y_init'],
         beta=cfg['beta_init'],
         rho=cfg['rho_init']
     )
-    kernel = gpytorch.kernels.ScaleKernel(base_kernel)
-    kernel.outputscale = cfg['outputscale_init']  # MATCHED to Amp
 
     model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
     likelihood = PoissonLikelihood(
@@ -293,7 +293,7 @@ def run_gpytorch(X, R, X_test, R_test, device):
     likelihood = likelihood.double().to(device)
 
     print(f"  Settings: iterations={cfg['gpytorch_iterations']}, lr={cfg['gpytorch_lr']}")
-    print(f"  Initial: A={cfg['A_init']}, lambda0={cfg['lambda0_init']}, outputscale={cfg['outputscale_init']}")
+    print(f"  Initial: A={cfg['A_init']}, lambda0={cfg['lambda0_init']}, Amp={cfg['Amp_init']}")
     print("  Training...")
     start_time = time.time()
 
@@ -306,11 +306,11 @@ def run_gpytorch(X, R, X_test, R_test, device):
     print(f"  Training completed in {elapsed:.1f}s")
 
     # Get final parameters
-    raw_beta = base_kernel.raw_m2log2beta.item()
-    raw_rho = base_kernel.raw_mlog2rho2.item()
+    raw_beta = kernel.raw_m2log2beta.item()
+    raw_rho = kernel.raw_mlog2rho2.item()
     beta_final = np.exp(-raw_beta / 2) / 2
     rho_final = np.sqrt(np.exp(-raw_rho) / 2)
-    outputscale_final = kernel.outputscale.item()
+    Amp_final = kernel.Amp.item()
 
     # Evaluate
     print("  Testing...")
@@ -322,20 +322,20 @@ def run_gpytorch(X, R, X_test, R_test, device):
     print(f"    Pearson r: {pearson_r:.4f}")
     print(f"    beta: {cfg['beta_init']:.4f} -> {beta_final:.4f}")
     print(f"    rho: {cfg['rho_init']:.4f} -> {rho_final:.4f}")
-    print(f"    eps_0: ({cfg['eps_0x_init']:.4f}, {cfg['eps_0y_init']:.4f}) -> ({base_kernel.eps_0x.item():.4f}, {base_kernel.eps_0y.item():.4f})")
+    print(f"    eps_0: ({cfg['eps_0x_init']:.4f}, {cfg['eps_0y_init']:.4f}) -> ({kernel.eps_0x.item():.4f}, {kernel.eps_0y.item():.4f})")
     print(f"    A: {cfg['A_init']:.4f} -> {likelihood.A.item():.4f}")
     print(f"    lambda0: {cfg['lambda0_init']:.4f} -> {likelihood.lambda0.item():.4f}")
-    print(f"    outputscale: {cfg['outputscale_init']:.4f} -> {outputscale_final:.4f}")
+    print(f"    Amp: {cfg['Amp_init']:.4f} -> {Amp_final:.4f}")
 
     return {
         'pearson_r': pearson_r,
         'beta': beta_final,
         'rho': rho_final,
-        'eps_0x': base_kernel.eps_0x.item(),
-        'eps_0y': base_kernel.eps_0y.item(),
+        'eps_0x': kernel.eps_0x.item(),
+        'eps_0y': kernel.eps_0y.item(),
         'A': likelihood.A.item(),
         'lambda0': likelihood.lambda0.item(),
-        'outputscale': outputscale_final,
+        'Amp': Amp_final,
         'time': elapsed,
     }
 
@@ -360,7 +360,7 @@ def main():
     print(f"  beta={cfg['beta_init']}, rho={cfg['rho_init']}, sigma_0={cfg['sigma_0_init']}")
     print(f"  eps_0=({cfg['eps_0x_init']}, {cfg['eps_0y_init']})")
     print(f"  A={cfg['A_init']}, lambda0={cfg['lambda0_init']}")
-    print(f"  Amp/outputscale={cfg['Amp_init']} (MATCHED)")
+    print(f"  Amp={cfg['Amp_init']} (MATCHED - both use Amp in C matrix)")
 
     print(f"\n--- CONVERGENCE SETTINGS ---")
     print(f"  Reference: maxiter={cfg['ref_maxiter']}, nEstep={cfg['ref_nEstep']}, nMstep={cfg['ref_nMstep']}")
@@ -427,9 +427,9 @@ def main():
         diff_lam = abs(gpytorch_results['lambda0'] - ref_results['lambda0'])
         print(f"| lambda0 | {cfg['lambda0_init']:.4f} | {ref_results['lambda0']:.4f} | {gpytorch_results['lambda0']:.4f} | {diff_lam:.4f} |")
 
-        # Kernel scale
-        diff_scale = abs(gpytorch_results['outputscale'] - ref_results['Amp'])
-        print(f"| Amp/scale | {cfg['Amp_init']:.4f} | {ref_results['Amp']:.4f} | {gpytorch_results['outputscale']:.4f} | {diff_scale:.4f} |")
+        # Kernel scale (both now use Amp)
+        diff_scale = abs(gpytorch_results['Amp'] - ref_results['Amp'])
+        print(f"| Amp | {cfg['Amp_init']:.4f} | {ref_results['Amp']:.4f} | {gpytorch_results['Amp']:.4f} | {diff_scale:.4f} |")
 
         # Time
         print(f"| Time (s) | - | {ref_results['time']:.1f} | {gpytorch_results['time']:.1f} | - |")
