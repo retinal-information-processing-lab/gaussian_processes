@@ -230,3 +230,46 @@ Tests with 4x more training data (2000 vs 500) to see if varGP degradation at hi
   - M>50: efm is most stable (0.86), varGP degrades
 - **Avoid whitened vargp_style**: Unstable across M values, especially with more data
 - **efm is a reliable fallback**: Consistent ~0.86 regardless of settings
+
+---
+
+## Benchmark: 2026-01-21 (Hyperparameter Bounds Merge Verification)
+
+**Commit**: `77e6133` (merged hyperparameters-clean-reparametrization → pietro/workingbranch)
+**Purpose**: Verify that adding hyperparameter bounds (beta, rho, epsilon) didn't break existing functionality.
+
+**Command**: `python run_single_mode.py --mode MODE --ntilde M --seed S [OPTIONS]`
+
+### Test Results
+
+| Test | Mode | M | Seed | Options | Test r | Expl Var | Time | Status |
+|------|------|---|------|---------|--------|----------|------|--------|
+| 1 | vargp_style | 50 | 123 | - | 0.7992 | 0.8427 | 6.7s | OK |
+| 2 | vargp_style | 50 | 42 | - | 0.7845 | 0.8283 | 7.0s | OK |
+| 3 | vargp_style | 75 | 123 | - | 0.7928 | 0.8372 | 7.4s | OK |
+| 4 | vargp_style | 50 | 456 | - | nan | nan | 5.4s | KNOWN BAD |
+| 5 | vargp_style | 50 | 123 | --gradient-mode vjp | 0.7114 | 0.7509 | 8.0s | OK |
+| 6 | vargp_style | 50 | 123 | --unwhitened | 0.8511 | 0.8960 | 44.6s | OK |
+| 7 | efm | 50 | 123 | - | 0.8012 | 0.8463 | 31.9s | OK |
+| 8 | adam | 50 | 123 | - | 0.6858 | 0.7228 | 1.9s | OK |
+
+### Features Verified
+
+1. **Bounds constants**: beta [0.01, 1.0], rho [0.01, 0.5], eps [-1.0, 1.0]
+2. **Property accessors**: `kernel.beta`, `kernel.rho` return natural values
+3. **Clamping**: `clamp_hyperparameters()` correctly clamps out-of-bounds values
+4. **All training modes**: vargp_style, efm, adam work correctly
+5. **Gradient modes**: autograd, vjp both work
+6. **Whitening modes**: whitened, unwhitened both work
+
+### Known Issue (Unchanged)
+
+- Seed 456 still causes collapse (nan results) - NOT caused by hyperparameter bounds
+- Root cause is elsewhere (A/lambda0 dynamics, whitening, or inducing point selection)
+
+### Pending Issue Discovered
+
+- **Amp placement**: GPyTorch uses ScaleKernel (Amp outside K) vs varGP uses Amp inside C
+- These are mathematically different (sigma_0 interaction differs)
+- Fix planned: move Amp inside `_compute_C_matrix()`
+
