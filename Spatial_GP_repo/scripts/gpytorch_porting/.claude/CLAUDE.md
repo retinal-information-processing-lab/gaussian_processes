@@ -12,8 +12,8 @@ This document tracks the porting effort from the custom variational GP implement
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy COMPLETE |
-| **Key files** | `kernels.py`, `estep.py`, `analytical_gradients_vjp.py`, `run_single_mode.py`, `run_canonical_tests.py` |
+| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy + Amp Parameter COMPLETE |
+| **Key files** | `kernels.py`, `estep.py`, `train.py`, `default_params.json`, `run_single_mode.py`, `run_canonical_tests.py` |
 | **Run canonical benchmark** | `python run_canonical_tests.py --seed 123` - 12-config matrix to JSONL |
 | **Run single mode** | `python run_single_mode.py --mode vargp_style --json-append results/benchmark_results.jsonl` |
 | **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
@@ -94,6 +94,21 @@ This document tracks the porting effort from the custom variational GP implement
 > **Performance**: Unwhitened is ~4x slower and achieves lower test r (0.65 vs 0.80).
 >
 > **Details**: See Q26-Q28 in `DECISION_LOG.md` and `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md`.
+
+**Amp Parameter (January 2025):**
+> The `Amp` parameter is now **internal** to `ArcCosineKernel` (replaces `ScaleKernel` wrapper).
+> - Amp multiplies C before sqrt/arccos operations (non-linear effect)
+> - ScaleKernel applied linear output scaling (different mathematical behavior)
+> - Analytical gradients updated: `grad_Amp = (dL_dC * C).sum() / Amp`
+>
+> **Usage**: `kernel = ArcCosineKernel(..., Amp=1.0)` or `kernel.Amp = value`
+
+**Default Parameters (January 2025):**
+> All modes now load default parameters from `default_params.json`. This ensures consistency
+> across `vargp_old`, `default_gpy`, and `vargp_style` modes. CLI arguments can override any default.
+>
+> Key defaults: `sigma_0=1.0`, `Amp=1.0`, `beta=0.1`, `rho=0.1`, `A_init=0.01`, `lambda0_init=1.0`,
+> `n_iterations=50`, `n_estep=10`, `n_mstep=10`, `ntilde=100`, `seed=42`.
 
 ---
 
@@ -236,14 +251,14 @@ Note: Avaid using the .data parameter and if you need to, raise it to the user. 
 
 **Key implementation notes**:
 1. Must use `float64` for numerical stability (kernel values ~10000)
-2. Wrap kernel with `ScaleKernel` to add amplitude (prevents exp() overflow)
+2. Amp parameter is internal to ArcCosineKernel (non-linear scaling through sqrt/arccos)
 3. Order matters: call `.double()` before `.to(device)`
 
 **Files created**:
 - `kernels.py` - ArcCosineKernel class (verified against reference)
 - `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
 - `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
-- `train.py` - All training loops (`train_adam`, `train_varGP_style`) + evaluation
+- `train.py` - All training loops (`train_gpy_default`, `train_varGP_style`) + evaluation
 - `archive/test_stage1_cI.py` - Stage 1 (C=I) testing script (archived, superseded by run_single_mode.py)
 
 ### Stage 2: Structured Covariance Matrix C
@@ -409,15 +424,14 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 
 | Script | Role | Description |
 |--------|------|-------------|
-| `run_benchmark.py` | **Canonical comparison** - runs all 4 implementations | varGP + 3 GPyTorch modes |
+| `run_canonical_tests.py` | **Canonical benchmark** - runs test matrix | 12 configs per seed to JSONL |
 | `run_single_mode.py` | **Active development** - experiment with training modes | Single-mode testing |
 
-**Run canonical test:** `python run_benchmark.py` (M=50 default)
+**Run canonical test:** `python run_canonical_tests.py --seed 123`
 
 **Training modes:**
 - `vargp_old`: Original varGP implementation (reference baseline)
-- `adam`: Pure Adam optimization (no E-step)
-- `efm`: E-F-M loop (1 E-step, n F-steps, n M-steps)
+- `default_gpy`: Standard GPyTorch variational inference (no custom E-step)
 - `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
 
 **Metrics**: All modes report standardized metrics (test_corr, explained_var, reliability) computed identically.
@@ -428,14 +442,16 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 
 **GPyTorch `vargp_style` mode MUST mirror original varGP parameters exactly:**
 
-| Parameter | varGP | vargp_style | adam/efm |
-|-----------|-------|-------------|----------|
-| A_init | 0.01 | 0.01 | 1.0 |
-| lambda0_init | 1.0 | 1.0 | 0.0 |
+| Parameter | varGP | vargp_style | default_gpy |
+|-----------|-------|-------------|-------------|
+| A_init | 0.01 | 0.01 | 0.01 |
+| lambda0_init | 1.0 | 1.0 | 1.0 |
 | lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) | 0.01 (Adam) |
 | lr_m (M-step) | 0.1 | 0.1 | 0.01 |
 | F-step optimizer | LBFGS | LBFGS | Adam |
 | M-step optimizer | LBFGS | **Adam** | Adam |
+
+**Note**: All modes now use the same initial parameters from `default_params.json`.
 
 **Before modifying training code, ALWAYS verify parameters match between implementations.**
 
@@ -449,8 +465,6 @@ Performance: see `results/BENCHMARK_LOG.md`.
 
 - `f_step_lbfgs()`: LBFGS with `logA` parameterization (matching varGP)
 - `m_step()`: Uses Adam (NOT matching varGP's LBFGS)
-
-**Note**: efm mode degrades at M>50, but vargp_style remains stable. Original varGP also degrades at M>50.
 
 #### Kernel Caching Optimization (January 2025)
 
@@ -567,18 +581,21 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 ### GPyTorch Porting Files (this project)
 | File | Content |
 |------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure, masking, `gradient_mode` selection |
+| `kernels.py` | ArcCosineKernel with RF structure, masking, Amp param, `gradient_mode` selection |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
-| `model.py` | VariationalGPModel |
-| `train.py` | All training loops (`train_adam`, `train_varGP_style`) + evaluation utilities |
-| `estep.py` | E-step, F-step, M-step functions + kernel caching |
+| `model.py` | VariationalGPModel (supports whitened/unwhitened strategies) |
+| `train.py` | Training loops (`train_gpy_default`, `train_varGP_style`) + evaluation utilities |
+| `estep.py` | Modular E-step: `_estep_single()`, `e_step_loop()`, kernel caching |
+| `fstep.py` | F-step: LBFGS for A, analytical λ₀ |
+| `mstep.py` | M-step: Adam optimizer for kernel hyperparameters |
+| `whitening.py` | Whitening conversion functions (natural ↔ whitened params) |
+| `default_params.json` | **Centralized defaults** - all modes load parameters from here |
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
 | `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
 | `run_single_mode.py` | **Main test script** - all training modes, `--json-append` for benchmark tracking |
 | `run_canonical_tests.py` | **Canonical benchmark runner** - 12-config matrix per seed, outputs to JSONL |
 | `query_benchmark.py` | **Query tool** - filter/compare benchmark results from JSONL |
-| `run_benchmark.py` | Legacy benchmark - compares varGP + 3 GPyTorch modes (stdout only) |
 | `archive/test_stage1_cI.py` | Stage 1 (C=I) testing with Adam (archived, superseded) |
 | `investigations/test_whitening_paths.py` | Whitening path validation (debug script) |
 | `tests/test_kernel_cache.py` | Kernel caching validation |
@@ -776,7 +793,7 @@ class VariationalGPModel(gpytorch.models.ApproximateGP):
 ### 11.3 Training Loop
 
 ```python
-def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
+def train_gpy_default(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
     model.train()
 
     # Optimize both model and likelihood parameters
@@ -851,4 +868,4 @@ def predict(model, likelihood, test_x):
 
 ---
 
-*Last updated: January 2025 (Session 10 - E-step kernel caching optimization, 8.8x speedup)*
+*Last updated: January 2025 (Documentation sync: Amp param, mode renames adam→default_gpy, default_params.json, removed run_benchmark.py)*
