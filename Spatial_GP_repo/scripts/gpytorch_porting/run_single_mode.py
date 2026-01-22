@@ -21,13 +21,13 @@ Gradient modes (for GPyTorch modes only):
     --gradient-mode vjp        # VJP analytical - same speed as autograd
     --gradient-mode jacobian   # Old Jacobian materialization - slow but matches varGP
 
-IMPORTANT - Link Function Initialization:
-    ┌─────────────┬─────────────────┬────────────────────┐
-    │ Parameter   │ adam            │ vargp_old/vargp_style  │
-    ├─────────────┼─────────────────┼────────────────────┤
-    │ A_init      │ 1.0             │ 0.01               │
-    │ lambda0_init│ 0.0             │ 1.0                │
-    └─────────────┴─────────────────┴────────────────────┘
+Default Parameters:
+    All parameters are loaded from default_params.json to ensure consistency
+    across all modes (vargp_old, default_gpy, vargp_style):
+    - Kernel: sigma_0=1.0, Amp=1.0, beta=0.1, rho=0.1
+    - Link function: A_init=0.01, lambda0_init=1.0
+    - Training: n_iterations=50, n_estep=10, n_fstep=10, n_mstep=10, lr=0.1
+    - Data: n_train=500, ntilde=100
 """
 
 import sys
@@ -155,23 +155,36 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
 
 
 def main():
+    # Load default parameters
+    defaults_path = Path(__file__).parent / 'default_params.json'
+    with open(defaults_path, 'r') as f:
+        defaults = json.load(f)
+
     parser = argparse.ArgumentParser(description='Test E-step on PNAS data')
-    parser.add_argument('--cell', type=int, default=8, help='Cell ID (default: 8)')
-    parser.add_argument('--ntilde', type=int, default=50, help='Number of inducing points M (default: 50)')
-    parser.add_argument('--n-train', type=int, default=500, help='Number of training samples (default: 500)')
-    parser.add_argument('--n-iterations', type=int, default=50, help='Number of EM iterations (default: 50)')
-    parser.add_argument('--n-estep', type=int, default=10, help='E-steps per iteration (default: 10)')
-    parser.add_argument('--n-fstep', type=int, default=10, help='F-steps per iteration (default: 10)')
-    parser.add_argument('--n-mstep', type=int, default=10, help='M-steps per iteration (default: 10)')
-    parser.add_argument('--lr', type=float, default=0.01, help='Learning rate (default: 0.01)')
+    parser.add_argument('--cell', type=int, default=defaults['data']['cellid'], help=f'Cell ID (default: {defaults["data"]["cellid"]})')
+    parser.add_argument('--ntilde', type=int, default=defaults['data']['ntilde'], help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
+    parser.add_argument('--n-train', type=int, default=defaults['data']['n_train'], help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
+    parser.add_argument('--n-iterations', type=int, default=defaults['training']['n_iterations'], help=f'Number of EM iterations (default: {defaults["training"]["n_iterations"]})')
+    parser.add_argument('--n-estep', type=int, default=defaults['training']['n_estep'], help=f'E-steps per iteration (default: {defaults["training"]["n_estep"]})')
+    parser.add_argument('--n-fstep', type=int, default=defaults['training']['n_fstep'], help=f'F-steps per iteration (default: {defaults["training"]["n_fstep"]})')
+    parser.add_argument('--n-mstep', type=int, default=defaults['training']['n_mstep'], help=f'M-steps per iteration (default: {defaults["training"]["n_mstep"]})')
+    parser.add_argument('--lr', type=float, default=defaults['training']['lr'], help=f'Learning rate (default: {defaults["training"]["lr"]})')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
     parser.add_argument('--mode', type=str, default='vargp_style',
                         choices=['vargp_old', 'default_gpy', 'vargp_style'],
                         help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_style (custom EM)')
 
-    # RF parameters - use defaults that work
-    parser.add_argument('--beta', type=float, default=0.1, help='RF size (default: 0.1)')
-    parser.add_argument('--rho', type=float, default=0.1, help='Smoothness (default: 0.1)')
+    # Kernel parameters - use defaults from JSON, all overridable via CLI
+    parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
+    parser.add_argument('--Amp', type=float, default=defaults['kernel']['Amp'], help=f'Kernel amplitude (default: {defaults["kernel"]["Amp"]})')
+    parser.add_argument('--beta', type=float, default=defaults['kernel']['beta'], help=f'RF size (default: {defaults["kernel"]["beta"]})')
+    parser.add_argument('--rho', type=float, default=defaults['kernel']['rho'], help=f'Smoothness (default: {defaults["kernel"]["rho"]})')
+    parser.add_argument('--eps-0x', type=float, default=defaults['kernel']['eps_0x'], help=f'RF center x (default: {defaults["kernel"]["eps_0x"]})')
+    parser.add_argument('--eps-0y', type=float, default=defaults['kernel']['eps_0y'], help=f'RF center y (default: {defaults["kernel"]["eps_0y"]})')
+
+    # Link function parameters - use defaults from JSON
+    parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
+    parser.add_argument('--lambda0-init', type=float, default=defaults['link_function']['lambda0_init'], help=f'Initial bias lambda0 (default: {defaults["link_function"]["lambda0_init"]})')
     parser.add_argument('--use-mask', action='store_true', default=True, help='Use pixel masking')
     parser.add_argument('--no-mask', action='store_false', dest='use_mask')
     parser.add_argument('--gradient-mode', type=str, default='autograd',
@@ -179,13 +192,15 @@ def main():
                         help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
 
     # Performance options
-    parser.add_argument('--use-cache', action='store_true', default=True,
-                        help='Use kernel caching in E-step (default: True, 11.7x fewer kernel calls)')
+    parser.add_argument('--use-cache', action='store_true', default=defaults['model']['use_cache'],
+                        help=f'Use kernel caching in E-step (default: {defaults["model"]["use_cache"]}, 11.7x fewer kernel calls)')
     parser.add_argument('--no-cache', action='store_false', dest='use_cache',
                         help='Disable kernel caching (for testing fallback path)')
+    parser.add_argument('--jitter', type=float, default=defaults['model']['jitter'],
+                        help=f'Jitter for numerical stability (default: {defaults["model"]["jitter"]})')
     parser.add_argument('--no-whitening', action='store_true',
                         help='Disable whitening conversions (for debugging/comparison)')
-    parser.add_argument('--unwhitened', action='store_true',
+    parser.add_argument('--unwhitenedStrategy', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
 
     # Plotting options
@@ -193,8 +208,8 @@ def main():
                         help='Show plot of actual vs predicted firing rates')
     parser.add_argument('--save-plot', type=str, default='auto',
                         help='Save plot path. "auto" saves to imgs/{mode}_M{ntilde}.png, "none" to disable')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--seed', type=int, default=defaults['data']['seed'],
+                        help=f'Random seed for reproducibility (default: {defaults["data"]["seed"]})')
 
     # JSON output for benchmark tracking
     parser.add_argument('--json-append', type=str, default=None,
@@ -208,7 +223,7 @@ def main():
     print(f"M={args.ntilde} inducing points")
     if args.gradient_mode != 'autograd':
         print(f"Gradient mode: {args.gradient_mode}")
-    if args.unwhitened:
+    if args.unwhitenedStrategy:
         print("Using UnwhitenedVariationalStrategy (no L_K dependency)")
 
     # Set seed with explicit CUDA init for reproducibility
@@ -262,16 +277,18 @@ def main():
 
         print(f"\nRunning original varGP (reference implementation)")
         print(f"  maxiter={args.n_iterations}, nEstep={args.n_estep}, nMstep={args.n_mstep}, nFparamstep={args.n_fstep}")
+        if args.jitter != defaults['model']['jitter']:
+            print(f"  NOTE: --jitter={args.jitter} ignored (vargp_old does not use jitter)")
 
-        # Initialize hyperparameters (matching test_estep_comparison.py exactly)
+        # Initialize hyperparameters using defaults
         beta = torch.tensor(args.beta, device=device)
         rho = torch.tensor(args.rho, device=device)
 
         theta = {
-            'sigma_0': torch.tensor(1.0, device=device).requires_grad_(),
-            'Amp': torch.tensor(1.0, device=device).requires_grad_(),
-            'eps_0x': torch.tensor(0.0, device=device).requires_grad_(),
-            'eps_0y': torch.tensor(0.0, device=device).requires_grad_(),
+            'sigma_0': torch.tensor(args.sigma_0, device=device).requires_grad_(),
+            'Amp': torch.tensor(args.Amp, device=device).requires_grad_(),
+            'eps_0x': torch.tensor(args.eps_0x, device=device).requires_grad_(),
+            'eps_0y': torch.tensor(args.eps_0y, device=device).requires_grad_(),
             '-2log2beta': (-2 * torch.log(2 * beta)).requires_grad_(),
             '-log2rho2': (-torch.log(2 * rho * rho)).requires_grad_(),
         }
@@ -284,9 +301,9 @@ def main():
             x=X_train_f32, r=r_train_f32, n_px_side=n_px_side, display_hyper=False, **theta
         )
 
-        # Link function parameters (varGP defaults)
-        A_init = 0.01
-        lambda0_init = 1.0
+        # Link function parameters (from args, defaults from JSON)
+        A_init = args.A_init
+        lambda0_init = args.lambda0_init
         A = torch.tensor(A_init, device=device)
         f_params = {
             'logA': torch.log(A).requires_grad_(),
@@ -362,12 +379,12 @@ def main():
     # GPYTORCH MODES: adam, efm, vargp_style
     # =========================================================================
     else:
-        # Create kernel with RF structure
+        # Create kernel with RF structure using args (defaults from JSON, overridable via CLI)
         base_kernel = ArcCosineKernel(
-            sigma_0=1.0,
+            sigma_0=args.sigma_0,
             n_px_side=n_px_side,
-            eps_0x=0.0,
-            eps_0y=0.0,
+            eps_0x=args.eps_0x,
+            eps_0y=args.eps_0y,
             beta=args.beta,
             rho=args.rho,
             use_mask=args.use_mask,
@@ -377,16 +394,13 @@ def main():
         # Amp is multiplied into C (non-linear effect through sqrt/arccos)
         # This is different from ScaleKernel which scales output linearly
         kernel = base_kernel
-        kernel.Amp = 1e-4  # Match legacy varGP initialization
+        kernel.Amp = args.Amp
 
-        # Create model and likelihood
-        # vargp_style uses varGP's init values for fair comparison
-        if args.mode == 'vargp_style':
-            A_init, lambda0_init = 0.01, 1.0  # Match varGP defaults
-        else:
-            A_init, lambda0_init = 1.0, 0.0   # GPyTorch defaults
+        # Create model and likelihood using args (defaults from JSON)
+        A_init = args.A_init
+        lambda0_init = args.lambda0_init
 
-        model = VariationalGPModel(inducing_points, kernel, jitter=1e-4, whitening=not args.unwhitened)
+        model = VariationalGPModel(inducing_points, kernel, jitter=args.jitter, whitening=not args.unwhitenedStrategy)
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
         model = model.double().to(device)
@@ -397,6 +411,7 @@ def main():
         print(f"  A: {likelihood.A.item():.4f}")
         print(f"  lambda0: {likelihood.lambda0.item():.4f}")
         print(f"  Amp: {kernel.Amp.item():.6f}")
+        print(f"  jitter: {args.jitter}")
 
         # Train with selected mode
         # Note: GP_utils import disables gradients globally (utils.py line 2).
@@ -417,12 +432,13 @@ def main():
                     device=device
                 )
             else:  # vargp_style
-                # Uses varGP defaults: lr_f=0.1, lr_m=0.1 (from utils.py)
+                # Use defaults for lr_f and lr_m (both set to same lr value)
+                lr = defaults['training']['lr']
                 print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
-                print(f"  lr_f=0.1, lr_m=0.1 (varGP defaults)")
+                print(f"  lr_f={lr}, lr_m={lr} (from defaults)")
                 print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
-                # Whitening: OFF if unwhitened strategy, otherwise depends on --no-whitening flag
-                whitening_status = 'OFF (unwhitened strategy)' if args.unwhitened else ('DISABLED' if args.no_whitening else 'enabled')
+                # Whitening: OFF if unwhitenedStrategy strategy, otherwise depends on --no-whitening flag
+                whitening_status = 'OFF (unwhitenedStrategy strategy)' if args.unwhitenedStrategy else ('DISABLED' if args.no_whitening else 'enabled')
                 print(f"  whitening: {whitening_status}")
                 result = train_varGP_style(
                     model, likelihood, X_train, r_train,
@@ -430,14 +446,14 @@ def main():
                     n_estep=args.n_estep,
                     n_fstep=args.n_fstep,
                     n_mstep=args.n_mstep,
-                    lr_f=0.1,  # varGP default
-                    lr_m=0.1,  # varGP default
+                    lr_f=lr,
+                    lr_m=lr,
                     print_every=print_every,
                     device=device,
                     use_cache=args.use_cache,  # Kernel caching for E-step performance
-                    # If unwhitened strategy, let auto-detect handle it (will be False)
+                    # If unwhitenedStrategy strategy, let auto-detect handle it (will be False)
                     # Otherwise use --no-whitening flag for whitening conversions
-                    use_whitening=None if args.unwhitened else (not args.no_whitening),
+                    use_whitening=None if args.unwhitenedStrategy else (not args.no_whitening),
                 )
                 losses = result['losses']
                 time_estep_total = result['time_estep_total']

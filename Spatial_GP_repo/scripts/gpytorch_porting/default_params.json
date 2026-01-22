@@ -1,0 +1,40 @@
+{
+  "_comment": "Standard default parameters matching original varGP (utils.py, one_cell_fit.py)",
+
+  "kernel": {
+    "sigma_0": 1.0,
+    "Amp": 1.0,
+    "beta": 0.1,
+    "rho": 0.1,
+    "eps_0x": 0.0,
+    "eps_0y": 0.0,
+    "gradient_mode": "autograd"
+  },
+
+  "link_function": {
+    "A_init": 0.01,
+    "lambda0_init": 1.0
+  },
+
+  "training": {
+    "n_iterations": 50,
+    "n_estep": 10,
+    "n_fstep": 10,
+    "n_mstep": 10,
+    "lr": 0.1
+  },
+
+  "model": {
+    "use_cache": true,
+    "jitter": 0.0001
+  },
+
+  "data": {
+    "n_train": 500,
+    "n_px_side": 108,
+    "cellid": 8,
+    "use_mask": true,
+    "ntilde": 100,
+    "seed": 42
+  }
+}
