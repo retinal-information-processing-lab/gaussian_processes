@@ -77,7 +77,7 @@ import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel #( /ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/model.py)
-from train import train_varGP_style, train_adam, predict, compute_pearson_correlation, compute_explained_variance
+from train import train_varGP_style, train_gpy_default, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
 
 
@@ -431,13 +431,14 @@ def run_gpytorch_adam(X, R, X_test, R_test, params, device, gradient_mode='autog
     print(f"  ntilde: {ntilde}, n_train: {n_train}")
     print(f"  n_iterations: {params['gpytorch_iterations']}, lr: {params['lr']}")
 
-    # Train with pure Adam (no E-step) - need gradients enabled
+    # Train with GPyTorch default (Adam, no E-step) - need gradients enabled
     start_time = time.time()
     with torch.enable_grad():
-        losses = train_adam(
+        losses = train_gpy_default(
             model, likelihood, X_train, r_train,
-            n_iterations=params['gpytorch_iterations'],
+            optimizer_name='adam',
             lr=params['lr'],
+            n_iterations=params['gpytorch_iterations'],
             print_every=params['gpytorch_iterations'] // 5,
             device=device,
         )
@@ -516,7 +517,7 @@ def print_comparison_table(results, use_whitening=True, use_cache=True, n_train=
         vargp = next((r for r in valid_results if r['implementation'] == 'varGP'), None)
         vargp_style = next((r for r in valid_results if 'vargp_style' in r['implementation']), None)
         efm = next((r for r in valid_results if 'efm' in r['implementation']), None)
-        adam = next((r for r in valid_results if 'adam' in r['implementation']), None)
+        default_gpy = next((r for r in valid_results if 'default_gpy' in r['implementation']), None)
 
         print("\nDifferences (vs varGP reference):")
         if vargp and vargp_style:

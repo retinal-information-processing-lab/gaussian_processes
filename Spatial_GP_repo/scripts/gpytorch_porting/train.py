@@ -4,8 +4,8 @@ Training Utilities for GPyTorch Variational GP
 This module provides functions for training and evaluating the variational GP model.
 
 Training loops:
-- train_adam: Pure Adam optimization (no E-step)
-- train_varGP_style: Full varGP-style training (Newton E-step with moment recomputation)
+- train_gpy_default: Standard GPyTorch variational inference (no custom E-step)
+- train_varGP_style: Custom EM-style training (Newton E-step with moment recomputation)
 
 Evaluation:
 - predict: Make predictions with trained model
@@ -20,9 +20,9 @@ import numpy as np
 import gpytorch
 
 
-def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1,
-               print_every=100, device=None):
-    """Train the variational GP model using Adam optimizer (no E-step).
+def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
+                       print_every=100, device=None):
+    """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
 
@@ -31,8 +31,9 @@ def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1,
         likelihood: PoissonLikelihood instance
         train_x: Training inputs, shape (n_train, n_features)
         train_y: Training targets (spike counts), shape (n_train,)
+        optimizer_name: Optimizer to use ('adam')
+        lr: Learning rate
         n_iterations: Number of optimization iterations
-        lr: Learning rate for Adam optimizer
         print_every: Print loss every N iterations (0 to disable)
         device: Device to use (defaults to train_x.device)
 
@@ -50,11 +51,14 @@ def train_adam(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1,
     model.train()
     likelihood.train()
 
-    # Optimize both model and likelihood parameters
-    optimizer = torch.optim.Adam([
-        {'params': model.parameters()},
-        {'params': likelihood.parameters()}
-    ], lr=lr)
+    # Create optimizer
+    if optimizer_name == 'adam':
+        optimizer = torch.optim.Adam([
+            {'params': model.parameters()},
+            {'params': likelihood.parameters()}
+        ], lr=lr)
+    else:
+        raise ValueError(f"Unknown optimizer: {optimizer_name}. Only 'adam' is supported.")
 
     losses = []
 
@@ -434,8 +438,9 @@ def test_training():
     likelihood = PoissonLikelihood(A_init=1.0, lambda0_init=0.0)
 
     print("Training on synthetic data...")
-    losses = train_adam(model, likelihood, X_train, y_train,
-                        n_iterations=100, lr=0.1, print_every=25)
+    losses = train_gpy_default(model, likelihood, X_train, y_train,
+                               optimizer_name='adam', lr=0.1,
+                               n_iterations=100, print_every=25)
 
     print(f"\nFinal loss: {losses[-1]:.2f}")
     print(f"Loss decreased: {losses[0] > losses[-1]}")

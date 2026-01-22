@@ -6,8 +6,8 @@ Runs all canonical configurations for regression testing and performance trackin
 Results are appended to results/benchmark_results.jsonl.
 
 Test Matrix (12 configurations per seed):
-  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_style, adam}
-  - ntrain=2000: M=200 × modes={vargp_old, vargp_style, adam}
+  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_style, default_gpy}
+  - ntrain=2000: M=200 × modes={vargp_old, vargp_style, default_gpy}
 
 Constraints (not configurable):
   - Whitened mode only (default)
@@ -37,17 +37,17 @@ TEST_MATRIX = [
     # ntrain=500: M=50, 100, 200
     ('vargp_old', 50, 500),
     ('vargp_style', 50, 500),
-    ('adam', 50, 500),
+    ('default_gpy', 50, 500),
     ('vargp_old', 100, 500),
     ('vargp_style', 100, 500),
-    ('adam', 100, 500),
+    ('default_gpy', 100, 500),
     ('vargp_old', 200, 500),
     ('vargp_style', 200, 500),
-    ('adam', 200, 500),
+    ('default_gpy', 200, 500),
     # ntrain=2000: M=200 only
     ('vargp_old', 200, 2000),
     ('vargp_style', 200, 2000),
-    ('adam', 200, 2000),
+    ('default_gpy', 200, 2000),
 ]
 
 
@@ -119,8 +119,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='Print commands without running')
     parser.add_argument('--modes', type=str, nargs='+',
-                        default=['vargp_old', 'vargp_style', 'adam'],
-                        choices=['vargp_old', 'vargp_style', 'adam'],
+                        default=['vargp_old', 'vargp_style', 'default_gpy'],
+                        choices=['vargp_old', 'vargp_style', 'default_gpy'],
                         help='Modes to test (default: all)')
     args = parser.parse_args()
 

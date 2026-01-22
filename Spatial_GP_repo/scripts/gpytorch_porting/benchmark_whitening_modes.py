@@ -55,7 +55,7 @@ from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from train import train_varGP_style
-from train import train_adam, predict, compute_pearson_correlation
+from train import train_gpy_default, predict, compute_pearson_correlation
 
 DEVICE = get_device()
 N_PX_SIDE = 108
@@ -228,10 +228,11 @@ def run_adam(data, M, n_iterations, lr=0.01):
 
     # Train
     start_time = time.time()
-    losses = train_adam(
+    losses = train_gpy_default(
         model, likelihood, X_train, r_train,
-        n_iterations=n_iterations,
+        optimizer_name='adam',
         lr=lr,
+        n_iterations=n_iterations,
         print_every=0,
         device=DEVICE
     )
@@ -304,7 +305,7 @@ def run_benchmark(m_values, n_iterations, n_estep, n_fstep, n_mstep, n_train, in
     if include_baselines:
         configs.extend([
             {'name': 'REF', 'mode': 'vargp_old', 'desc': 'Original varGP (reference)'},
-            {'name': 'ADAM', 'mode': 'adam', 'desc': 'Pure Adam optimization'},
+            {'name': 'DEFAULT_GPY', 'mode': 'default_gpy', 'desc': 'Standard GPyTorch'},
         ])
 
     configs.extend([
@@ -344,7 +345,7 @@ def run_benchmark(m_values, n_iterations, n_estep, n_fstep, n_mstep, n_train, in
                         n_fstep=n_fstep,
                         n_mstep=n_mstep,
                     )
-                elif cfg['mode'] == 'adam':
+                elif cfg['mode'] == 'default_gpy':
                     result = run_adam(data, M, n_iterations=n_iterations, lr=0.01)
                 else:  # vargp_style
                     result = run_vargp_style(
