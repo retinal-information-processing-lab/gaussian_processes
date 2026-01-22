@@ -22,7 +22,7 @@ import gpytorch
 
 
 def _validate_jitter(jitter: Optional[float], model: gpytorch.models.ApproximateGP) -> float:
-    """Validate and return jitter value, warning if mismatch detected.
+    """Validate and return jitter value, raising error if mismatch detected.
 
     CRITICAL: All jitter values MUST match model.jitter to ensure consistency
     between whitening conversions and GPyTorch's internal computations.
@@ -34,17 +34,18 @@ def _validate_jitter(jitter: Optional[float], model: gpytorch.models.Approximate
 
     Returns:
         jitter: The validated jitter value (always model.jitter)
+
+    Raises:
+        ValueError: If explicit jitter doesn't match model.jitter
     """
     if jitter is None:
         return model.jitter
 
     if jitter != model.jitter:
-        warnings.warn(
+        raise ValueError(
             f"Jitter mismatch: explicit jitter={jitter} but model.jitter={model.jitter}. "
-            f"This can cause incorrect results in whitened E-step paths. "
-            f"Using model.jitter={model.jitter} instead.",
-            UserWarning,
-            stacklevel=3  # Point to the caller of the function that calls _validate_jitter
+            f"This causes incorrect results in whitened E-step paths. "
+            f"Either pass jitter=None to use model.jitter, or ensure they match."
         )
     return model.jitter
 

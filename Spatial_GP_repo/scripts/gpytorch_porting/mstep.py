@@ -22,7 +22,7 @@ def m_step(
     X: torch.Tensor,
     r: torch.Tensor,
     n_mstep: int,
-    lr: float = 0.01,
+    lr: float,  # Required - no default to prevent silent bugs
     verbose: bool = False
 ):
     """M-step: Optimize kernel hyperparameters with Adam.

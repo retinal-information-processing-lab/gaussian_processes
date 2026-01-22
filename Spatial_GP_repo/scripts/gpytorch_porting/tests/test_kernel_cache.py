@@ -686,7 +686,8 @@ def investigate_jitter_application(verbose=True):
     X = data['X_train']
 
     # Cached path: jitter added in compute_kernel_cache()
-    kernel_cache = compute_kernel_cache(model, X, jitter=1e-6)
+    # Use jitter=None to auto-detect from model.jitter (avoids mismatch errors)
+    kernel_cache = compute_kernel_cache(model, X, jitter=None)
     K_tilde_cached = kernel_cache['K_tilde']
     K_tilde_j_cached = kernel_cache['K_tilde_j']
 

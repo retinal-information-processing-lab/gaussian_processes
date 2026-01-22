@@ -242,11 +242,11 @@ def test_whitening_paths_equivalent(verbose=False):
     # Run cached path with whitening
     set_reproducible_seed(42, device=DEVICE)
     model_cached, likelihood_cached = create_model_and_likelihood(data['inducing_points'])
-    kernel_cache = compute_kernel_cache(model_cached, data['X_train'], jitter=1e-6)
+    kernel_cache = compute_kernel_cache(model_cached, data['X_train'], jitter=None)
 
     lambda_m_cached, lambda_var_cached = e_step_loop(
         model_cached, likelihood_cached, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=kernel_cache, use_whitening=True
+        n_estep=10, jitter=None, kernel_cache=kernel_cache, use_whitening=True
     )
 
     # Run non-cached path with whitening
@@ -255,7 +255,7 @@ def test_whitening_paths_equivalent(verbose=False):
 
     lambda_m_noncached, lambda_var_noncached = e_step_loop(
         model_noncached, likelihood_noncached, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=None, use_whitening=True
+        n_estep=10, jitter=None, kernel_cache=None, use_whitening=True
     )
 
     # Compare
@@ -303,11 +303,11 @@ def test_no_whitening_paths_equivalent(verbose=False):
     # Run cached path WITHOUT whitening
     set_reproducible_seed(42, device=DEVICE)
     model_cached, likelihood_cached = create_model_and_likelihood(data['inducing_points'])
-    kernel_cache = compute_kernel_cache(model_cached, data['X_train'], jitter=1e-6)
+    kernel_cache = compute_kernel_cache(model_cached, data['X_train'], jitter=None)
 
     lambda_m_cached, lambda_var_cached = e_step_loop(
         model_cached, likelihood_cached, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=kernel_cache, use_whitening=False
+        n_estep=10, jitter=None, kernel_cache=kernel_cache, use_whitening=False
     )
 
     # Run non-cached path WITHOUT whitening
@@ -316,7 +316,7 @@ def test_no_whitening_paths_equivalent(verbose=False):
 
     lambda_m_noncached, lambda_var_noncached = e_step_loop(
         model_noncached, likelihood_noncached, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=None, use_whitening=False
+        n_estep=10, jitter=None, kernel_cache=None, use_whitening=False
     )
 
     # Compare
@@ -358,21 +358,21 @@ def test_whitening_vs_no_whitening_differs(verbose=False):
     # Run WITH whitening
     set_reproducible_seed(42, device=DEVICE)
     model_whitening, likelihood_whitening = create_model_and_likelihood(data['inducing_points'])
-    kernel_cache = compute_kernel_cache(model_whitening, data['X_train'], jitter=1e-6)
+    kernel_cache = compute_kernel_cache(model_whitening, data['X_train'], jitter=None)
 
     lambda_m_whitening, _ = e_step_loop(
         model_whitening, likelihood_whitening, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=kernel_cache, use_whitening=True
+        n_estep=10, jitter=None, kernel_cache=kernel_cache, use_whitening=True
     )
 
     # Run WITHOUT whitening
     set_reproducible_seed(42, device=DEVICE)
     model_no_whitening, likelihood_no_whitening = create_model_and_likelihood(data['inducing_points'])
-    kernel_cache = compute_kernel_cache(model_no_whitening, data['X_train'], jitter=1e-6)
+    kernel_cache = compute_kernel_cache(model_no_whitening, data['X_train'], jitter=None)
 
     lambda_m_no_whitening, _ = e_step_loop(
         model_no_whitening, likelihood_no_whitening, data['X_train'], data['R_train'],
-        n_estep=10, jitter=1e-6, kernel_cache=kernel_cache, use_whitening=False
+        n_estep=10, jitter=None, kernel_cache=kernel_cache, use_whitening=False
     )
 
     # Compare

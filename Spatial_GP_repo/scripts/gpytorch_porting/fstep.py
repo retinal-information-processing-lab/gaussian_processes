@@ -60,7 +60,7 @@ def f_step(
     lambda_m: torch.Tensor,
     lambda_var: torch.Tensor,
     n_fstep: int,
-    lr: float = 0.01,
+    lr: float,  # Required - no default to prevent silent bugs
     verbose: bool = False
 ):
     """F-step: Optimize A with Adam, lambda0 computed analytically.
@@ -122,7 +122,7 @@ def f_step_lbfgs(
     lambda_m: torch.Tensor,
     lambda_var: torch.Tensor,
     n_fstep: int,
-    lr: float = 0.1,
+    lr: float,  # Required - no default to prevent silent bugs
     verbose: bool = False
 ):
     """F-step using LBFGS optimizer - matches original varGP exactly.

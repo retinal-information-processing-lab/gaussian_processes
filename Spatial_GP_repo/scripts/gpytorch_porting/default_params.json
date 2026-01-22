@@ -8,7 +8,8 @@
     "rho": 0.1,
     "eps_0x": 0.0,
     "eps_0y": 0.0,
-    "gradient_mode": "autograd"
+    "gradient_mode": "autograd",
+    "use_mask": true
   },
 
   "link_function": {
@@ -33,7 +34,6 @@
     "n_train": 500,
     "n_px_side": 108,
     "cellid": 8,
-    "use_mask": true,
     "ntilde": 100,
     "seed": 42
   }

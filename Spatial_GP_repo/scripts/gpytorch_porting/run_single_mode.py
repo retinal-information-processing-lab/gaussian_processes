@@ -185,8 +185,10 @@ def main():
     # Link function parameters - use defaults from JSON
     parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
     parser.add_argument('--lambda0-init', type=float, default=defaults['link_function']['lambda0_init'], help=f'Initial bias lambda0 (default: {defaults["link_function"]["lambda0_init"]})')
-    parser.add_argument('--use-mask', action='store_true', default=True, help='Use pixel masking')
-    parser.add_argument('--no-mask', action='store_false', dest='use_mask')
+    parser.add_argument('--use-mask', action='store_true', default=defaults['kernel']['use_mask'],
+                        help=f'Use pixel masking (default: {defaults["kernel"]["use_mask"]})')
+    parser.add_argument('--no-mask', action='store_false', dest='use_mask',
+                        help='Disable pixel masking (WARNING: uses full 11664x11664 C matrix)')
     parser.add_argument('--gradient-mode', type=str, default='autograd',
                         choices=list(GRADIENT_MODES),
                         help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
@@ -224,7 +226,7 @@ def main():
     if args.gradient_mode != 'autograd':
         print(f"Gradient mode: {args.gradient_mode}")
     if args.unwhitenedStrategy:
-        print("Using UnwhitenedVariationalStrategy (no L_K dependency)")
+        print("Using UnwhitenedVariationalStrategy ")
 
     # Set seed with explicit CUDA init for reproducibility
     # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details

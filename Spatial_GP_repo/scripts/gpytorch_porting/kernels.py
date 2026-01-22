@@ -25,6 +25,8 @@ Gradient Modes:
 Reference: kernels/kernels.py:acosker_clean(), localker_clean()
 """
 
+import warnings
+
 import numpy as np
 import torch
 import gpytorch
@@ -199,6 +201,15 @@ class ArcCosineKernel(Kernel):
         self.use_mask = use_mask and (n_px_side is not None)
         # Cache for mask (computed on first forward pass)
         self._cached_mask = None
+
+        # Warn if masking is disabled (uses full 11664x11664 C matrix)
+        if n_px_side is not None and not use_mask:
+            warnings.warn(
+                f"use_mask=False: Using full {n_px_side**2}x{n_px_side**2} C matrix. "
+                "This is memory-intensive (~1GB for 108x108 images). "
+                "Set use_mask=True to reduce to ~2500x2500.",
+                UserWarning
+            )
 
         # Validate gradient mode
         if gradient_mode not in GRADIENT_MODES:
