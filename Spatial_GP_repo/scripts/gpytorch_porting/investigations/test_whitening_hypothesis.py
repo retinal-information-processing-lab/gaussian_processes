@@ -34,13 +34,15 @@ from model import VariationalGPModel
 from estep import (
     compute_kernel_cache,
     compute_moments_from_kernel_cache,
+)
+from whitening import (
     get_variational_mean_with_L_K,
     update_variational_mean_with_L_K,
     get_variational_covar_with_L_K,
     update_variational_covar_with_L_K,
     clear_variational_cache,
-    train_varGP_style,
 )
+from train import train_varGP_style
 import gpytorch
 
 # Device setup

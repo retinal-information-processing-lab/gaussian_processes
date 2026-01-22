@@ -35,6 +35,10 @@ from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from estep import (
     compute_kernel_cache,
+    compute_moments_from_kernel_cache,
+    e_step_loop,
+)
+from whitening import (
     get_variational_mean,
     get_variational_mean_with_L_K,
     update_variational_mean_with_L_K,
@@ -43,8 +47,6 @@ from estep import (
     get_variational_covar_with_L_K,
     update_variational_covar_with_L_K,
     clear_variational_cache,
-    compute_moments_from_kernel_cache,
-    e_step_loop,
 )
 
 # Use PNAS dataset for real data tests
@@ -261,7 +263,7 @@ def test_training_runs():
     X_train, r_train = load_pnas_data(n_train=300, device=device)
 
     # Import training function
-    from estep import train_varGP_style
+    from train import train_varGP_style
 
     print("\n  Creating model...")
 

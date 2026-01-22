@@ -41,11 +41,10 @@ from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from tests.test_utils import set_reproducible_seed
-from estep import (
-    compute_kernel_cache,
-    e_step_loop,
-    f_step_lbfgs,
-    m_step,
+from estep import compute_kernel_cache, e_step_loop
+from fstep import f_step_lbfgs
+from mstep import m_step
+from whitening import (
     set_kernel_requires_grad,
     get_variational_mean,
     get_variational_covar,

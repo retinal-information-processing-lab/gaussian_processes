@@ -54,7 +54,7 @@ set_reproducible_seed(42)
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from estep import train_varGP_style
+from train import train_varGP_style
 from train import train_adam, predict, compute_pearson_correlation
 
 DEVICE = get_device()

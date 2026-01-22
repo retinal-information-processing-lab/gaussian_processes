@@ -21,7 +21,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
 | **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
-| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below); **Whitened mode is seed-sensitive** (see `investigations/INVESTIGATION_whitening_collapse_M75.md`) |
+| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below); **Whitened mode is seed-sensitive**; **set_reproducible_seed device param changes random sequence** (see below) |
 | **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
@@ -69,6 +69,18 @@ This document tracks the porting effort from the custom variational GP implement
 >
 > **Affected functions**: `compute_kernel_cache()`, `compute_L_K()`, `e_step()`,
 > `e_step_explicit()`, `e_step_loop()`.
+
+**set_reproducible_seed Device Parameter Issue (January 2025):**
+> `set_reproducible_seed(seed, device=device)` produces DIFFERENT random sequences than
+> `set_reproducible_seed(seed)` (without device param), even though device defaults to 'cuda'.
+>
+> **Impact**: Different inducing point selection → dramatically different results (r=0.70 vs r=-0.11).
+>
+> **Root cause**: Unknown. The device param triggers `torch.cuda.init()` before seeding, but
+> calling without device param also defaults to CUDA init. Needs investigation.
+>
+> **Workaround**: For now, be aware that `run_single_mode.py` uses the device param while
+> inline tests may not, causing result mismatches.
 
 **UnwhitenedVariationalStrategy Option (January 2025):**
 > `VariationalGPModel` now supports a `whitening` parameter (default `True`):
@@ -231,7 +243,7 @@ Note: Avaid using the .data parameter and if you need to, raise it to the user. 
 - `kernels.py` - ArcCosineKernel class (verified against reference)
 - `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
 - `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
-- `train.py` - All training loops (`train_adam`, `train_efm`, `train_varGP_style`) + evaluation
+- `train.py` - All training loops (`train_adam`, `train_varGP_style`) + evaluation
 - `archive/test_stage1_cI.py` - Stage 1 (C=I) testing script (archived, superseded by run_single_mode.py)
 
 ### Stage 2: Structured Covariance Matrix C
@@ -558,7 +570,7 @@ E-step works without eigenspace projection (see Section 6.2), but performance de
 | `kernels.py` | ArcCosineKernel with RF structure, masking, `gradient_mode` selection |
 | `likelihoods.py` | PoissonLikelihood with A, λ₀ |
 | `model.py` | VariationalGPModel |
-| `train.py` | All training loops (`train_adam`, `train_efm`, `train_varGP_style`) + evaluation utilities |
+| `train.py` | All training loops (`train_adam`, `train_varGP_style`) + evaluation utilities |
 | `estep.py` | E-step, F-step, M-step functions + kernel caching |
 | `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |

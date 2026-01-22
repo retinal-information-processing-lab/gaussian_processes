@@ -5,7 +5,6 @@ This module provides functions for training and evaluating the variational GP mo
 
 Training loops:
 - train_adam: Pure Adam optimization (no E-step)
-- train_efm: Simple E-F-M loop (1 E-step per iteration)
 - train_varGP_style: Full varGP-style training (Newton E-step with moment recomputation)
 
 Evaluation:
@@ -223,109 +222,8 @@ def compute_explained_variance(r_test, f_pred):
 
 
 # =============================================================================
-# EM-Style Training Loops (imported from estep.py dependencies)
+# EM-Style Training Loop
 # =============================================================================
-
-def train_efm(
-    model: gpytorch.models.ApproximateGP,
-    likelihood,
-    train_x: torch.Tensor,
-    train_y: torch.Tensor,
-    n_iterations: int = 50,
-    n_fstep: int = 10,
-    n_mstep: int = 10,
-    lr: float = 0.01,
-    print_every: int = 10,
-    device: Optional[torch.device] = None
-):
-    """Simple E-F-M training loop.
-
-    Structure per iteration:
-        1. E-step: One Newton update of (m, V)
-        2. F-step: n_fstep Adam steps on (A, lambda0)
-        3. M-step: n_mstep Adam steps on kernel hyperparameters
-
-    This is a stripped-down, simple implementation without:
-    - Moment recomputation between Newton steps
-    - Analytical lambda0
-    - Stability checks / early stopping
-    - Multiple E-step iterations
-
-    Args:
-        model: VariationalGPModel instance
-        likelihood: PoissonLikelihood instance
-        train_x: Training inputs, shape (N, n_features)
-        train_y: Training spike counts, shape (N,)
-        n_iterations: Number of E-F-M iterations
-        n_fstep: Number of Adam steps for F-step (A, lambda0)
-        n_mstep: Number of Adam steps for M-step (kernel)
-        lr: Learning rate for Adam
-        print_every: Print progress every N iterations (0 to disable)
-        device: Device to use
-
-    Returns:
-        losses: List of ELBO values per iteration
-    """
-    # Import here to avoid circular dependency
-    from estep import e_step, update_variational_parameters
-
-    if device is None:
-        device = train_x.device
-
-    model = model.to(device)
-    likelihood = likelihood.to(device)
-    train_x = train_x.to(device)
-    train_y = train_y.to(device)
-
-    # Separate optimizers for F-step and M-step
-    optimizer_f = torch.optim.Adam(likelihood.parameters(), lr=lr)
-    optimizer_m = torch.optim.Adam(model.covar_module.parameters(), lr=lr)
-
-    losses = []
-
-    for iteration in range(n_iterations):
-        # ===== E-STEP: One Newton update =====
-        model.eval()
-        with torch.no_grad():
-            m_new, V_new = e_step(model, likelihood, train_x, train_y)
-            update_variational_parameters(model, m_new, V_new, model.jitter)
-
-        # ===== F-STEP: Optimize A, lambda0 =====
-        model.train()
-        for _ in range(n_fstep):
-            optimizer_f.zero_grad()
-            output = model(train_x)
-            loss = -likelihood.expected_log_prob(train_y, output) + \
-                   model.variational_strategy.kl_divergence()
-            loss.backward()
-            optimizer_f.step()
-
-        # ===== M-STEP: Optimize kernel hyperparameters =====
-        for _ in range(n_mstep):
-            optimizer_m.zero_grad()
-            output = model(train_x)
-            loss = -likelihood.expected_log_prob(train_y, output) + \
-                   model.variational_strategy.kl_divergence()
-            loss.backward()
-            optimizer_m.step()
-
-        # Record loss
-        model.eval()
-        with torch.no_grad():
-            output = model(train_x)
-            ell = likelihood.expected_log_prob(train_y, output)
-            kl = model.variational_strategy.kl_divergence()
-            current_loss = (-ell + kl).item()
-        losses.append(current_loss)
-
-        if print_every > 0 and (iteration + 1) % print_every == 0:
-            A = likelihood.A.item()
-            lambda0 = likelihood.lambda0.item()
-            print(f"Iter {iteration+1}/{n_iterations}, Loss: {current_loss:.2f}, "
-                  f"A: {A:.4f}, lambda0: {lambda0:.4f}")
-
-    return losses
-
 
 def train_varGP_style(
     model: gpytorch.models.ApproximateGP,
@@ -389,13 +287,20 @@ def train_varGP_style(
             'time_mstep_total': Total time spent in M-step block
     """
     # Import here to avoid circular dependency
-    from estep import (
-        set_kernel_requires_grad,
-        compute_kernel_cache,
-        e_step_loop,
-        f_step_lbfgs,
-        m_step,
-    )
+    import warnings
+    from estep import compute_kernel_cache, e_step_loop
+    from fstep import f_step_lbfgs
+    from mstep import m_step
+    from whitening import set_kernel_requires_grad
+
+    # Warn about n_mstep=0 (disables kernel learning)
+    if n_mstep == 0:
+        warnings.warn(
+            "n_mstep=0 disables kernel hyperparameter learning. "
+            "This is not recommended unless you have pre-trained kernel parameters. "
+            "Use n_mstep >= 10 for proper training.",
+            UserWarning
+        )
 
     if device is None:
         device = train_x.device

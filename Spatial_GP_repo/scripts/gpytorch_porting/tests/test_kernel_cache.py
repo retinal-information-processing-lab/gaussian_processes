@@ -53,11 +53,13 @@ from estep import (
     e_step,
     compute_moments,
     e_step_loop,
+)
+from whitening import (
     get_variational_mean,
     get_variational_covar,
     update_variational_parameters,
-    train_varGP_style,
 )
+from train import train_varGP_style
 from train import predict, compute_pearson_correlation
 
 # Device setup - use get_device() for consistency

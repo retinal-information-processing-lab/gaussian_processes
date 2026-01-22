@@ -47,13 +47,14 @@ from estep import (
     e_step_explicit,
     e_step_with_kernel_cache,
     e_step_loop,
+)
+from whitening import (
     get_variational_mean,
     get_variational_covar,
     get_variational_mean_with_L_K,
     get_variational_covar_with_L_K,
-    train_varGP_style,
 )
-from train import predict, compute_pearson_correlation
+from train import train_varGP_style, predict, compute_pearson_correlation
 
 # Device setup
 DEVICE = get_device()

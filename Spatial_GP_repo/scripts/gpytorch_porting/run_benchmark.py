@@ -77,8 +77,7 @@ import gpytorch
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel #( /ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/model.py)
-from train import train_efm, train_varGP_style
-from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
+from train import train_varGP_style, train_adam, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
 
 
@@ -251,94 +250,6 @@ def run_vargp(X, R, X_test, R_test, params, device):
         'implementation': 'varGP',
         'time': elapsed,
         'explained_var': explained_var,
-        'ntilde': ntilde,
-    }
-
-
-def run_gpytorch_efm(X, R, X_test, R_test, params, device, gradient_mode='autograd'):
-    """Run GPyTorch with E-F-M training loop."""
-    print("\n" + "="*60)
-    print("Running GPyTorch (efm mode)")
-    print("="*60)
-
-    cellid = params['cellid']
-    ntilde = params['ntilde']
-    n_train = params['n_train']
-    n_px_side = params['n_px_side']
-
-    # Select cell
-    r = R[:, cellid]
-    r_test = R_test[:, :, cellid]
-
-    # Select training subset with SAME seed as varGP
-    torch.manual_seed(42)
-    indices = torch.randperm(X.shape[0], device=device)[:n_train]
-    X_train = X[indices].double()
-    r_train = r[indices].double()
-
-    # Inducing points (first ntilde training points) - SAME as varGP
-    inducing_points = X_train[:ntilde].clone()
-
-    # Create kernel
-    base_kernel = ArcCosineKernel(
-        sigma_0=params['sigma_0'],
-        n_px_side=n_px_side,
-        eps_0x=params['eps_0x'],
-        eps_0y=params['eps_0y'],
-        beta=params['beta'],
-        rho=params['rho'],
-        use_mask=True,
-        gradient_mode=gradient_mode,
-    )
-    # Use base_kernel directly with internal Amp parameter (matches legacy varGP)
-    # Amp multiplies C directly: C = Amp * alpha * C_smooth * alpha^T
-    # This is different from ScaleKernel which scales output linearly
-    kernel = base_kernel
-    kernel.Amp = 1e-4  # Match legacy varGP initialization
-
-    # Create model and likelihood (GPyTorch defaults)
-    model = VariationalGPModel(inducing_points, kernel, jitter=1e-4)
-    likelihood = PoissonLikelihood(
-        A_init=params['gpytorch_A_init'],
-        lambda0_init=params['gpytorch_lambda0_init']
-    )
-
-    model = model.double().to(device)
-    likelihood = likelihood.double().to(device)
-
-    print(f"  A_init: {params['gpytorch_A_init']}, lambda0_init: {params['gpytorch_lambda0_init']}")
-    print(f"  ntilde: {ntilde}, n_train: {n_train}")
-    print(f"  n_iterations: {params['gpytorch_iterations']}, n_fstep: {params['gpytorch_n_fstep']}, n_mstep: {params['gpytorch_n_mstep']}")
-
-    # Train (need gradients enabled)
-    start_time = time.time()
-    with torch.enable_grad():
-        losses = train_efm(
-            model, likelihood, X_train, r_train,
-            n_iterations=params['gpytorch_iterations'],
-            n_fstep=params['gpytorch_n_fstep'],
-            n_mstep=params['gpytorch_n_mstep'],
-            lr=params['lr'],
-            print_every=params['gpytorch_iterations'] // 5,
-            device=device,
-        )
-    elapsed = time.time() - start_time
-
-    # Evaluate
-    X_test_double = X_test.double()
-    predictions = predict(model, likelihood, X_test_double, device=device)
-    r_test_mean = r_test.mean(dim=0).double()
-    explained_var, reliability = compute_explained_variance(r_test.double(), predictions['f_pred'])
-
-    print(f"\n  Time: {elapsed:.1f}s")
-    print(f"  Explained variance: {explained_var:.4f}")
-    print(f"  Reliability: {reliability:.4f}")
-
-    return {
-        'implementation': 'GPyTorch (efm)',
-        'time': elapsed,
-        'explained_var': explained_var,
-        'reliability': reliability,
         'ntilde': ntilde,
     }
 
@@ -718,15 +629,7 @@ Examples:
         )
         results.append(result_gpytorch_vargp_style_legacy)
 
-    # 4. efm mode
-    result_gpytorch_efm = run_gpytorch_efm(
-        data['X'], data['R'], data['X_test'], data['R_test'],
-        params, device,
-        gradient_mode=args.gradient_mode
-    )
-    results.append(result_gpytorch_efm)
-
-    # 5. adam mode
+    # 4. adam mode
     result_gpytorch_adam = run_gpytorch_adam(
         data['X'], data['R'], data['X_test'], data['R_test'],
         params, device,

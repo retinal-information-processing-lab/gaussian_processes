@@ -8,15 +8,13 @@ For canonical benchmarks comparing all modes, use run_benchmark.py instead.
 Training modes:
   - vargp_old: Original varGP implementation (reference)
   - adam: Pure Adam optimization (no E-step)
-  - efm: E-F-M loop (1 E-step, n F-steps, n M-steps per iteration)
   - vargp_style: GPyTorch matching original varGP training structure
 
 Usage:
     python run_single_mode.py --ntilde 50 --mode vargp_old       # Reference implementation
     python run_single_mode.py --ntilde 50 --mode adam
-    python run_single_mode.py --ntilde 50 --mode efm
     python run_single_mode.py --ntilde 50 --mode vargp_style
-    python run_single_mode.py  # Uses defaults: M=50, mode=efm
+    python run_single_mode.py  # Uses defaults: M=50, mode=vargp_style
 
 Gradient modes (for GPyTorch modes only):
     --gradient-mode autograd   # PyTorch autograd (default)
@@ -25,7 +23,7 @@ Gradient modes (for GPyTorch modes only):
 
 IMPORTANT - Link Function Initialization:
     ┌─────────────┬─────────────────┬────────────────────┐
-    │ Parameter   │ adam/efm        │ vargp_old/vargp_style  │
+    │ Parameter   │ adam            │ vargp_old/vargp_style  │
     ├─────────────┼─────────────────┼────────────────────┤
     │ A_init      │ 1.0             │ 0.01               │
     │ lambda0_init│ 0.0             │ 1.0                │
@@ -55,8 +53,7 @@ import matplotlib.pyplot as plt
 from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from train import train_efm, train_varGP_style
-from train import train_adam, predict, compute_pearson_correlation, compute_explained_variance
+from train import train_varGP_style, train_adam, predict, compute_pearson_correlation, compute_explained_variance
 from tests.test_utils import set_reproducible_seed
 
 
@@ -164,13 +161,13 @@ def main():
     parser.add_argument('--n-train', type=int, default=500, help='Number of training samples (default: 500)')
     parser.add_argument('--n-iterations', type=int, default=50, help='Number of EM iterations (default: 50)')
     parser.add_argument('--n-estep', type=int, default=10, help='E-steps per iteration (default: 10)')
-    parser.add_argument('--n-fstep', type=int, default=10, help='F-steps per iteration (efm mode, default: 10)')
+    parser.add_argument('--n-fstep', type=int, default=10, help='F-steps per iteration (default: 10)')
     parser.add_argument('--n-mstep', type=int, default=10, help='M-steps per iteration (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, help='Learning rate (default: 0.01)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
-    parser.add_argument('--mode', type=str, default='efm',
-                        choices=['vargp_old', 'adam', 'efm', 'vargp_style'],
-                        help='Training mode: vargp_old (reference), adam (no E-step), efm (E-F-M loop), vargp_style (GPyTorch matching varGP)')
+    parser.add_argument('--mode', type=str, default='vargp_style',
+                        choices=['vargp_old', 'adam', 'vargp_style'],
+                        help='Training mode: vargp_old (reference), adam (no E-step), vargp_style (GPyTorch matching varGP)')
 
     # RF parameters - use defaults that work
     parser.add_argument('--beta', type=float, default=0.1, help='RF size (default: 0.1)')
@@ -414,17 +411,6 @@ def main():
                 losses = train_adam(
                     model, likelihood, X_train, r_train,
                     n_iterations=args.n_iterations,
-                    lr=args.lr,
-                    print_every=print_every,
-                    device=device
-                )
-            elif args.mode == 'efm':
-                print(f"  n_iterations={args.n_iterations}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}, lr={args.lr}")
-                losses = train_efm(
-                    model, likelihood, X_train, r_train,
-                    n_iterations=args.n_iterations,
-                    n_fstep=args.n_fstep,
-                    n_mstep=args.n_mstep,
                     lr=args.lr,
                     print_every=print_every,
                     device=device
