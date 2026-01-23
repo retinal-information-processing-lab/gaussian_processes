@@ -88,12 +88,12 @@ This document tracks the porting effort from the custom variational GP implement
 > **1. `standard_variational_distribution`** (model.py parameter):
 > - `True` (default): Use `VariationalStrategy` (whitened params, faster)
 > - `False`: Use `UnwhitenedVariationalStrategy` (natural params directly)
-> - CLI: `--unwhitened-strategy` to use False
+> - CLI: `--unwhitened-variational-dist` to use False
 >
 > **2. `explicit_unwhitening`** (train.py / estep.py parameter):
 > - Controls whether to do L_K whitening conversions in E-step
 > - **REQUIRED** for `vargp_style` mode with standard distribution
-> - CLI: `--explicit-unwhitening` (required for vargp_style with standard dist)
+> - CLI: `--explicit-unwhitening` or `--no-explicit-unwhitening` (required for vargp_style)
 >
 > **CLI usage**:
 > ```bash
@@ -101,10 +101,10 @@ This document tracks the porting effort from the custom variational GP implement
 > python run_single_mode.py --mode vargp_style --explicit-unwhitening
 >
 > # Unwhitened strategy (no explicit unwhitening needed)
-> python run_single_mode.py --mode vargp_style --unwhitened-strategy
+> python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
 > ```
 >
-> **Validation**: `--unwhitened-strategy` and `--explicit-unwhitening` are mutually exclusive.
+> **Validation**: `--unwhitened-variational-dist` with `--explicit-unwhitening` is invalid (mutually exclusive).
 >
 > **Performance**: Unwhitened strategy is ~4x slower and achieves lower test r (0.65 vs 0.80).
 >
