@@ -14,6 +14,9 @@ import torch
 import gpytorch
 from typing import Tuple
 
+# Import stability threshold from estep for consistency (C1 fix)
+from estep import STABILITY_THRESHOLD
+
 
 def lambda0_given_A(
     A: torch.Tensor,
@@ -45,8 +48,16 @@ def lambda0_given_A(
 
     Returns:
         Optimal lambda0 (scalar tensor)
+
+    Raises:
+        ValueError: If sum(r) <= 0 (no spikes in training data)
     """
     sumr = r.sum()
+
+    # D1 fix: Guard against zero spike count which would cause log(0) = -inf
+    if sumr <= 0:
+        raise ValueError("All training spikes are zero. Data problem.")
+
     expexpr = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var)
     sumexpr = expexpr.sum()
     return torch.log(sumr) - torch.log(sumexpr)
@@ -130,7 +141,7 @@ def f_step_lbfgs(
     Uses LBFGS with strong_wolfe line search to optimize A.
     - Optimizes likelihood.raw_A directly (raw_A = logA, A = exp(raw_A))
     - lambda0 set analytically inside closure
-    - Stability check: returns inf if f_mean.mean() > 100
+    - Stability check: returns inf if f_mean.mean() > STABILITY_THRESHOLD or NaN
 
     Args:
         model: VariationalGPModel instance
@@ -180,10 +191,10 @@ def f_step_lbfgs(
         # Compute f_mean = exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0)
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        # Stability check
-        if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
+        # Stability check (C1 fix: unified threshold with estep)
+        if f_mean.mean() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
             if verbose:
-                print(f"f_mean.mean() = {f_mean.mean():.1f} at closure call {closure_counter[0]}, returning inf")
+                print(f"f_mean instability: mean={f_mean.mean():.1f} at closure call {closure_counter[0]}, returning inf")
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Compute loglikelihood: L = A*r@lambda_m + lambda0*sum(r) - sum(f_mean)

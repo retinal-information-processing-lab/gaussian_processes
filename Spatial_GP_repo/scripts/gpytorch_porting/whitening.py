@@ -165,9 +165,9 @@ def update_variational_covar(
     try:
         L_new = torch.linalg.cholesky(V_new)
     except RuntimeError:
-        # Add jitter if Cholesky fails
+        # Add jitter if Cholesky fails - use model.jitter for consistency (B1 fix)
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
-        L_new = torch.linalg.cholesky(V_new + 1e-6 * eye)
+        L_new = torch.linalg.cholesky(V_new + model.jitter * eye)
 
     # Update using torch.no_grad() with .copy_() (best practice)
     with torch.no_grad():
@@ -246,10 +246,10 @@ def update_variational_covar_with_L_K(
     try:
         L_whitened = torch.linalg.cholesky(V_whitened)
     except RuntimeError:
-        # Add jitter if Cholesky fails
+        # Add jitter if Cholesky fails - use model.jitter for consistency (B1 fix)
         M = V_whitened.shape[0]
         eye = torch.eye(M, dtype=V_whitened.dtype, device=V_whitened.device)
-        L_whitened = torch.linalg.cholesky(V_whitened + 1e-6 * eye)
+        L_whitened = torch.linalg.cholesky(V_whitened + model.jitter * eye)
 
     # Step 3: Store whitened Cholesky using torch.no_grad() with .copy_() (best practice)
     with torch.no_grad():

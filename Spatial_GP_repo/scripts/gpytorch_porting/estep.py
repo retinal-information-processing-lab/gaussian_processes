@@ -44,6 +44,17 @@ from whitening import (
 
 
 # =============================================================================
+# Stability Constants (C1 fix - unified thresholds)
+# =============================================================================
+
+# Maximum allowed mean firing rate before instability is detected.
+# When f_mean.mean() exceeds this, we revert to previous state (E-step) or
+# return inf to halt optimization (F-step). Value chosen empirically for
+# neural spike data where firing rates rarely exceed ~50 Hz.
+STABILITY_THRESHOLD = 1000
+
+
+# =============================================================================
 # Kernel Caching Functions (2026-01-18 optimization)
 # =============================================================================
 
@@ -534,7 +545,7 @@ def e_step_loop(
     This matches the structure of the old varGP E-step loop (utils.py:5664-5712):
     - Save previous state before each Newton step
     - Recompute moments after each Newton step (CRITICAL)
-    - Stability check: revert if f_mean.mean() > 1000
+    - Stability check: revert if f_mean.mean() > STABILITY_THRESHOLD or NaN detected
     - Early stopping: break if rel_change < 1e-5
 
     PERFORMANCE OPTIMIZATION (2026-01-18):
@@ -625,10 +636,10 @@ def e_step_loop(
             lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
             f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
 
-            # Stability check: revert if f_mean is too large
-            if f_mean.mean() > 1000:
+            # Stability check: revert if f_mean is too large or contains NaN (C1 fix)
+            if f_mean.mean() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
                 if verbose:
-                    print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
+                    print(f"f_mean instability: mean={f_mean.mean():.1f}, has_nan={torch.any(torch.isnan(f_mean)).item()}, reverting")
                 m, V = m_prev, V_prev
                 lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
                 f_mean = torch.exp(A * lambda_m + 0.5 * A**2 * lambda_var + lambda0)
@@ -682,10 +693,10 @@ def e_step_loop(
                 # Recompute moments via model(X)
                 lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
 
-                # Stability check
-                if f_mean.mean() > 1000:
+                # Stability check (C1 fix: unified threshold + NaN check)
+                if f_mean.mean() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
                     if verbose:
-                        print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting")
+                        print(f"f_mean instability: mean={f_mean.mean():.1f}, has_nan={torch.any(torch.isnan(f_mean)).item()}, reverting")
                     m, V = m_prev, V_prev
                     update_variational_mean_with_L_K(model, m, L_K)
                     update_variational_covar_with_L_K(model, V, L_K)
@@ -722,10 +733,10 @@ def e_step_loop(
                 # Recompute moments (CRITICAL - old code does this after each Newton step)
                 lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
 
-                # Stability check: revert if f_mean is too large
-                if f_mean.mean() > 1000:
+                # Stability check: revert if f_mean is too large or contains NaN (C1 fix)
+                if f_mean.mean() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
                     if verbose:
-                        print(f"f_mean.mean() = {f_mean.mean():.1f} > 1000, reverting to previous state")
+                        print(f"f_mean instability: mean={f_mean.mean():.1f}, has_nan={torch.any(torch.isnan(f_mean)).item()}, reverting")
                     m, V = m_prev, V_prev
                     update_variational_parameters(model, m, V, jitter)
                     lambda_m, lambda_var, f_mean = compute_moments(model, likelihood, X)
