@@ -15,7 +15,7 @@ This document tracks the porting effort from the custom variational GP implement
 | **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy + Amp Parameter COMPLETE |
 | **Key files** | `kernels.py`, `estep.py`, `train.py`, `default_params.json`, `run_single_mode.py`, `run_canonical_tests.py` |
 | **Run canonical benchmark** | `python run_canonical_tests.py --seed 123` - 12-config matrix to JSONL |
-| **Run single mode** | `python run_single_mode.py --mode vargp_style --json-append results/benchmark_results.jsonl` |
+| **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening --json-append results/benchmark_results.jsonl` |
 | **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
@@ -82,16 +82,31 @@ This document tracks the porting effort from the custom variational GP implement
 > **Workaround**: For now, be aware that `run_single_mode.py` uses the device param while
 > inline tests may not, causing result mismatches.
 
-**UnwhitenedVariationalStrategy Option (January 2025):**
-> `VariationalGPModel` now supports a `whitening` parameter (default `True`):
-> - `whitening=True`: Use `VariationalStrategy` (default, stores whitened params, faster)
-> - `whitening=False`: Use `UnwhitenedVariationalStrategy` (stores natural params directly)
+**Variational Strategy and Explicit Unwhitening (January 2025):**
+> Two distinct concepts are now cleanly separated:
 >
-> **CLI usage**: `python run_single_mode.py --mode vargp_style --unwhitened`
+> **1. `standard_variational_distribution`** (model.py parameter):
+> - `True` (default): Use `VariationalStrategy` (whitened params, faster)
+> - `False`: Use `UnwhitenedVariationalStrategy` (natural params directly)
+> - CLI: `--unwhitened-strategy` to use False
 >
-> **When to use unwhitened**: Investigating EM-style optimization, debugging whitening issues.
+> **2. `explicit_unwhitening`** (train.py / estep.py parameter):
+> - Controls whether to do L_K whitening conversions in E-step
+> - **REQUIRED** for `vargp_style` mode with standard distribution
+> - CLI: `--explicit-unwhitening` (required for vargp_style with standard dist)
 >
-> **Performance**: Unwhitened is ~4x slower and achieves lower test r (0.65 vs 0.80).
+> **CLI usage**:
+> ```bash
+> # Standard distribution with explicit unwhitening (most common)
+> python run_single_mode.py --mode vargp_style --explicit-unwhitening
+>
+> # Unwhitened strategy (no explicit unwhitening needed)
+> python run_single_mode.py --mode vargp_style --unwhitened-strategy
+> ```
+>
+> **Validation**: `--unwhitened-strategy` and `--explicit-unwhitening` are mutually exclusive.
+>
+> **Performance**: Unwhitened strategy is ~4x slower and achieves lower test r (0.65 vs 0.80).
 >
 > **Details**: See Q26-Q28 in `DECISION_LOG.md` and `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md`.
 

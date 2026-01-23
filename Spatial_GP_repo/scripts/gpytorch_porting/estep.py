@@ -94,8 +94,14 @@ def compute_kernel_cache(
 
     # Cholesky factor for whitening conversions (O(M³) - done once per E-step)
     # L_K @ L_K.T = K_tilde_j
-    # Only compute if model uses whitening (needed for whitened <-> natural conversions)
-    if getattr(model, 'whitening', True):
+    # Only compute if model uses standard (whitened) variational distribution
+    # (needed for whitened <-> natural conversions)
+    if not hasattr(model, 'standard_variational_distribution'):
+        raise AttributeError(
+            "Model does not have 'standard_variational_distribution' attribute. "
+            "Use VariationalGPModel which defines this attribute."
+        )
+    if model.standard_variational_distribution:
         L_K = torch.linalg.cholesky(K_tilde_j)
     else:
         L_K = None  # Not needed for UnwhitenedVariationalStrategy
@@ -520,7 +526,8 @@ def e_step_loop(
     jitter: Optional[float] = None,
     verbose: bool = False,
     kernel_cache: Optional[Dict[str, torch.Tensor]] = None,
-    use_whitening: Optional[bool] = None
+    *,  # Force keyword-only arguments below
+    explicit_unwhitening: bool,  # REQUIRED: whether to do L_K conversions
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run Newton loop with moment recomputation and stability checks.
 
@@ -534,11 +541,11 @@ def e_step_loop(
         When kernel_cache is provided, K and K̃ matrices are reused instead of
         recomputed via GPyTorch. This reduces kernel calls from 35 to 3 per loop.
 
-    WHITENING (2026-01-19):
-        When use_whitening=True, variational parameters are converted between
-        whitened (GPyTorch storage) and natural (E-step computation) forms.
-        This ensures mathematically correct behavior. Set use_whitening=False to
-        use the original "wrong but self-consistent" behavior for comparison.
+    EXPLICIT UNWHITENING (2026-01-23):
+        When explicit_unwhitening=True, variational parameters are converted between
+        whitened (GPyTorch storage) and natural (E-step computation) forms via L_K.
+        This is required when using VariationalStrategy (standard whitened distribution).
+        Set explicit_unwhitening=False when using UnwhitenedVariationalStrategy.
 
     Args:
         model: VariationalGPModel instance
@@ -551,9 +558,10 @@ def e_step_loop(
         verbose: Print debug info
         kernel_cache: Optional pre-computed kernel cache from compute_kernel_cache().
                       When provided, uses direct math formulas instead of GPyTorch model(X).
-        use_whitening: If None (default), auto-detect from model.whitening attribute.
-                       If True, convert between whitened and natural params.
-                       If False, use original behavior (no whitening conversions).
+        explicit_unwhitening: Whether to do explicit L_K whitening conversions.
+                              Must be explicitly specified (no auto-detection).
+                              Set True for standard variational distribution.
+                              Set False for unwhitened variational strategy.
 
     Returns:
         lambda_m: Final posterior mean of λ at X, shape (N,)
@@ -562,14 +570,24 @@ def e_step_loop(
     # Validate jitter - must match model.jitter for consistency
     jitter = _validate_jitter(jitter, model)
 
-    # Auto-detect whitening from model if not specified
-    if use_whitening is None:
-        if not hasattr(model, 'whitening'):
-            raise AttributeError(
-                "Model does not have 'whitening' attribute. "
-                "Either pass use_whitening explicitly or use a VariationalGPModel."
-            )
-        use_whitening = model.whitening
+    # Validate explicit_unwhitening matches model's variational distribution
+    if not hasattr(model, 'standard_variational_distribution'):
+        raise AttributeError(
+            "Model does not have 'standard_variational_distribution' attribute. "
+            "Use VariationalGPModel which defines this attribute."
+        )
+    if explicit_unwhitening and not model.standard_variational_distribution:
+        raise ValueError(
+            "explicit_unwhitening=True but model uses UnwhitenedVariationalStrategy "
+            "(standard_variational_distribution=False). "
+            "Set explicit_unwhitening=False."
+        )
+    if not explicit_unwhitening and model.standard_variational_distribution:
+        raise ValueError(
+            "explicit_unwhitening=False but model uses standard VariationalStrategy "
+            "(standard_variational_distribution=True). "
+            "Set explicit_unwhitening=True."
+        )
 
     # Get likelihood parameters
     A = likelihood.A.squeeze()
@@ -580,7 +598,7 @@ def e_step_loop(
         # =====================================================================
         # CACHED PATH: Use pre-computed kernel matrices (bypasses GPyTorch)
         # =====================================================================
-        if use_whitening:
+        if explicit_unwhitening:
             L_K = kernel_cache['L_K']
             # Read with whitening conversion (whitened → natural)
             m = get_variational_mean_with_L_K(model, L_K).clone()
@@ -601,7 +619,7 @@ def e_step_loop(
             f_mean_prev = f_mean.clone()
 
             # Newton update using cached kernels (not GPyTorch)
-            m, V = _estep_single(m, V, r, A, lambda0, 'cache', kernel_cache=kernel_cache)
+            m, V = _estep_single(m, V, r, A, lambda0, moment_source='cache', kernel_cache=kernel_cache)
 
             # Recompute moments using cached kernels
             lambda_m, lambda_var = compute_moments_from_kernel_cache(kernel_cache, m, V)
@@ -625,7 +643,7 @@ def e_step_loop(
                     break
 
         # Write final m, V back to model
-        if use_whitening:
+        if explicit_unwhitening:
             update_variational_mean_with_L_K(model, m, L_K)
             update_variational_covar_with_L_K(model, V, L_K)
             # Clear GPyTorch cache (required for covariance updates)
@@ -638,7 +656,7 @@ def e_step_loop(
         # =====================================================================
         # NON-CACHED PATH: Uses GPyTorch model(X) for moment computation
         # =====================================================================
-        if use_whitening:
+        if explicit_unwhitening:
             # Compute L_K for whitening conversions
             L_K = compute_L_K(model, jitter)
 

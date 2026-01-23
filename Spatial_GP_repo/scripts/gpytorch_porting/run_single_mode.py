@@ -200,9 +200,15 @@ def main():
                         help='Disable kernel caching (for testing fallback path)')
     parser.add_argument('--jitter', type=float, default=defaults['model']['jitter'],
                         help=f'Jitter for numerical stability (default: {defaults["model"]["jitter"]})')
-    parser.add_argument('--no-whitening', action='store_true',
-                        help='Disable whitening conversions (for debugging/comparison)')
-    parser.add_argument('--unwhitenedStrategy', action='store_true',
+    # explicit_unwhitening: NO DEFAULT for vargp_style - must be explicitly chosen
+    explicit_group = parser.add_mutually_exclusive_group()
+    explicit_group.add_argument('--explicit-unwhitening', action='store_true', dest='explicit_unwhitening',
+                                help='Enable explicit whitening conversions in E-step')
+    explicit_group.add_argument('--no-explicit-unwhitening', action='store_false', dest='explicit_unwhitening',
+                                help='Disable explicit whitening conversions')
+    parser.set_defaults(explicit_unwhitening=None)  # None means not specified
+
+    parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
 
     # Plotting options
@@ -219,14 +225,33 @@ def main():
 
     args = parser.parse_args()
 
+    # Validation for vargp_style mode: explicit_unwhitening must be explicitly specified
+    if args.mode == 'vargp_style':
+        if args.explicit_unwhitening is None:
+            parser.error(
+                "vargp_style mode requires explicit choice: "
+                "use --explicit-unwhitening or --no-explicit-unwhitening"
+            )
+        # Validate consistency between strategy and unwhitening choice
+        if args.unwhitened_variational_dist and args.explicit_unwhitening:
+            parser.error(
+                "--unwhitened-variational-dist with --explicit-unwhitening is invalid.\n"
+                "UnwhitenedVariationalStrategy stores natural params directly and doesn't need conversions."
+            )
+        if not args.unwhitened_variational_dist and not args.explicit_unwhitening:
+            parser.error(
+                "Standard variational distribution with --no-explicit-unwhitening is invalid.\n"
+                "Standard distribution requires L_K conversions in E-step."
+            )
+
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Mode: {args.mode}")
     print(f"M={args.ntilde} inducing points")
     if args.gradient_mode != 'autograd':
         print(f"Gradient mode: {args.gradient_mode}")
-    if args.unwhitenedStrategy:
-        print("Using UnwhitenedVariationalStrategy ")
+    if args.unwhitened_variational_dist:
+        print("Using UnwhitenedVariationalStrategy")
 
     # Set seed with explicit CUDA init for reproducibility
     # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details
@@ -402,7 +427,8 @@ def main():
         A_init = args.A_init
         lambda0_init = args.lambda0_init
 
-        model = VariationalGPModel(inducing_points, kernel, jitter=args.jitter, whitening=not args.unwhitenedStrategy)
+        model = VariationalGPModel(inducing_points, kernel, jitter=args.jitter,
+                                    standard_variational_distribution=not args.unwhitened_variational_dist)
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
         model = model.double().to(device)
@@ -439,9 +465,7 @@ def main():
                 print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
                 print(f"  lr_f={lr}, lr_m={lr} (from defaults)")
                 print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
-                # Whitening: OFF if unwhitenedStrategy strategy, otherwise depends on --no-whitening flag
-                whitening_status = 'OFF (unwhitenedStrategy strategy)' if args.unwhitenedStrategy else ('DISABLED' if args.no_whitening else 'enabled')
-                print(f"  whitening: {whitening_status}")
+                print(f"  explicit_unwhitening: {args.explicit_unwhitening}")
                 result = train_varGP_style(
                     model, likelihood, X_train, r_train,
                     n_iterations=args.n_iterations,
@@ -452,10 +476,8 @@ def main():
                     lr_m=lr,
                     print_every=print_every,
                     device=device,
-                    use_cache=args.use_cache,  # Kernel caching for E-step performance
-                    # If unwhitenedStrategy strategy, let auto-detect handle it (will be False)
-                    # Otherwise use --no-whitening flag for whitening conversions
-                    use_whitening=None if args.unwhitenedStrategy else (not args.no_whitening),
+                    use_cache=args.use_cache,
+                    explicit_unwhitening=args.explicit_unwhitening,
                 )
                 losses = result['losses']
                 time_estep_total = result['time_estep_total']

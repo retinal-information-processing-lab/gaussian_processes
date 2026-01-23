@@ -63,6 +63,10 @@ def run_single_test(mode, M, ntrain, seed, output_file, dry_run=False):
         '--save-plot', 'none',  # Disable plot saving for batch runs
     ]
 
+    # vargp_style mode requires --explicit-unwhitening flag
+    if mode == 'vargp_style':
+        cmd.append('--explicit-unwhitening')
+
     desc = f"{mode:12} M={M:3} ntrain={ntrain:4}"
 
     if dry_run:

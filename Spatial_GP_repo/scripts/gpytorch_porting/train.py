@@ -48,6 +48,13 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     train_x = train_x.to(device)
     train_y = train_y.to(device)
 
+    # Validate model has required attribute
+    if not hasattr(model, 'standard_variational_distribution'):
+        raise AttributeError(
+            "Model does not have 'standard_variational_distribution' attribute. "
+            "Use VariationalGPModel which defines this attribute."
+        )
+
     model.train()
     likelihood.train()
 
@@ -234,17 +241,18 @@ def train_varGP_style(
     likelihood,
     train_x: torch.Tensor,
     train_y: torch.Tensor,
-    n_iterations: int = 50,
-    n_estep: int = 10,
-    n_fstep: int = 10,
-    n_mstep: int = 10,  # WARNING: n_mstep=0 disables kernel learning - not recommended
-    lr_f: float = 0.1,  # Match varGP default (lr_Fparamstep)
-    lr_m: float = 0.1,  # Match varGP default (lr_Mstep)
-    print_every: int = 10,
+    n_iterations: int ,
+    n_estep: int ,
+    n_fstep: int ,
+    n_mstep: int ,  # WARNING: n_mstep=0 disables kernel learning - not recommended
+    lr_f: float ,  # Match varGP default (lr_Fparamstep)
+    lr_m: float ,  # Match varGP default (lr_Mstep)
+    print_every: int ,
     verbose: bool = False,
     device: Optional[torch.device] = None,
     use_cache: bool = True,  # Enable kernel caching for performance (11.7x fewer kernel calls)
-    use_whitening: Optional[bool] = None,  # Auto-detect from model.whitening if None
+    *,  # Force keyword-only arguments below
+    explicit_unwhitening: bool,  # REQUIRED: whether to do L_K conversions in E-step
 ):
     """Train using varGP-style loop: E-step (with F-step inside), then M-step.
 
@@ -280,9 +288,10 @@ def train_varGP_style(
         use_cache: If True, cache kernel matrices and reuse across Newton iterations.
                    This reduces kernel calls from 35 to 3 per E-step loop (11.7x speedup).
                    Set to False for testing the non-cached fallback path.
-        use_whitening: If None (default), auto-detect from model.whitening attribute.
-                       If True, convert between whitened and natural params.
-                       If False, use original behavior (no whitening conversions).
+        explicit_unwhitening: Whether to do explicit L_K whitening conversions in E-step.
+                              Must be explicitly specified (no auto-detection).
+                              Set True when using standard variational distribution (whitened).
+                              Set False when using unwhitened variational strategy.
 
     Returns:
         dict with keys:
@@ -314,9 +323,28 @@ def train_varGP_style(
     train_x = train_x.to(device)
     train_y = train_y.to(device)
 
-    # Auto-detect whitening from model if not specified
-    if use_whitening is None:
-        use_whitening = getattr(model, 'whitening', True)
+    # Validate model has required attribute
+    if not hasattr(model, 'standard_variational_distribution'):
+        raise AttributeError(
+            "Model does not have 'standard_variational_distribution' attribute. "
+            "Use VariationalGPModel which defines this attribute."
+        )
+
+    # Validate explicit_unwhitening matches model's variational strategy
+    if explicit_unwhitening and not model.standard_variational_distribution:
+        raise ValueError(
+            "explicit_unwhitening=True but model uses UnwhitenedVariationalStrategy "
+            "(standard_variational_distribution=False). "
+            "UnwhitenedVariationalStrategy stores natural params directly and doesn't need L_K conversions. "
+            "Set explicit_unwhitening=False."
+        )
+    if not explicit_unwhitening and model.standard_variational_distribution:
+        raise ValueError(
+            "explicit_unwhitening=False but model uses standard VariationalStrategy "
+            "(standard_variational_distribution=True). "
+            "Standard variational distribution requires L_K conversions in E-step. "
+            "Set explicit_unwhitening=True."
+        )
 
     losses = []
     time_estep_total = 0.0
@@ -345,7 +373,7 @@ def train_varGP_style(
             lambda_m, lambda_var = e_step_loop(
                 model, likelihood, train_x, train_y, n_estep, verbose=verbose,
                 kernel_cache=kernel_cache,
-                use_whitening=use_whitening
+                explicit_unwhitening=explicit_unwhitening
             )
 
         # F-step (inside E-step block, matches old varGP structure)
@@ -368,7 +396,8 @@ def train_varGP_style(
             # Re-enable kernel gradients for M-step
             set_kernel_requires_grad(model, True)
             with torch.enable_grad():
-                m_step(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
+                m_s
+                tep(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
             # Disable kernel gradients after M-step (for loss recording)
             set_kernel_requires_grad(model, False)
             # Invalidate kernel cache - kernel params changed, need fresh cache next iteration
