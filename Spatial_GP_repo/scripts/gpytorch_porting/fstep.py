@@ -125,12 +125,10 @@ def f_step_lbfgs(
     lr: float,  # Required - no default to prevent silent bugs
     verbose: bool = False
 ):
-    """F-step using LBFGS optimizer - matches original varGP exactly.
+    """F-step using LBFGS optimizer.
 
-    This replicates utils.py:varGP() F-step structure:
-    - Uses LBFGS with strong_wolfe line search
-    - Optimizes logA (raw_A = logA since A = exp(raw_A))
-    - Computes gradients manually via analytical formula
+    Uses LBFGS with strong_wolfe line search to optimize A.
+    - Optimizes likelihood.raw_A directly (raw_A = logA, A = exp(raw_A))
     - lambda0 set analytically inside closure
     - Stability check: returns inf if f_mean.mean() > 100
 
@@ -142,28 +140,21 @@ def f_step_lbfgs(
         lambda_m: GP posterior mean (held fixed), shape (N,)
         lambda_var: GP posterior variance (held fixed), shape (N,)
         n_fstep: Number of LBFGS iterations (max_iter)
-        lr: Learning rate for LBFGS (default 0.1 matches varGP)
+        lr: Learning rate for LBFGS
         verbose: Print debug info
     """
     if n_fstep == 0:
         return
 
-    # Get current A and convert to logA (varGP uses logA parameterization)
-    A_current = likelihood.A.squeeze().detach()
-    logA = torch.log(A_current).clone().requires_grad_(True)
-
     # Initial lambda0 update
-    A = torch.exp(logA)
-    new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+    A = likelihood.A.squeeze()
     with torch.no_grad():
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
         likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
 
-    # Track f_mean across closure calls (nonlocal update like original)
-    f_mean_container = [None]
-
-    # LBFGS optimizer matching original varGP settings
+    # LBFGS optimizer - directly optimizes raw_A (which is logA)
     optimizer = torch.optim.LBFGS(
-        [logA],
+        [likelihood.raw_A],
         lr=lr,
         max_iter=n_fstep,
         tolerance_change=1e-9,
@@ -178,52 +169,46 @@ def f_step_lbfgs(
         closure_counter[0] += 1
         optimizer.zero_grad()
 
-        # Get current A from logA
-        A = torch.exp(logA)
+        # Get A from likelihood (applies exp to raw_A)
+        A = likelihood.A.squeeze()
 
-        # Update lambda0 analytically (inside closure, like original)
+        # Update lambda0 analytically
         with torch.no_grad():
             lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
             likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
 
         # Compute f_mean = exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0)
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
-        f_mean_container[0] = f_mean
 
-        # Stability check: return inf if f_mean is too large (like original)
+        # Stability check
         if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
             if verbose:
                 print(f"f_mean.mean() = {f_mean.mean():.1f} at closure call {closure_counter[0]}, returning inf")
-            return torch.tensor(float('inf'), device=logA.device, dtype=logA.dtype)
+            return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Compute loglikelihood: L = A*r@lambda_m + lambda0*sum(r) - sum(f_mean)
         rlambda_m = r @ lambda_m
         sum_r = r.sum()
         loglikelihood = A * rlambda_m + lambda0 * sum_r - f_mean.sum()
 
-        # Compute gradient of loglikelihood w.r.t. logA (analytical, like original)
-        # dL/dlogA = A * (r@lambda_m - (lambda_m + A*lambda_var) @ f_mean)
-        dloglikelihood_dlogA = A * (rlambda_m - torch.dot(lambda_m + A * lambda_var, f_mean))
+        # Compute gradient w.r.t. raw_A (= logA)
+        # dL/d(logA) = dL/dA * dA/d(logA) = dL/dA * A
+        # dL/dA = r@lambda_m - (lambda_m + A*lambda_var) @ f_mean
+        dL_dA = rlambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
+        dL_dlogA = A * dL_dA
 
-        # Set gradient manually (negative because LBFGS minimizes)
-        logA.grad = -dloglikelihood_dlogA
+        # Set gradient (negative because LBFGS minimizes)
+        likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
 
-        # Return negative loglikelihood (minimize)
         return -loglikelihood
 
     # Run LBFGS
     optimizer.step(closure)
 
-    # Final updates after optimization
+    # Final lambda0 update
     with torch.no_grad():
-        # Update likelihood's raw_A from optimized logA
-        # raw_A = logA since A = exp(raw_A)
-        likelihood.raw_A.copy_(logA.reshape(likelihood.raw_A.shape))
-
-        # Final lambda0 update (like original: "the optimal logA value found by
-        # the optimizer might not be the one used in the last closure call")
-        A_check = likelihood.A.squeeze()
-        new_lambda0 = lambda0_given_A(A_check, r, lambda_m, lambda_var)
+        A = likelihood.A.squeeze()
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
         likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
 
     if verbose:

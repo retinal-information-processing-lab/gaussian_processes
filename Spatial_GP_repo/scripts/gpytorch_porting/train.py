@@ -396,8 +396,7 @@ def train_varGP_style(
             # Re-enable kernel gradients for M-step
             set_kernel_requires_grad(model, True)
             with torch.enable_grad():
-                m_s
-                tep(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
+                m_step(model, likelihood, train_x, train_y, n_mstep, lr_m, verbose=verbose)
             # Disable kernel gradients after M-step (for loss recording)
             set_kernel_requires_grad(model, False)
             # Invalidate kernel cache - kernel params changed, need fresh cache next iteration
