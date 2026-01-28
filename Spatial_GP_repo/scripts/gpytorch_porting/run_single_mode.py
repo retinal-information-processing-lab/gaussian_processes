@@ -54,6 +54,7 @@ from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from train import train_varGP_style, train_gpy_default, predict, compute_pearson_correlation, compute_explained_variance
+from direct_vargp import train_vargp_direct, predict_direct
 from tests.test_utils import set_reproducible_seed
 
 
@@ -171,8 +172,8 @@ def main():
     parser.add_argument('--lr', type=float, default=defaults['training']['lr'], help=f'Learning rate (default: {defaults["training"]["lr"]})')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
     parser.add_argument('--mode', type=str, default='vargp_style',
-                        choices=['vargp_old', 'default_gpy', 'vargp_style'],
-                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_style (custom EM)')
+                        choices=['vargp_old', 'default_gpy', 'vargp_style', 'vargp_direct'],
+                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_style (custom EM), vargp_direct (eigenspace projection)')
 
     # Kernel parameters - use defaults from JSON, all overridable via CLI
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
@@ -403,7 +404,92 @@ def main():
         losses = [final_loss]
 
     # =========================================================================
-    # GPYTORCH MODES: adam, efm, vargp_style
+    # VARGP_DIRECT MODE: Eigenspace projection, LBFGS M-step
+    # =========================================================================
+    elif args.mode == 'vargp_direct':
+        # Create kernel with RF structure (standalone, not wrapped in VariationalGPModel)
+        kernel = ArcCosineKernel(
+            sigma_0=args.sigma_0,
+            n_px_side=n_px_side,
+            eps_0x=args.eps_0x,
+            eps_0y=args.eps_0y,
+            beta=args.beta,
+            rho=args.rho,
+            use_mask=args.use_mask,
+            gradient_mode=args.gradient_mode
+        )
+        kernel.Amp = args.Amp
+        kernel = kernel.double().to(device)
+
+        # Create likelihood
+        A_init = args.A_init
+        lambda0_init = args.lambda0_init
+        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
+        likelihood = likelihood.double().to(device)
+
+        print(f"\nInitial parameters:")
+        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+        print(f"  Amp: {kernel.Amp.item():.6f}")
+
+        # Train with eigenspace projection
+        print(f"\nTraining with mode='vargp_direct' (eigenspace projection):")
+        lr = defaults['training']['lr']
+        print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
+        print(f"  lr_f={lr}, lr_m={lr}")
+
+        print_every = max(1, args.n_iterations // 5)
+        start_time = time.time()
+
+        with torch.enable_grad():
+            result = train_vargp_direct(
+                kernel, likelihood, X_train, inducing_points, r_train,
+                n_iterations=args.n_iterations,
+                n_estep=args.n_estep,
+                n_fstep=args.n_fstep,
+                n_mstep=args.n_mstep,
+                lr_f=lr,
+                lr_m=lr,
+                print_every=print_every,
+            )
+
+        train_time = time.time() - start_time
+        losses = result['losses']
+        time_estep_total = result['time_estep_total']
+        time_mstep_total = result['time_mstep_total']
+        state = result['state']
+
+        print(f"\nTraining time: {train_time:.1f}s")
+        print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
+        print(f"  M-step:            {time_mstep_total:.1f}s")
+        print(f"  Eigenspace dim:    {len(state.eigvals_b)}")
+
+        print(f"\nFinal parameters:")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+
+        # Evaluate on test data
+        print("\nEvaluating on test data...")
+        predictions = predict_direct(kernel, likelihood, state, inducing_points, X_test)
+        f_pred = predictions['f_pred']
+
+        r_test_mean = r_test.mean(dim=0)
+        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
+        explained_var, reliability = compute_explained_variance(r_test, f_pred)
+
+        # Also check train correlation
+        train_preds = predict_direct(kernel, likelihood, state, inducing_points, X_train)
+        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+
+        # Check prediction statistics
+        pred_mean = f_pred.mean().item()
+        pred_std = f_pred.std().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
+
+    # =========================================================================
+    # GPYTORCH MODES: default_gpy, vargp_style
     # =========================================================================
     else:
         # Create kernel with RF structure using args (defaults from JSON, overridable via CLI)
@@ -590,8 +676,8 @@ def main():
         final_rho = kernel.rho.item()
         final_eps_0x = kernel.eps_0x.item()
         final_eps_0y = kernel.eps_0y.item()
-        # Timing breakdown only available for vargp_style
-        if args.mode == 'vargp_style':
+        # Timing breakdown available for vargp_style and vargp_direct
+        if args.mode in ('vargp_style', 'vargp_direct'):
             time_estep = time_estep_total
             time_mstep = time_mstep_total
         else:
@@ -669,4 +755,36 @@ if __name__ == '__main__':
     main()
 
 
+# if __name__ == '__main__':                                                                                       
+#         # Hardcoded parameters for debugging                                                                     
+#     import argparse                                                                                          
+#     import sys                                                                                               
+                                                                                                                   
+#     # Override sys.argv to simulate command-line args                                                        
+#     sys.argv = [                                                                                             
+#               'run_single_mode.py',                                                                                
+#             #   '--mode', 'vargp_style',                                                                             
+#             #   '--mode', 'vargp_old',     
+#                 '--mode', 'default_gpy',
 
+#               '--explicit-unwhitening',          
+
+
+#               '--ntilde', '50',                                                                                    
+#               '--n-train', '500',                                                                                  
+#               '--n-iterations', '500',                                                                              
+#               '--n-estep', '10',                                                                                   
+#               '--n-fstep', '10',                                                                                   
+#               '--n-mstep', '10',                                                                                   
+#               '--seed', '123',                                                                                     
+#               '--device', 'cuda',                                                                                  
+#               '--cell', '8',                                                                                       
+#               # '--json-append', 'results/benchmark_results.jsonl',  # Uncomment to save results                   
+#               # '--plot',  # Uncomment to show plot                                                                
+#           ]                                                                                                        
+                                                                                                                   
+#     print("="*70)                                                                                            
+#     print("DEBUG MODE: Using hardcoded parameters")                                                          
+#     print("="*70)                                                                                            
+
+#     main()     
