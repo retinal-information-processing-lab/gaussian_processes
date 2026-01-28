@@ -10,6 +10,8 @@ Key functions:
 - lambda0_given_A(): Closed-form optimal λ₀ given A
 """
 
+import warnings
+
 import torch
 import gpytorch
 from typing import Tuple
@@ -163,6 +165,10 @@ def f_step_lbfgs(
         new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
         likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
 
+    # J1 fix: Track A before optimization and instability info
+    A_before = likelihood.A.item()
+    instability_info = [False, 0.0]  # [triggered, f_mean_value]
+
     # LBFGS optimizer - directly optimizes raw_A (which is logA)
     optimizer = torch.optim.LBFGS(
         [likelihood.raw_A],
@@ -192,9 +198,13 @@ def f_step_lbfgs(
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
         # Stability check (C1 fix: unified threshold with estep)
-        if f_mean.mean() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+        f_mean_val = f_mean.mean().item()
+        if f_mean_val > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+            # J1 fix: Track instability
+            instability_info[0] = True
+            instability_info[1] = f_mean_val
             if verbose:
-                print(f"f_mean instability: mean={f_mean.mean():.1f} at closure call {closure_counter[0]}, returning inf")
+                print(f"f_mean instability: mean={f_mean_val:.1f} at closure call {closure_counter[0]}, returning inf")
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Compute loglikelihood: L = A*r@lambda_m + lambda0*sum(r) - sum(f_mean)
@@ -215,6 +225,22 @@ def f_step_lbfgs(
 
     # Run LBFGS
     optimizer.step(closure)
+
+    # J1 fix: Check if optimization worked - warning only, no error
+    A_after = likelihood.A.item()
+    if instability_info[0]:
+        if abs(A_after - A_before) < 1e-10:
+            warnings.warn(
+                f"F-step: instability detected (f_mean={instability_info[1]:.1f}). "
+                f"A unchanged: {A_after:.4f}.",
+                RuntimeWarning
+            )
+        else:
+            warnings.warn(
+                f"F-step: instability detected (f_mean={instability_info[1]:.1f}). "
+                f"A changed: {A_before:.4f} -> {A_after:.4f}.",
+                RuntimeWarning
+            )
 
     # Final lambda0 update
     with torch.no_grad():

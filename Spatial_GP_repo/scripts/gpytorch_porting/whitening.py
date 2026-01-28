@@ -165,7 +165,14 @@ def update_variational_covar(
     try:
         L_new = torch.linalg.cholesky(V_new)
     except RuntimeError:
-        # Add jitter if Cholesky fails - use model.jitter for consistency (B1 fix)
+        # J2 fix: Add warning when Cholesky fallback is triggered
+        min_eig = torch.linalg.eigvalsh(V_new).min().item()
+        warnings.warn(
+            f"Cholesky failed on V in update_variational_covar() "
+            f"(shape={tuple(V_new.shape)}, min_eigenvalue={min_eig:.2e}). "
+            f"Adding jitter={model.jitter:.1e} and retrying.",
+            RuntimeWarning
+        )
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
         L_new = torch.linalg.cholesky(V_new + model.jitter * eye)
 
@@ -246,7 +253,14 @@ def update_variational_covar_with_L_K(
     try:
         L_whitened = torch.linalg.cholesky(V_whitened)
     except RuntimeError:
-        # Add jitter if Cholesky fails - use model.jitter for consistency (B1 fix)
+        # J2 fix: Add warning when Cholesky fallback is triggered
+        min_eig = torch.linalg.eigvalsh(V_whitened).min().item()
+        warnings.warn(
+            f"Cholesky failed on V_whitened in update_variational_covar_with_L_K() "
+            f"(shape={tuple(V_whitened.shape)}, min_eigenvalue={min_eig:.2e}). "
+            f"Adding jitter={model.jitter:.1e} and retrying.",
+            RuntimeWarning
+        )
         M = V_whitened.shape[0]
         eye = torch.eye(M, dtype=V_whitened.dtype, device=V_whitened.device)
         L_whitened = torch.linalg.cholesky(V_whitened + model.jitter * eye)
@@ -278,7 +292,14 @@ def update_variational_parameters(
     try:
         L_new = torch.linalg.cholesky(V_new)
     except RuntimeError:
-        # Add jitter if Cholesky fails
+        # J2 fix: Add warning when Cholesky fallback is triggered
+        min_eig = torch.linalg.eigvalsh(V_new).min().item()
+        warnings.warn(
+            f"Cholesky failed on V in update_variational_parameters() "
+            f"(shape={tuple(V_new.shape)}, min_eigenvalue={min_eig:.2e}). "
+            f"Adding jitter={jitter:.1e} and retrying.",
+            RuntimeWarning
+        )
         eye = torch.eye(V_new.shape[0], dtype=V_new.dtype, device=V_new.device)
         L_new = torch.linalg.cholesky(V_new + jitter * eye)
 

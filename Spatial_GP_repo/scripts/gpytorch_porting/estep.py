@@ -20,6 +20,8 @@ PERFORMANCE OPTIMIZATION (2026-01-18):
     Use `use_cache=False` in train_varGP_style() to disable for testing.
 """
 
+import warnings
+
 import torch
 import gpytorch
 from typing import Tuple, Optional, Dict, Literal
@@ -113,7 +115,19 @@ def compute_kernel_cache(
             "Use VariationalGPModel which defines this attribute."
         )
     if model.standard_variational_distribution:
-        L_K = torch.linalg.cholesky(K_tilde_j)
+        # J2 fix: Add fallback with warning if Cholesky fails
+        try:
+            L_K = torch.linalg.cholesky(K_tilde_j)
+        except RuntimeError:
+            min_eig = torch.linalg.eigvalsh(K_tilde_j).min().item()
+            warnings.warn(
+                f"Cholesky failed on K_tilde in compute_kernel_cache() "
+                f"(shape={tuple(K_tilde_j.shape)}, min_eigenvalue={min_eig:.2e}). "
+                f"Adding extra jitter={jitter:.1e} and retrying.",
+                RuntimeWarning
+            )
+            K_tilde_j = K_tilde_j + jitter * eye
+            L_K = torch.linalg.cholesky(K_tilde_j)
     else:
         L_K = None  # Not needed for UnwhitenedVariationalStrategy
 
@@ -152,8 +166,22 @@ def compute_L_K(
     inducing_points = model.variational_strategy.inducing_points
     K_tilde = model.covar_module(inducing_points).evaluate()
     M = K_tilde.shape[0]
-    K_tilde_j = K_tilde + jitter * torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
-    return torch.linalg.cholesky(K_tilde_j)
+    eye = torch.eye(M, dtype=K_tilde.dtype, device=K_tilde.device)
+    K_tilde_j = K_tilde + jitter * eye
+
+    # J2 fix: Add fallback with warning if Cholesky fails
+    try:
+        return torch.linalg.cholesky(K_tilde_j)
+    except RuntimeError:
+        min_eig = torch.linalg.eigvalsh(K_tilde_j).min().item()
+        warnings.warn(
+            f"Cholesky failed on K_tilde in compute_L_K() "
+            f"(shape={tuple(K_tilde_j.shape)}, min_eigenvalue={min_eig:.2e}). "
+            f"Adding extra jitter={jitter:.1e} and retrying.",
+            RuntimeWarning
+        )
+        K_tilde_j = K_tilde_j + jitter * eye
+        return torch.linalg.cholesky(K_tilde_j)
 
 
 def compute_moments_from_kernel_cache(
@@ -198,6 +226,18 @@ def compute_moments_from_kernel_cache(
     Vu = V_minus_K @ u  # (M, N)
     # diag(uᵀ @ Vu) = sum(u * Vu, dim=0)
     lambda_var = k0 + (u * Vu).sum(dim=0)  # (N,)
+
+    # J3 fix: Warn if negative variance detected (before clamping)
+    if (lambda_var < 0).any():
+        n_negative = (lambda_var < 0).sum().item()
+        n_total = lambda_var.numel()
+        min_val = lambda_var.min().item()
+        mean_val = lambda_var.mean().item()
+        warnings.warn(
+            f"Negative variance detected: {n_negative}/{n_total} values. "
+            f"min={min_val:.2e}, mean={mean_val:.2e}. Clamping to 1e-6.",
+            RuntimeWarning
+        )
 
     # Ensure variance is positive
     lambda_var = torch.clamp(lambda_var, min=1e-6)
