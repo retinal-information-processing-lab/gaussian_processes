@@ -5,6 +5,22 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-28: vargp_direct Mode Implementation (COMPLETE)
+
+**Accomplished:**
+- Implemented `vargp_direct` mode with eigenspace projection matching original varGP
+- Created `eigenspace.py` (projection utilities) and `direct_vargp.py` (training loop)
+- Uses LBFGS with autograd for M-step (slower than analytical, but works)
+- Matches vargp_old E-step formulas exactly (including the "buggy" m_new formula)
+
+**Performance** (M=50, 50 iterations): test_r=0.81 (vs vargp_old 0.84), time=18.8s (vs 6.2s)
+
+**Deferred:** Correct m_new formula investigation, analytical M-step gradients for speed
+
+**Files:** `eigenspace.py`, `direct_vargp.py`, updated `run_single_mode.py`
+
+---
+
 ## 2026-01-22: Whitening Instability Confirmation (seed 456)
 
 **Finding:** Whitening confirmed as cause of seed 456 instability.

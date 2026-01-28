@@ -5,7 +5,7 @@ Things to remember having claude check:
 [X] Masking of C -> works
 [ ] Is it a good idea to detach it so that mask does not change during backprop?
 [X] Visualization -> first version in tes_fit prints in imgs/
-[ ] Comparison with one_cell_fit script
+[X] Comparison with one_cell_fit script
 [ ] I think hyperparameters are still parametrized as weird log expressions ( like beta for example) and they do not use the gpytorch link functions. to change
 [X] Documentation refers too many times to "PNAS data" , we should remove it, maybe not, to keep it standard
 [ ] has_lengthscale parameter in acosker
@@ -47,7 +47,19 @@ Things to remember having claude check:
 [ ] when returning     return torch.linalg.cholesky(K_tilde_j)in compute L_K , maybe we could add a check to make sure is uppper triangular? 
 
 [ ] Are we updating log parameters instead of parameters ( hyperparaemters but also A dna lambda0 ) 
+[ ] Missing reference where A is in C definition except for samuele ancient scroll of time
 
+[ ] Logging of when iperparameter clamping is used can be good
 
+[ ] Check Vjp implementation , never been checked after some modifications
 
+[X] whitening parameter shold be a model thing not passed to training functions
+[X] standardize initial conditoins
+[ ] throw error if cpu
+[ ] single funcitn throwing error at beginning off training loop inc ase of parameter mismatch, so we check everuthing together?
 
+[ ] Check types: in poissonlikelihood we use float.double e basta
+
+[ ] in eigenspace projection vargp loop we should make sure the quircks of the old vargp are implemented still.
+
+[ ] eigenval tol 1.e-4

@@ -56,6 +56,8 @@ class PoissonLikelihood(Likelihood):
         # Use exp/log transform (A = exp(raw_A), matching varGP's logA)
         self.register_constraint('raw_A', Positive(transform=torch.exp, inv_transform=torch.log))
 
+        from gpytorch.constraints import Interval                                                      
+
         self.A = A_init  # Set via property to apply inverse transform
 
         # Register lambda0 parameter (unconstrained)

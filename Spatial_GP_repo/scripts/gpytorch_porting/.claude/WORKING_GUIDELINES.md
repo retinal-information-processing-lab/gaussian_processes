@@ -53,6 +53,11 @@
 - Reference existing code when relevant
 - Keep explanations concise
 
+### 2.4 Keep user in the loop with summaries
+- When running investigations, provide short summaries when things come up
+- Surprising results ( good and bad ) should be comminucated shortly
+- Make sure you communicate code changes you are doing so they do not pass unnoticed. Especially when edits are accepted automatically.
+
 ---
 
 ## 3. Development Process
@@ -120,13 +125,13 @@ When exploring math-related code, also read `MATH_REFERENCE.md` for context.
 **Recording results**:
 ```bash
 # Single test with JSON output
-python run_single_mode.py --mode vargp_style --ntilde 100 --seed 123 --json-append results/benchmark_results.jsonl
+python run_single_mode.py --mode vargp_style --ntilde 50 --seed 123 --json-append results/benchmark_results.jsonl
 
 # Run canonical test matrix (12 configs)
 python run_canonical_tests.py --seed 123
 
 # Query results
-python query_benchmark.py --mode vargp_style --M 100
+python query_benchmark.py --mode vargp_style --M 50
 python query_benchmark.py --compare-seeds 123 456
 ```
 
@@ -162,6 +167,15 @@ Standard configurations for regression testing (12 per seed):
 - Checking if code runs
 
 For exploratory work, use `--json-append results/exploratory.jsonl` instead.
+
+### 3.12 Bug Investigation Cleanup
+
+Sessions dedicated to codebase exploration or bug investigation require TIDYNESS;
+- Use a dedicated folder with explicit name in the gpytorch_porting/investigations path.
+- Keep track of files you create and if they need to be cleaned up afterwards
+
+
+
 
 
 ## 4. Code Style
@@ -257,6 +271,12 @@ For exploratory work, use `--json-append results/exploratory.jsonl` instead.
 
 **Rationale**: Future sessions must be able to verify documented claims. Results without reproduction steps are technical debt that compounds across sessions.
 
+### 5.6 Tests are run from srcipts
+
+When uses says to run the test they mean using one of the dedicated scripts.
+
+Full cell fits using inline python scripts are reserved for debugging.
+
 ---
 
 ## 6. Data Handling (General Rule)
@@ -303,8 +323,10 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 - Git is a tool, not the goal
 
 ## 8.4 Git safety
-   Always run `git branch --show-current` before making commits or 
-   switching branches. Confirm with me before any branch operations.
+   - Always run `git branch --show-current` before making commits or 
+   - switching branches. Confirm with me before any branch operations.
+   - DO NOT USE MAIN, DO NOT BRANCH FROM MAIN. THE REFERENCE BRANCH IS PIETRO/WORKINGBRANCH . 
+   That is where to branch from for all bug fixed and new features
 
 ---
 

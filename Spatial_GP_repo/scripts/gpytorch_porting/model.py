@@ -26,7 +26,7 @@ class VariationalGPModel(ApproximateGP):
     learn_inducing_locations : bool
         Whether to optimize inducing point locations (default: False)
     jitter : float
-        Jitter to add for numerical stability (default: 1e-4)
+        Jitter to add for numerical stability 
     standard_variational_distribution : bool
         If True (default), use VariationalStrategy (whitened parameterization).
         If False, use UnwhitenedVariationalStrategy (stores natural params directly).

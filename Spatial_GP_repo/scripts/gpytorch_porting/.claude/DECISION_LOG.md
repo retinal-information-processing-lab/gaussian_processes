@@ -286,21 +286,21 @@ For project status and quick reference, see `CLAUDE.md`.
 > **Documentation**: `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md` Section 9
 
 **Q28: How to use UnwhitenedVariationalStrategy in the codebase?**
-> A: Added as an **alternative** via `whitening` parameter (default `True` for backward compatibility).
+> A: Added as an **alternative** via `standard_variational_distribution` parameter (default `True`).
 >
 > **Usage**:
 > ```python
 > # In code:
-> model = VariationalGPModel(inducing_points, kernel, whitening=False)
+> model = VariationalGPModel(inducing_points, kernel, standard_variational_distribution=False)
 >
 > # CLI:
-> python test_estep_pnas.py --mode vargp_style --unwhitened
+> python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
 > ```
 >
-> **Implementation details**:
-> - `model.py`: `whitening` parameter selects between `VariationalStrategy` and `UnwhitenedVariationalStrategy`
-> - `estep.py`: Auto-detects `model.whitening` when `use_whitening=None` (default)
-> - `compute_kernel_cache()`: Skips L_K computation when `model.whitening=False`
+> **Implementation details** (naming updated 2026-01-23):
+> - `model.py`: `standard_variational_distribution` parameter selects strategy type
+> - `estep.py`: `explicit_unwhitening` parameter (required, no auto-detection) controls L_K conversions
+> - `compute_kernel_cache()`: Skips L_K computation when `model.standard_variational_distribution=False`
 >
 > **Performance comparison** (M=50, N=500):
 > | Strategy | Test r | Time | Notes |

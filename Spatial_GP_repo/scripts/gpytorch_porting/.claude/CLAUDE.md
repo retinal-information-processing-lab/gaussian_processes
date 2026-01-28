@@ -12,15 +12,15 @@ This document tracks the porting effort from the custom variational GP implement
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy + Amp Parameter COMPLETE |
-| **Key files** | `kernels.py`, `estep.py`, `train.py`, `default_params.json`, `run_single_mode.py`, `run_canonical_tests.py` |
+| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy + Amp Parameter + **vargp_direct** COMPLETE |
+| **Key files** | `kernels.py`, `estep.py`, `train.py`, `default_params.json`, `run_single_mode.py`, `run_canonical_tests.py`, `eigenspace.py`, `direct_vargp.py` |
 | **Run canonical benchmark** | `python run_canonical_tests.py --seed 123` - 12-config matrix to JSONL |
 | **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening --json-append results/benchmark_results.jsonl` |
 | **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
 | **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
 | **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
-| **Deferred** | Eigenspace projection (Section 6.5), LBFGS M-step (Section 6.3) |
+| **Deferred** | LBFGS M-step with analytical gradients (Section 6.3), correct E-step m formula (see VARGP_COPY_CONTEXT.md) |
 | **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below); **Whitened mode is seed-sensitive**; **set_reproducible_seed device param changes random sequence** (see below) |
 | **Current focus** | Unspecified |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
@@ -448,6 +448,7 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 - `vargp_old`: Original varGP implementation (reference baseline)
 - `default_gpy`: Standard GPyTorch variational inference (no custom E-step)
 - `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
+- `vargp_direct`: Eigenspace projection matching varGP (see Section 6.5)
 
 **Metrics**: All modes report standardized metrics (test_corr, explained_var, reliability) computed identically.
 
@@ -527,35 +528,34 @@ Or CLI: `python run_single_mode.py --gradient-mode vjp`
 - `.claude/ANALYTICAL_GRADIENTS_MATH.md`
 - `.claude/VJP_ANALYTICAL_GRADIENTS.md` (VJP-specific derivation)
 
-### 6.5 Eigenspace Projection
-**Status**: DEFERRED (January 2025) - potential improvement for large M
+### 6.5 Eigenspace Projection (vargp_direct mode)
+**Status**: COMPLETE (January 2025)
 
-**Context**: The original `utils.py:varGP()` stores variational parameters (m_b, V_b) permanently in a reduced eigenspace of K̃. The GPyTorch E-step currently works in full M-dimensional space.
+**Implementation**: New `vargp_direct` mode in `run_single_mode.py` uses eigenspace projection matching original varGP.
 
-#### K̃ Eigenvalue Analysis
+**Files**: `eigenspace.py`, `direct_vargp.py`
+
+**Usage**:
+```bash
+python run_single_mode.py --mode vargp_direct --ntilde 50 --n-iterations 50 \
+    --n-estep 10 --n-fstep 10 --n-mstep 10 --seed 123
 ```
-M= 25: cond=3.0e+03, eigval=[4.3e-03, 1.3e+01]
-M= 50: cond=1.3e+04, eigval=[1.9e-03, 2.6e+01]
-M=100: cond=1.4e+05, eigval=[3.7e-04, 5.1e+01]
-```
-Condition numbers are acceptable for float64. Effective dimensionality is ~10-11 regardless of M.
 
-#### What Full Eigenspace Projection Does (from `utils.py:Estep()`):
-1. Projects K̃ = B Λ Bᵀ, keeps only eigenvalues > threshold
-2. Stores m_b, V_b in reduced n_b-dimensional space **permanently**
-3. All predictions use the reduced representation
-4. K̃_b becomes diagonal, simplifying computations
+**Key characteristics**:
+- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
+- K̃_b is DIAGONAL in eigenspace (trivial inverse)
+- Uses LBFGS with autograd for M-step (slower than analytical)
+- Matches vargp_old E-step formulas exactly
 
-#### Why It Might Help
-- Constrains variational distribution to principal subspace
-- Acts as implicit regularization
-- Reduces noise from small-eigenvalue directions
-- Matches the original implementation architecture
+**Performance** (M=50, 50 iterations):
+| Mode | Test r | Time |
+|------|--------|------|
+| vargp_old | 0.84 | 6.2s |
+| vargp_direct | 0.81 | 18.8s |
 
-#### Current Status
-E-step works without eigenspace projection (see Section 6.2), but performance degrades for M≥100. Eigenspace projection may improve this, but has not been implemented or tested.
+**Limitation**: M-step is 3.6x slower due to autograd (vs analytical gradients in vargp_old).
 
-**Implementation would require**: Storing variational parameters in reduced eigenspace throughout, not just during E-step updates.
+**See**: `.claude/VARGP_COPY_CONTEXT.md` for full details and future improvements.
 
 ### 6.6 Pixel Masking
 **Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.

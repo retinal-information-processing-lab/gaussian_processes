@@ -607,75 +607,79 @@ EPS_MAX = 1.0
 
 ### J1. LBFGS Handling of Inf Return
 
-**Location**: `fstep.py:187`
+**Status**: **FIXED** (2026-01-23, Batch 3 investigation)
 
-**Code**:
-```python
-if f_mean.mean() > 100 or torch.any(torch.isnan(f_mean)):
-    if verbose:
-        print(f"f_mean.mean() = {f_mean.mean():.1f} at closure call {closure_counter[0]}, returning inf")
-    return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
+**Location**: `fstep.py:f_step_lbfgs()`
+
+**Original problem**: Closure returns `inf` on instability, but no tracking/warning of failure.
+
+**Fix**: Added instability tracking and warning:
+- Track A_before and A_after optimization
+- Track when inf is returned (f_mean > 1000 or NaN)
+- Emit warning with observed values: f_mean value, A before/after
+
+**Warning format**:
+```
+F-step: instability detected (f_mean=1234.5). A unchanged: 0.0123.
+F-step: instability detected (f_mean=1234.5). A changed: 0.0100 -> 0.0123.
 ```
 
-**The problem**: Closure returns `inf` on instability, but LBFGS's behavior with `inf` loss is undefined/implementation-dependent.
-
-**Possible behaviors**:
-- LBFGS might reject the step and try a smaller one (good)
-- LBFGS might crash (bad but visible)
-- LBFGS might silently produce garbage (bad and invisible)
-
-**Severity**: MEDIUM
-
-**Investigation needed**: Test what LBFGS actually does when closure returns inf
+**Severity**: MEDIUM → RESOLVED
 
 ---
 
 ### J2. Cholesky Failure Recovery
 
-**Locations**: Multiple places in `whitening.py` and `estep.py`
+**Status**: **FIXED** (2026-01-23, Batch 3 investigation)
 
-**Pattern**:
-```python
-try:
-    L = torch.linalg.cholesky(V)
-except RuntimeError:
-    L = torch.linalg.cholesky(V + jitter * eye)  # Silently add jitter
+**Locations** (5 total):
+- `estep.py:compute_kernel_cache()` - K_tilde Cholesky
+- `estep.py:compute_L_K()` - K_tilde Cholesky
+- `whitening.py:update_variational_covar()` - V Cholesky
+- `whitening.py:update_variational_covar_with_L_K()` - V_whitened Cholesky
+- `whitening.py:update_variational_parameters()` - V Cholesky
+
+**Original problem**: Cholesky failure was silently recovered by adding jitter. User didn't know V was modified.
+
+**Fix**: Added warning with observed values to all 5 locations:
+- Report matrix shape and minimum eigenvalue
+- Report jitter value being added
+
+**Warning format**:
+```
+Cholesky failed on V in {function}() (shape=(100, 100), min_eigenvalue=-1.23e-06). Adding jitter=1.0e-04 and retrying.
 ```
 
-**The problem**: Cholesky failure is silently recovered by adding jitter. The user doesn't know V was modified.
+**Also fixed**: Added fallback to `estep.py` functions that previously would crash on Cholesky failure.
 
-**Why this is concerning**:
-- Cholesky failure indicates V is not positive definite (shouldn't happen)
-- The recovery masks the underlying numerical issue
-- The modified V might be quite different from the intended V
-
-**Severity**: MEDIUM
-
-**Improvement**: Add warning when fallback is used
+**Severity**: MEDIUM → RESOLVED
 
 ---
 
 ### J3. Variance Clamping
 
-**Location**: `estep.py:192`
+**Status**: **FIXED** (2026-01-23, Batch 3 investigation)
 
-**Code**:
-```python
-lambda_var = torch.clamp(lambda_var, min=1e-6)
+**Location**: `estep.py:compute_moments_from_kernel_cache()` line ~205
+
+**Original problem**: Negative variance was silently clamped to `1e-6`.
+
+**Fix**: Added warning with observed values before clamping:
+- Count of negative values
+- Minimum value
+- Mean value
+
+**Warning format**:
+```
+Negative variance detected: 42/500 values. min=-1.23e-05, mean=4.56e-01. Clamping to 1e-6.
 ```
 
-**The problem**: Negative variance is silently clamped to `1e-6`.
+**Root causes** (for user debugging):
+- Ill-conditioned K_tilde matrix
+- V not positive definite
+- Jitter mismatch
 
-**Why negative variance is bad**: Variance should always be non-negative. If `compute_moments_from_kernel_cache()` produces negative variance, something is seriously wrong:
-- Numerical precision issues
-- Bug in the formula
-- V not properly positive definite
-
-**The clamp hides all of these**.
-
-**Severity**: MEDIUM
-
-**Improvement**: Add warning or assertion when variance is negative before clamping
+**Severity**: MEDIUM → RESOLVED
 
 ---
 
@@ -708,9 +712,9 @@ lambda_var = torch.clamp(lambda_var, min=1e-6)
 | I1 | Bounds | LOW | Low | Document rationale |
 | I2 | Bounds | LOW | Low | Document rationale |
 | I3 | Bounds | LOW | Very Low | Consider relaxing |
-| J1 | Silent Failure | MEDIUM | Low | Test LBFGS behavior |
-| J2 | Silent Failure | MEDIUM | Low | Add warning |
-| J3 | Silent Failure | MEDIUM | Low | Add warning |
+| J1 | Silent Failure | MEDIUM | Low | **FIXED** (2026-01-23 Batch 3) |
+| J2 | Silent Failure | MEDIUM | Low | **FIXED** (2026-01-23 Batch 3) |
+| J3 | Silent Failure | MEDIUM | Low | **FIXED** (2026-01-23 Batch 3) |
 
 ---
 
@@ -726,10 +730,10 @@ lambda_var = torch.clamp(lambda_var, min=1e-6)
 - F1: Diagonal kernel assumption
 - D1: Zero spike count handling
 
-### Batch 3: Silent Failure Detection
-- J1: LBFGS inf handling
-- J2: Cholesky failure warnings
-- J3: Variance clamping warnings
+### Batch 3: Silent Failure Detection (**COMPLETE** 2026-01-23)
+- J1: LBFGS inf handling → **FIXED** (instability tracking + warning)
+- J2: Cholesky failure warnings → **FIXED** (5 locations with eigenvalue reporting)
+- J3: Variance clamping warnings → **FIXED** (count/min/mean reporting)
 
 ### Batch 4: Code Quality Cleanup
 - E1: Dead import removal
