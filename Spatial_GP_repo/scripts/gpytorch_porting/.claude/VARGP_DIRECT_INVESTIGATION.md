@@ -707,27 +707,47 @@ log_det_K = 2 * torch.log(torch.diag(L_K)).sum()
 
 ---
 
-## 9. Remaining Uninvestigated Items
+## 9. Remaining Uninvestigated Items (UPDATED January 2025)
 
-### Investigated but NOT numerically verified:
+### VERIFIED via Unit Tests (`tests/test_vargp_direct_match.py`):
 
-1. **BUG #4 (Softplus chain rule)** - Explore agent concluded the math is correct (`dL['sigma_0'] * sigmoid(raw)`), but no numerical gradient check was run to verify this matches autograd.
+1. **BUG #4 (Softplus chain rule)** - **VERIFIED CORRECT**
+   - Test 1 (`test_softplus_chain_rule`) uses finite differences as ground truth
+   - `dL['sigma_0'] * sigmoid(raw_sigma_0)` matches finite diff with rel_err < 1e-7
+   - Same for Amp parameter
 
-2. **BUG #3 (Eigenspace projection of dK_tilde)** - Claimed mathematically correct, but no numerical comparison of actual gradient values between implementations.
+2. **BUG #3 (Eigenspace projection of dK_tilde)** - **VERIFIED CORRECT**
+   - Test 2 (`test_eigenspace_projection_gradients`) verifies all 6 hyperparameters
+   - All gradients match finite differences with rel_err < 1e-6
 
-### Not investigated at all:
+3. **Gradient magnitude sanity check** - **VERIFIED OK**
+   - Test 4 (`test_gradient_magnitude_sanity`) checks for NaN/Inf and reasonable magnitudes
+   - All gradients in range [1e-2, 1e+2] (reasonable)
 
-3. **Gradient magnitude sanity check** - Are the analytical gradients reasonable in scale? Could help catch subtle bugs.
+4. **Multi-cell comparison** - **VERIFIED MATCHING**
+   - Test 5 (`test_multicell_match`) compares vargp_direct vs vargp_old on cells 6, 8, 15
+   - All cells match within 0.01 (acceptance threshold was 0.05):
+     - Cell 6: 0.5942 vs 0.5869 (diff 0.0073)
+     - Cell 8: 0.8413 vs 0.8429 (diff 0.0016)
+     - Cell 15: -0.1014 vs -0.1013 (diff 0.0001)
 
-4. **More cells** - Only tested 3 cells (6, 8, 15). Original benchmark had 10 cells (1, 5, 6, 7, 8, 9, 15, 16, 18, 28).
+5. **K_tilde_inv methods** - **VERIFIED FIX CORRECT**
+   - Test 3 (`test_ktilde_inv_methods`) confirms:
+     - At initialization, eigenvalue and solve() methods match (rel_err 3e-14)
+     - After hyperparameter change, K_tilde_b is NOT diagonal (off-diag ratio 2.46%)
+     - solve() produces valid inverse even for non-diagonal K_tilde_b
 
-5. **Different M values** - Only tested M=50. Original benchmark included M=250.
+### Still not investigated:
 
-6. **ntrain=2000** - Only tested ntrain=500.
+6. **More cells** - Only tested 3 cells (6, 8, 15). Could extend test_multicell_match to include more.
+
+7. **Different M values** - Only tested M=50. Original benchmark included M=250.
+
+8. **ntrain=2000** - Only tested ntrain=500.
 
 ### Unexplained observation:
 
-7. **vargp_direct is faster than vargp_old** (5.0s vs 6.4s on cell 8) despite adding `solve()` which is O(n_b³). Possible explanations:
+9. **vargp_direct is faster than vargp_old** (5.0s vs 6.4s on cell 8) despite adding `solve()` which is O(n_b³). Possible explanations:
    - vargp_old has extra overhead (logging, checks, etc.)
    - Different code paths or redundant computations in original
    - Measurement variance
@@ -736,6 +756,32 @@ log_det_K = 2 * torch.log(torch.diag(L_K)).sum()
 
 ---
 
+## 10. Unit Test Reference
+
+**File**: `tests/test_vargp_direct_match.py`
+
+**Run all tests**:
+```bash
+conda run -n pytorch_gpytorch python tests/test_vargp_direct_match.py
+```
+
+**Run individual tests**:
+```bash
+python tests/test_vargp_direct_match.py --test 1  # Softplus chain rule
+python tests/test_vargp_direct_match.py --test 2  # Eigenspace projection
+python tests/test_vargp_direct_match.py --test 3  # K_tilde_inv methods
+python tests/test_vargp_direct_match.py --test 4  # Gradient magnitude
+python tests/test_vargp_direct_match.py --test 5  # Multi-cell comparison (slow)
+```
+
+**Skip slow tests**:
+```bash
+python tests/test_vargp_direct_match.py --skip-slow
+```
+
+---
+
 *Created: January 2025*
 *Purpose: Investigation context for new Claude Code session*
 *Resolution: January 2025 - Fixed by using solve() instead of eigendecomposition*
+*Unit tests added: January 2025 - Verified BUG #3, #4 are not bugs*
