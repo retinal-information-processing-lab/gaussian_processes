@@ -193,6 +193,8 @@ def main():
     parser.add_argument('--gradient-mode', type=str, default='autograd',
                         choices=list(GRADIENT_MODES),
                         help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
+    parser.add_argument('--mstep-analytical', action='store_true',
+                        help='Use analytical gradients for M-step in vargp_direct mode (faster, matches varGP)')
 
     # Performance options
     parser.add_argument('--use-cache', action='store_true', default=defaults['model']['use_cache'],
@@ -219,6 +221,8 @@ def main():
                         help='Save plot path. "auto" saves to imgs/{mode}_M{ntilde}.png, "none" to disable')
     parser.add_argument('--seed', type=int, default=defaults['data']['seed'],
                         help=f'Random seed for reproducibility (default: {defaults["data"]["seed"]})')
+    parser.add_argument('--float32', action='store_true',
+                        help='Use float32 instead of float64 (WARNING: may cause numerical instability)')
 
     # JSON output for benchmark tracking
     parser.add_argument('--json-append', type=str, default=None,
@@ -245,6 +249,19 @@ def main():
                 "Standard distribution requires L_K conversions in E-step."
             )
 
+    # Warning for analytical M-step without float32
+    if args.mstep_analytical and not args.float32:
+        import warnings
+        warnings.warn(
+            "\n" + "="*70 + "\n"
+            "WARNING: --mstep-analytical with float64 is extremely slow (~50s vs ~5s).\n"
+            "The analytical gradient implementation has not been optimized for float64.\n"
+            "Consider using --float32 for comparable performance to vargp_old.\n"
+            "See CLAUDE.md section 6.5 for details.\n"
+            + "="*70,
+            UserWarning
+        )
+
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Mode: {args.mode}")
@@ -262,7 +279,10 @@ def main():
     # Load data
     data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
     print(f"Loading data from: {data_path}")
-    data = load_pnas_data(data_path)
+    dtype = torch.float32 if args.float32 else torch.float64
+    data = load_pnas_data(data_path, dtype=dtype)
+    if args.float32:
+        print("WARNING: Using float32 - may cause numerical instability")
 
     # Combine train + val, flatten
     X = torch.cat([data['X_train'], data['X_val']], dim=0)
@@ -419,13 +439,19 @@ def main():
             gradient_mode=args.gradient_mode
         )
         kernel.Amp = args.Amp
-        kernel = kernel.double().to(device)
+        if args.float32:
+            kernel = kernel.float().to(device)
+        else:
+            kernel = kernel.double().to(device)
 
         # Create likelihood
         A_init = args.A_init
         lambda0_init = args.lambda0_init
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
-        likelihood = likelihood.double().to(device)
+        if args.float32:
+            likelihood = likelihood.float().to(device)
+        else:
+            likelihood = likelihood.double().to(device)
 
         print(f"\nInitial parameters:")
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
@@ -434,10 +460,11 @@ def main():
         print(f"  Amp: {kernel.Amp.item():.6f}")
 
         # Train with eigenspace projection
+        mstep_mode = 'analytical' if args.mstep_analytical else 'autograd'
         print(f"\nTraining with mode='vargp_direct' (eigenspace projection):")
         lr = defaults['training']['lr']
         print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
-        print(f"  lr_f={lr}, lr_m={lr}")
+        print(f"  lr_f={lr}, lr_m={lr}, mstep_mode={mstep_mode}")
 
         print_every = max(1, args.n_iterations // 5)
         start_time = time.time()
@@ -452,6 +479,7 @@ def main():
                 lr_f=lr,
                 lr_m=lr,
                 print_every=print_every,
+                use_analytical_mstep=args.mstep_analytical,
             )
 
         train_time = time.time() - start_time

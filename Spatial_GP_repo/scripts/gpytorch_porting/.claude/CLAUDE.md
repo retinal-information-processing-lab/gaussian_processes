@@ -537,25 +537,41 @@ Or CLI: `python run_single_mode.py --gradient-mode vjp`
 
 **Usage**:
 ```bash
-python run_single_mode.py --mode vargp_direct --ntilde 50 --n-iterations 50 \
+# Recommended: use --float32 for best performance
+python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --n-iterations 50 \
     --n-estep 10 --n-fstep 10 --n-mstep 10 --seed 123
+
+# With analytical M-step (requires --float32)
+python run_single_mode.py --mode vargp_direct --mstep-analytical --float32 --ntilde 50 \
+    --n-iterations 50 --seed 123
 ```
 
 **Key characteristics**:
 - Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
 - K̃_b is DIAGONAL in eigenspace (trivial inverse)
-- Uses LBFGS with autograd for M-step (slower than analytical)
 - Matches vargp_old E-step formulas exactly
+- **IMPORTANT**: Use `--float32` for performance matching vargp_old
 
-**Performance** (M=50, 50 iterations):
-| Mode | Test r | Time |
-|------|--------|------|
-| vargp_old | 0.84 | 6.2s |
-| vargp_direct | 0.81 | 18.8s |
+**Performance** (M=50, 50 iterations, seed=123):
+| Mode | Dtype | M-step | Total | Test r |
+|------|-------|--------|-------|--------|
+| vargp_old | float32 | 4.9s | 6.3s | 0.84 |
+| vargp_direct (autograd) | float64 | 17.4s | 18.9s | 0.81 |
+| vargp_direct (autograd) | **float32** | **4.6s** | **5.6s** | **0.84** |
+| vargp_direct (analytical) | float64 | 52.2s | 54.0s | 0.85 |
+| vargp_direct (analytical) | **float32** | **4.2s** | **5.2s** | **0.85** |
 
-**Limitation**: M-step is 3.6x slower due to autograd (vs analytical gradients in vargp_old).
+**float64 is slow**: The float64 overhead dominates. Use `--float32` to match vargp_old performance.
 
-**See**: `.claude/VARGP_COPY_CONTEXT.md` for full details and future improvements.
+**Analytical M-step (--mstep-analytical)**:
+- Implemented in `direct_vargp.py:mstep_lbfgs_analytical()`
+- Computes dK/dθ matrices explicitly (ports utils.py:acosker with grad=True)
+- **Works well with float32** (4.2s, matches vargp_old)
+- **BROKEN with float64** (52s, ~10x slower than expected)
+- Root cause: Implementation is correct but not optimized for float64 matrix operations
+- **Recommendation**: Always use `--float32` with `--mstep-analytical`
+
+**See**: `.claude/VARGP_COPY_CONTEXT.md` for full details and `.claude/MSTEP_ANALYTICAL_HANDOFF.md` for gradient formulas.
 
 ### 6.6 Pixel Masking
 **Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.

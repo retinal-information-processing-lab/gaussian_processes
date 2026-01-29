@@ -519,12 +519,194 @@ python run_single_mode.py --mode vargp_direct --ntilde 50 --n-iterations 50 \
 
 ---
 
-## 14. Future Work
+## 14. M-step Analytical Gradients - Implementation Requirements
 
-1. **Analytical M-step gradients** - Would make M-step 3-4x faster
+### 14.1 Why Current VJP Cannot Be Used for M-step Precomputation
+
+**Investigation Result (January 2025)**: The existing `analytical_gradients_vjp.py` does NOT compute dK/dθ matrices explicitly. It only does backward-pass chaining.
+
+**How VJP Works:**
+```python
+# Forward pass: computes K, saves intermediates
+K = VJPGradients.apply(x1, x2, sigma_0, Amp, ...)  # Returns K only
+
+# Backward pass (given dL/dK from optimizer):
+# 1. Computes dL/dC ONCE via chain rule
+# 2. Chains to each hyperparameter via element-wise ops
+# dL/dθ = sum(dL/dC * dC/dθ)  for each θ
+```
+
+**What M-step Needs (from original vargp_old):**
+```python
+# Compute K and all dK/dθ matrices ONCE at start
+K, dK = acosker(theta, x, xtilde, C, dC, grad=True)
+# dK = {'sigma_0': dK/dσ₀, 'Amp': dK/dAmp, ...}  # All explicit matrices
+
+# Then in LBFGS closure, reuse cached dK:
+for key in dK:
+    grad[key] = (dL_dK * dK[key]).sum()  # Fast element-wise
+```
+
+**Why VJP Cannot Work:**
+1. VJP requires dL/dK from the optimizer at backward time
+2. LBFGS line search evaluates loss at different step sizes - each has different dL/dK
+3. VJP would need to run backward for EVERY line search evaluation
+4. No way to precompute and cache dK/dθ matrices
+
+### 14.2 What Needs to Be Implemented
+
+**New function needed**: `compute_kernel_with_explicit_grads()` that returns both K and all dK/dθ matrices:
+
+```python
+def compute_kernel_with_explicit_grads(kernel, X1, X2, C, dC, diag=False):
+    """Compute kernel and all gradient matrices.
+
+    Returns:
+        K: Kernel matrix (N1, N2) or (N1,) if diag=True
+        dK: Dict of gradient matrices, same shape as K
+            {'sigma_0': dK/dσ₀, 'Amp': dK/dAmp, 'beta': dK/dβ,
+             'rho': dK/dρ, 'eps_0x': dK/dξₓ, 'eps_0y': dK/dξᵧ}
+    """
+    # Port formulas from utils.py:acosker() lines 3650-3813
+```
+
+**Reference**: `utils.py:acosker()` with `grad=True` computes exactly this.
+
+### 14.3 Diagonal Kernel Gradients (EXACT from utils.py:3784-3813)
+
+**Finding**: The original varGP uses a **direct formula** for diagonal kernel gradients, NOT extracted from full matrix.
+
+**Diagonal kernel Kvec computation:**
+```python
+# K[i] = x1[i]ᵀ @ C @ x1[i] + σ₀²
+K = torch.sum(x1 * torch.matmul(C, x1), dim=0)[:, None] + sigma_0**2
+K = K.squeeze()  # Shape (n1,)
+```
+
+**dKvec/d(sigma_0) - SPECIAL CASE:**
+```python
+# dK/dσ₀ = 2·σ₀ (derivative of σ₀² term)
+ones = torch.ones((n1, 1), device=DEVICE, dtype=TORCH_DTYPE)
+dK['sigma_0'] = (2*sigma_0**2*ones).squeeze() / sigma_0  # = 2*sigma_0
+```
+
+**dKvec/d(C-params) - DIRECT FORMULA:**
+```python
+# dK[key][i] = x1[i]ᵀ @ dC/dθ[key] @ x1[i]
+for key in dC.keys():
+    if key == 'sigma_0':
+        continue
+    dK[key] = torch.sum(x1 * torch.matmul(dC[key], x1), dim=0)  # Shape (n1,)
+```
+
+**Full K gradients (non-diagonal, for comparison):**
+```python
+# Complex formula involving arccos chain rule
+dX1 = 0.5 * sum(x1 * (dC[key] @ x1), dim=0) / X1
+dX2 = 0.5 * sum(x2 * (dC[key] @ x2), dim=0) / X2
+dX1X2 = dX1 * X2 + X1 * dX2
+dcosdelta = (x1.T @ dC[key] @ x2 - cosdelta * dX1X2) / X1X2
+dJ = -(delta - pi) * dcosdelta / pi
+dK[key] = X1X2 * dJ + dX1X2 * J  # (N1, N2) matrix
+```
+
+**Key differences:**
+
+| Aspect | Full Matrix (diag=False) | Diagonal (diag=True) |
+|--------|--------------------------|----------------------|
+| sigma_0 | `(X1X2 * dJ_sigma + dX1X2_sigma * J) / sigma_0` | `2*sigma_0` |
+| C-params | Complex with arccos chain rule | Simple: `sum(x * (dC @ x))` |
+| Shape | `(N1, N2)` | `(N,)` |
+| Complexity | O(N1*N2) | O(N) |
+
+**Implementation Note**: When implementing `compute_kernel_with_explicit_grads()`, handle `diag=True` as a SEPARATE code path with the direct formula, not by computing full matrix and taking diagonal.
+
+### 14.4 M-step Loss Function
+
+**Confirmed**: The M-step optimizes the ELBO (Expected Log-Likelihood - KL divergence):
+
+```python
+# From utils.py M-step:
+loss = -E[log p(r|λ)] + KL(q(u) || p(u))
+
+# Where:
+E[log p(r|λ)] = Σᵢ [rᵢ(Aλₘᵢ + λ₀) - exp(Aλₘᵢ + ½A²λᵥᵢ + λ₀)]
+KL = 0.5 * (tr(K̃⁻¹V) + m^T K̃⁻¹ m - n_b + log|K̃|/|V|)
+```
+
+### 14.5 Gradient Chain for M-step (EXACT FORMULAS)
+
+**Step 1: dlambda_m and dlambda_var (from utils.py:3942-3952)**
+
+```python
+# Intermediate: derivative of projection vector a = K @ K_tilde_inv
+da[key] = (dK[key] - a @ dK_tilde[key]) @ K_tilde_inv   # (nt, ntilde)
+
+# Mean gradient
+dlambda_m[key] = da[key] @ m                            # (nt, 1)
+
+# Variance gradient (4 terms)
+dlambda_var[key] = (
+    dK_vec[key]                                          # dKvec
+    + torch.einsum('ij,ji->i', 2*da[key], V @ a.T)      # 2*diag(da @ V @ a.T)
+    - torch.einsum('ij,ij->i', dK[key], a)              # -diag(dK @ a.T)
+    - torch.einsum('ij,ij->i', K, da[key])              # -diag(K @ da.T)
+)                                                        # (nt,)
+```
+
+**Step 2: dloglikelihood (from utils.py:4111-4117)**
+
+```python
+dloglikelihood[key] = (
+    A * r @ dlambda_m[key]
+    - A * f_mean @ dlambda_m[key]
+    - 0.5 * A**2 * f_mean @ dlambda_var[key]
+)
+```
+
+**Step 3: dKL (from utils.py:4143-4150)**
+
+```python
+c = V @ K_tilde_inv                     # (ntilde, ntilde)
+b = K_tilde_inv @ m                     # (ntilde, 1)
+
+for key in dK_tilde.keys():
+    B = dK_tilde[key] @ K_tilde_inv     # (ntilde, ntilde)
+    dKL[key] = (
+        0.5 * torch.trace(B)            # d(log|K_tilde|)/dθ
+        - 0.5 * torch.trace(c @ B)      # d(trace(V @ K_tilde_inv))/dθ
+        - 0.5 * b.T @ (B @ m)           # d(m.T @ K_tilde_inv @ m)/dθ
+    )
+```
+
+**Step 4: Final gradient**
+
+```python
+dlogmarginal[key] = dloglikelihood[key] - dKL[key]
+theta[key].grad = -dlogmarginal[key]    # Negate for minimization
+```
+
+### 14.6 Parameter Transforms (GPyTorch vs Original)
+
+**Original varGP** uses log-space for some parameters:
+- `beta = exp(-raw/2) / 2` where raw = `-2log2beta`
+- `rho = sqrt(exp(-raw) / 2)` where raw = `-log2rho2`
+- `sigma_0`, `Amp` are direct (positive)
+
+**GPyTorch** uses Positive constraint (softplus) for sigma_0, Amp:
+- `param = softplus(raw_param)`
+- Gradient needs chain rule: `d/d(raw) = d/d(param) * sigmoid(raw)`
+
+**Recommendation**: Work with raw parameters directly like vargp_old does, bypassing GPyTorch constraints during M-step optimization. Then clamp to valid ranges afterward.
+
+---
+
+## 15. Future Work
+
+1. **Implement analytical M-step gradients** - Port `acosker(..., grad=True)` to compute explicit dK/dθ matrices
 2. **Investigate correct m_new formula** - May improve generalization
 3. **Unit tests for eigenspace utilities** - Not yet implemented
 
 ---
 
-*Last updated: January 2025 (Implementation complete)*
+*Last updated: January 2025 (Added M-step analytical gradient requirements)*
