@@ -263,14 +263,14 @@ def compute_kernel_and_gradients(x1, x2, C, dC, sigma_0, diag=False):
 def compute_lambda_moments_and_gradients(
     K_b, K_tilde_b, Kvec, m_b, V_b,
     dK_b, dK_tilde_b, dKvec,
-    eigvals_b
+    K_tilde_inv_b
 ):
     """Compute posterior moments and their gradients w.r.t. hyperparameters.
 
     Ports utils.py:lambda_moments() lines 3937-3952.
 
     Moments:
-        a = K_b @ K_tilde_inv_b  (projection vector, exploits diagonal K_tilde_b)
+        a = K_b @ K_tilde_inv_b  (projection vector)
         lambda_m = a @ m_b
         lambda_var = Kvec + diag(a @ (V_b - K_tilde_b) @ a.T)
 
@@ -284,14 +284,15 @@ def compute_lambda_moments_and_gradients(
 
     Args:
         K_b: Cross-kernel in eigenspace, shape (N, n_b)
-        K_tilde_b: Inducing kernel in eigenspace (DIAGONAL), shape (n_b, n_b)
+        K_tilde_b: Inducing kernel in eigenspace, shape (n_b, n_b)
         Kvec: Diagonal self-kernel, shape (N,)
         m_b: Variational mean in eigenspace, shape (n_b,)
         V_b: Variational covariance in eigenspace, shape (n_b, n_b)
         dK_b: Dict of dK_b matrices, each shape (N, n_b)
         dK_tilde_b: Dict of dK_tilde_b matrices, each shape (n_b, n_b)
         dKvec: Dict of dKvec vectors, each shape (N,)
-        eigvals_b: Eigenvalues for K_tilde_b diagonal, shape (n_b,)
+        K_tilde_inv_b: Inverse of K_tilde_b, shape (n_b, n_b)
+            Can be diagonal (1D tensor of eigenvalues) or full matrix
 
     Returns:
         lambda_m: Posterior mean, shape (N,)
@@ -302,13 +303,15 @@ def compute_lambda_moments_and_gradients(
     Reference:
         utils.py:lambda_moments() lines 3942-3952
     """
-    # K_tilde_b is diagonal with eigenvalues on diagonal
-    # K_tilde_inv_b[i,i] = 1/eigvals_b[i]
-    K_tilde_inv_b_diag = 1.0 / eigvals_b  # (n_b,)
-
-    # Projection vector: a = K_b @ K_tilde_inv_b
-    # Since K_tilde_inv_b is diagonal, this is element-wise:
-    a = K_b * K_tilde_inv_b_diag[None, :]  # (N, n_b)
+    # Handle both diagonal (eigenvalues) and full matrix cases
+    if K_tilde_inv_b.dim() == 1:
+        # Diagonal case: K_tilde_inv_b is eigenvalues, use element-wise multiply
+        a = K_b * K_tilde_inv_b[None, :]  # (N, n_b)
+        is_diagonal = True
+    else:
+        # Full matrix case: use matrix multiply
+        a = K_b @ K_tilde_inv_b  # (N, n_b)
+        is_diagonal = False
 
     # Posterior mean
     lambda_m = a @ m_b  # (N,)
@@ -327,9 +330,10 @@ def compute_lambda_moments_and_gradients(
 
     for key in dK_b.keys():
         # da/dθ = (dK/dθ - a @ dK_tilde/dθ) @ K_tilde_inv
-        # In eigenspace with diagonal K_tilde_inv:
-        # da[key] = (dK_b[key] - a @ dK_tilde_b[key]) * K_tilde_inv_b_diag
-        da_key = (dK_b[key] - a @ dK_tilde_b[key]) * K_tilde_inv_b_diag[None, :]  # (N, n_b)
+        if is_diagonal:
+            da_key = (dK_b[key] - a @ dK_tilde_b[key]) * K_tilde_inv_b[None, :]  # (N, n_b)
+        else:
+            da_key = (dK_b[key] - a @ dK_tilde_b[key]) @ K_tilde_inv_b  # (N, n_b)
 
         # dlambda_m[key] = da[key] @ m
         dlambda_m[key] = da_key @ m_b  # (N,)
@@ -343,8 +347,6 @@ def compute_lambda_moments_and_gradients(
         term1 = dKvec[key]
 
         # Term 2: 2 * diag(da @ V @ a.T)
-        # = 2 * sum(da * (V @ a.T).T, dim=1) = 2 * sum(da * (a @ V.T).T, dim=1)
-        # Since V is symmetric: V.T = V
         Va_T = V_b @ a.T  # (n_b, N)
         term2 = 2 * torch.einsum('ij,ji->i', da_key, Va_T)  # (N,)
 
@@ -360,7 +362,7 @@ def compute_lambda_moments_and_gradients(
 
 
 def compute_loss_gradients(
-    r, f_mean, A, m_b, V_b, K_tilde_b, eigvals_b,
+    r, f_mean, A, m_b, V_b, K_tilde_b, K_tilde_inv_b,
     dlambda_m, dlambda_var, dK_tilde_b
 ):
     """Compute gradients of negative ELBO w.r.t. kernel hyperparameters.
@@ -377,8 +379,9 @@ def compute_loss_gradients(
         A: Gain parameter (scalar)
         m_b: Variational mean in eigenspace, shape (n_b,)
         V_b: Variational covariance in eigenspace, shape (n_b, n_b)
-        K_tilde_b: Inducing kernel in eigenspace (DIAGONAL), shape (n_b, n_b)
-        eigvals_b: Eigenvalues for K_tilde_b diagonal, shape (n_b,)
+        K_tilde_b: Inducing kernel in eigenspace, shape (n_b, n_b)
+        K_tilde_inv_b: Inverse of K_tilde_b - can be 1D (diagonal eigenvalues)
+            or 2D (full matrix from solve())
         dlambda_m: Dict of mean gradients from compute_lambda_moments_and_gradients()
         dlambda_var: Dict of variance gradients from compute_lambda_moments_and_gradients()
         dK_tilde_b: Dict of dK_tilde_b matrices, each shape (n_b, n_b)
@@ -390,8 +393,8 @@ def compute_loss_gradients(
         utils.py:compute_loglikelihood() lines 4111-4117
         utils.py:compute_KL_div() lines 4143-4150
     """
-    # K_tilde_inv_b is diagonal: K_tilde_inv_b[i,i] = 1/eigvals_b[i]
-    K_tilde_inv_b_diag = 1.0 / eigvals_b  # (n_b,)
+    # Check if K_tilde_inv_b is diagonal (eigenvalues) or full matrix
+    is_diagonal = K_tilde_inv_b.dim() == 1
 
     # ====== dloglikelihood/dθ ======
     # From utils.py line 4116:
@@ -412,17 +415,23 @@ def compute_loss_gradients(
     # B = dK_tilde[key] @ K_tilde_inv
     # dKL[key] = 0.5*trace(B) - 0.5*trace(c@B) - 0.5*b.T@(B@m)
 
-    # In eigenspace with diagonal K_tilde_inv:
-    # c = V_b @ K_tilde_inv_b (diagonal on right)
-    c = V_b * K_tilde_inv_b_diag[None, :]  # (n_b, n_b) - scales columns
-
-    # b = K_tilde_inv_b @ m_b (diagonal on left)
-    b = K_tilde_inv_b_diag * m_b  # (n_b,)
+    if is_diagonal:
+        # Diagonal case: K_tilde_inv_b is eigenvalues
+        c = V_b * K_tilde_inv_b[None, :]  # (n_b, n_b) - scales columns
+        b = K_tilde_inv_b * m_b  # (n_b,)
+    else:
+        # Full matrix case
+        c = V_b @ K_tilde_inv_b  # (n_b, n_b)
+        b = K_tilde_inv_b @ m_b  # (n_b,)
 
     dKL = {}
     for key in dK_tilde_b.keys():
-        # B = dK_tilde_b[key] @ K_tilde_inv_b (diagonal on right)
-        B = dK_tilde_b[key] * K_tilde_inv_b_diag[None, :]  # (n_b, n_b)
+        if is_diagonal:
+            # B = dK_tilde_b[key] @ K_tilde_inv_b (diagonal on right)
+            B = dK_tilde_b[key] * K_tilde_inv_b[None, :]  # (n_b, n_b)
+        else:
+            # Full matrix case
+            B = dK_tilde_b[key] @ K_tilde_inv_b  # (n_b, n_b)
 
         # Term 1: 0.5 * trace(B)
         term1 = 0.5 * torch.trace(B)
@@ -1090,6 +1099,13 @@ def mstep_lbfgs_analytical(
         # Symmetrize K_tilde_b
         K_tilde_b = (K_tilde_b + K_tilde_b.T) / 2
 
+        # CRITICAL FIX: Compute K_tilde_inv_b using solve(), matching vargp_old
+        # The original code (utils.py lines 5920-5921) uses:
+        #   K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye)
+        # NOT eigendecomposition. This is more numerically stable.
+        eye_b = torch.eye(n_b, device=K_tilde_b.device, dtype=K_tilde_b.dtype)
+        K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye_b)
+
         # Project gradient matrices
         dK_tilde_b = {k: B.T @ v @ B for k, v in dK_tilde.items()}
         dK_b = {k: v @ B for k, v in dK.items()}
@@ -1097,7 +1113,7 @@ def mstep_lbfgs_analytical(
         # ===== 4. Compute moments and gradients =====
         lambda_m, lambda_var, dlambda_m, dlambda_var = compute_lambda_moments_and_gradients(
             K_b, K_tilde_b, Kvec, m_b, V_b,
-            dK_b, dK_tilde_b, dKvec, eigvals_b
+            dK_b, dK_tilde_b, dKvec, K_tilde_inv_b  # Use full matrix inverse
         )
 
         # Compute f_mean
@@ -1111,13 +1127,20 @@ def mstep_lbfgs_analytical(
         # Log-likelihood
         log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
 
-        # KL divergence
-        K_tilde_inv_b_diag = 1.0 / eigvals_b
-        V_diag = torch.diag(V_b)
-        trace_term = (V_diag * K_tilde_inv_b_diag).sum()
-        quad_term = (m_b * K_tilde_inv_b_diag) @ m_b
-        log_det_K = torch.log(eigvals_b).sum()
+        # KL divergence using full matrix K_tilde_inv_b (matching vargp_old)
+        # KL = 0.5 * (tr(K_tilde_inv @ V) + m.T @ K_tilde_inv @ m - n_b + log|K_tilde| - log|V|)
+        trace_term = torch.trace(K_tilde_inv_b @ V_b)
+        quad_term = m_b @ K_tilde_inv_b @ m_b
 
+        # log|K_tilde_b| via Cholesky (matches vargp_old's log_det function)
+        try:
+            L_K = torch.linalg.cholesky(K_tilde_b)
+            log_det_K = 2 * torch.log(torch.diag(L_K)).sum()
+        except RuntimeError:
+            # Fallback if Cholesky fails - return inf to reject this step
+            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
+        # log|V_b|
         sign_V, log_det_V = torch.linalg.slogdet(V_b)
         if sign_V.item() <= 0:
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
@@ -1132,7 +1155,7 @@ def mstep_lbfgs_analytical(
 
         # ===== 6. Compute analytical gradients =====
         dL = compute_loss_gradients(
-            r, f_mean, A, m_b, V_b, K_tilde_b, eigvals_b,
+            r, f_mean, A, m_b, V_b, K_tilde_b, K_tilde_inv_b,  # Use full matrix inverse
             dlambda_m, dlambda_var, dK_tilde_b
         )
 
