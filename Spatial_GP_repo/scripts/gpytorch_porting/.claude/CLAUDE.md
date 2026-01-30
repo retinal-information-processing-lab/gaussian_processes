@@ -1,462 +1,71 @@
-# GPyTorch Porting Project - Development Tracking
+# GPyTorch Porting Project
 
-This document tracks the porting effort from the custom variational GP implementation (`utils.py:varGP()`) to GPyTorch. It serves as both a mathematical reference and a decision log.
-
-**Session started**: January 2025
-**Goal**: Create a GPyTorch-based implementation that produces qualitatively similar results to the custom implementation, with cleaner code structure.
+**Goal**: Port the custom variational GP (`utils.py:varGP()`) to GPyTorch with cleaner structure.
 
 ---
 
-## Quick Start for New Sessions
+## Quick Start
 
 | Item | Value |
 |------|-------|
-| **Conda environment** | `pytorch_gpytorch` - ALWAYS use this for running scripts |
-| **Current status** | Stage 2 + Masking + Analytical Gradients + E-step Kernel Caching + UnwhitenedVariationalStrategy + Amp Parameter + **vargp_direct** COMPLETE |
-| **Key files** | `kernels.py`, `estep.py`, `train.py`, `default_params.json`, `run_single_mode.py`, `run_canonical_tests.py`, `eigenspace.py`, `direct_vargp.py` |
-| **Run canonical benchmark** | `python run_canonical_tests.py --seed 123` - 12-config matrix to JSONL |
-| **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening --json-append results/benchmark_results.jsonl` |
+| **Conda environment** | `pytorch_gpytorch` - ALWAYS use this |
+| **Run canonical test** | `python run_canonical_tests.py --seed 123` |
+| **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening` |
 | **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
-| **Gradient modes** | `--gradient-mode autograd` (default), `vjp` (fast analytical), `jacobian` (slow, reference) |
-| **E-step caching** | Enabled by default (8.8x faster). Use `--no-cache` to disable for testing. |
-| **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. Will error if CUDA unavailable. |
-| **Deferred** | LBFGS M-step with analytical gradients (Section 6.3), correct E-step m formula (see VARGP_COPY_CONTEXT.md) |
-| **Known limitations** | RF center needs reasonable init (Q20); Hacky `torch.pi` workaround (see below); Jitter consistency (see below); **Whitened mode is seed-sensitive**; **set_reproducible_seed device param changes random sequence** (see below) |
-| **Current focus** | Unspecified |
+| **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. |
 | **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
-**CRITICAL RULES:**
-> - **NEVER use nMstep=0 or n_mstep=0 as default.** Disables kernel learning. Always use nMstep >= 10.
-> - **Parameters in GPyTorch modes MUST match varGP.** See Section 6.2 for test script architecture.
-
-**Gradient Mode Selection (January 2025):**
-> Use `ArcCosineKernel(..., gradient_mode='MODE')` or `--gradient-mode MODE` in CLI:
-> - `'autograd'`: PyTorch autograd (default) - automatic differentiation
-> - `'vjp'`: VJP analytical - same speed as autograd, explicit formulas
-> - `'jacobian'`: Old Jacobian materialization - slow but matches original varGP exactly
->
-> Note: `use_analytical_grads` flag was removed (Jan 2025). Use `gradient_mode` instead.
-
-**HACKY WORKAROUND - Random State Reproducibility (January 2025):**
-> Test scripts use `tests/test_utils.py:set_reproducible_seed()` which contains a **hacky workaround**:
-> ```python
-> torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
-> ```
-> This replicates a side effect from `GP_utils.py` line 49. Without it, `test_kernel_cache.py` fails
-> while `run_single_mode.py` succeeds - same code, different random sequences.
->
-> **We don't understand why this works.** The assignment to `torch.pi` (a built-in constant since
-> PyTorch 1.8) somehow affects random state. This is cargo cult programming.
->
-> See `.claude/archive/ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` Section 17 for full details and what we tried that didn't work.
-
-**Jitter Consistency (Critical - January 2025):**
-> All jitter values MUST match `model.jitter` (default 1e-4). Mismatched jitter causes whitening
-> conversion failures in non-cached E-step path.
->
-> **Problem discovered**: Config C (non-cached + whitening) failed at M=50 with test_r=0.21 instead
-> of expected ~0.77. Root cause was jitter mismatch:
-> - `VariationalGPModel` created with jitter=1e-4 (stored in `model.jitter`)
-> - `estep.py` functions defaulted to jitter=1e-6
-> - GPyTorch's internal `VariationalStrategy.jitter_val` = 1e-4
->
-> When non-cached whitening path calls `model(X)`, GPyTorch uses its internal L_K (with 1e-4),
-> but our whitening conversions used L_K computed with 1e-6. This 100x mismatch corrupted
-> the variational parameters.
->
-> **Fix**: All `estep.py` functions now default to `model.jitter` and warn if an explicit jitter
-> parameter mismatches. The warning includes the corrective action (using model.jitter instead).
->
-> **Affected functions**: `compute_kernel_cache()`, `compute_L_K()`, `e_step()`,
-> `e_step_explicit()`, `e_step_loop()`.
-
-**set_reproducible_seed Device Parameter Issue (January 2025):**
-> `set_reproducible_seed(seed, device=device)` produces DIFFERENT random sequences than
-> `set_reproducible_seed(seed)` (without device param), even though device defaults to 'cuda'.
->
-> **Impact**: Different inducing point selection → dramatically different results (r=0.70 vs r=-0.11).
->
-> **Root cause**: Unknown. The device param triggers `torch.cuda.init()` before seeding, but
-> calling without device param also defaults to CUDA init. Needs investigation.
->
-> **Workaround**: For now, be aware that `run_single_mode.py` uses the device param while
-> inline tests may not, causing result mismatches.
-
-**Variational Strategy and Explicit Unwhitening (January 2025):**
-> Two distinct concepts are now cleanly separated:
->
-> **1. `standard_variational_distribution`** (model.py parameter):
-> - `True` (default): Use `VariationalStrategy` (whitened params, faster)
-> - `False`: Use `UnwhitenedVariationalStrategy` (natural params directly)
-> - CLI: `--unwhitened-variational-dist` to use False
->
-> **2. `explicit_unwhitening`** (train.py / estep.py parameter):
-> - Controls whether to do L_K whitening conversions in E-step
-> - **REQUIRED** for `vargp_style` mode with standard distribution
-> - CLI: `--explicit-unwhitening` or `--no-explicit-unwhitening` (required for vargp_style)
->
-> **CLI usage**:
-> ```bash
-> # Standard distribution with explicit unwhitening (most common)
-> python run_single_mode.py --mode vargp_style --explicit-unwhitening
->
-> # Unwhitened strategy (no explicit unwhitening needed)
-> python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
-> ```
->
-> **Validation**: `--unwhitened-variational-dist` with `--explicit-unwhitening` is invalid (mutually exclusive).
->
-> **Performance**: Unwhitened strategy is ~4x slower and achieves lower test r (0.65 vs 0.80).
->
-> **Details**: See Q26-Q28 in `DECISION_LOG.md` and `TECHNICAL_ANALYSIS_2026-01-20_whitening_LK_mismatch.md`.
-
-**Amp Parameter (January 2025):**
-> The `Amp` parameter is now **internal** to `ArcCosineKernel` (replaces `ScaleKernel` wrapper).
-> - Amp multiplies C before sqrt/arccos operations (non-linear effect)
-> - ScaleKernel applied linear output scaling (different mathematical behavior)
-> - Analytical gradients updated: `grad_Amp = (dL_dC * C).sum() / Amp`
->
-> **Usage**: `kernel = ArcCosineKernel(..., Amp=1.0)` or `kernel.Amp = value`
-
-**Default Parameters (January 2025):**
-> All modes now load default parameters from `default_params.json`. This ensures consistency
-> across `vargp_old`, `default_gpy`, and `vargp_style` modes. CLI arguments can override any default.
->
-> Key defaults: `sigma_0=1.0`, `Amp=1.0`, `beta=0.1`, `rho=0.1`, `A_init=0.01`, `lambda0_init=1.0`,
-> `n_iterations=50`, `n_estep=10`, `n_mstep=10`, `ntilde=100`, `seed=42`.
+**Current Status**:
+| Component | Status |
+|-----------|--------|
+| Stage 1 (C=I kernel) | COMPLETE |
+| Stage 2 (RF structure) | COMPLETE |
+| Stage 3 (Custom E-step) | DEFERRED |
+| Stage 4 (Analytical gradients) | COMPLETE |
+| vargp_direct mode | COMPLETE |
+| Pixel masking | COMPLETE |
+| Utility functions | OUT OF SCOPE |
 
 ---
 
-## Table of Contents
+## CRITICAL RULES (MUST FOLLOW)
 
-| Section | Description | When to Read |
-|---------|-------------|--------------|
-| [Quick Start](#quick-start-for-new-sessions) | Status, commands, current focus | **Always read first** |
-| [Mathematical Foundation](#1-mathematical-foundation) | Model, ELBO, kernel math | See **MATH_REFERENCE.md** for details |
-| [Current Custom Implementation](#2-current-custom-implementation) | varGP() function reference | When comparing to original |
-| [Porting Strategy](#3-porting-strategy) | Approach and architecture | For context on design choices |
-| [Decision Log](#4-decision-log) | Key decisions summary | See **DECISION_LOG.md** for full Q1-Q25 |
-| [Implementation Stages](#5-implementation-stages) | Stage 1-4 status | To check what's done/pending |
-| [Deferred Items](#6-deferred-items) | Parked work items | Before starting new features |
-| [Key Files Reference](#7-key-files-reference) | File locations and purposes | When looking for specific code |
-| [Appendix](#8-codebase-structure) | Data format, preprocessing, patterns | Reference material |
+1. **NEVER use nMstep=0 or n_mstep=0** - Disables kernel learning. Always use nMstep >= 10.
 
-**Related Documentation:**
-- `MATH_REFERENCE.md` - Full mathematical derivations (read when working on math problems)
-- `DECISION_LOG.md` - Design decisions Q1-Q25 (read when implementation seems confusing)
-- `WORKING_GUIDELINES.md` - Process rules and policies (read at session start)
-- `SESSION_LOG.md` - Recent session summaries (read for context on recent work)
+2. **Parameters MUST match between GPyTorch and varGP** - See Parameter Matching Table below.
+
+3. **Use --float32** - float64 is 10x slower and the reference old code used float32
+
+4. **All jitter values MUST match model.jitter** (default 1e-4) - Mismatch causes whitening failures.
+
+5. **Avoid .data parameter** - Use `torch.no_grad() + copy()` instead.
 
 ---
 
-## 1. Mathematical Foundation
+## Known Limitations
 
-> **Full derivations in `MATH_REFERENCE.md`** - Read when working on math-related problems.
-
-**Quick Summary:**
-- **Model**: Poisson likelihood with exponential link: `r ~ Poisson(exp(A·λ + λ₀))`
-- **Inference**: Sparse variational GP with inducing points, ELBO objective
-- **Kernel**: Arc-cosine kernel with structured covariance C (encodes RF properties)
-- **Algorithm**: EM with closed-form E-step (Newton), gradient-based M-step
-
-**Key equations** (see MATH_REFERENCE.md for derivations):
-- Posterior mean: `μ(x) = k(x)ᵀ K̃⁻¹ m`
-- Posterior var: `σ²(x) = k(x,x) + k(x)ᵀ K̃⁻¹ (V - K̃) K̃⁻¹ k(x)`
-- Expected log-lik: `E[log p(r|λ)] = r(A·μ + λ₀) - exp(A·μ + ½A²σ² + λ₀)`
-
----
-
-## 2. Current Custom Implementation
-
-### 2.1 Main Function: `varGP()` (utils.py:5291)
-
-**Inputs**:
-- x: stimuli (nt, nx)
-- r: spike counts (nt,)
-- xtilde: inducing points (ntilde, nx)
-- hyperparams_tuple: (theta, theta_lower_lims, theta_higher_lims)
-- f_params: {'logA': ..., 'lambda0': ...}
-- fit_parameters: {ntilde, maxiter, nEstep, nMstep, nFparamstep, kernfun, ...}
-
-**Outputs**:
-- fit_model dict containing: m_b, V_b, B, K_tilde_b, C, mask, hyperparams_tuple, f_params, etc.
-
-### 2.2 Supporting Functions
-
-| Function | Location | Purpose |
-|----------|----------|---------|
-| `Estep()` | utils.py:4215 | Newton update for (m, V) |
-| `localker()` | utils.py | Compute C matrix with RF structure |
-| `acosker()` | utils.py | Arc-cosine kernel computation |
-| `lambda_moments()` | utils.py | Compute posterior mean/var at test points |
-
-### 2.3 Test Script: `one_cell_fit.py`
-
-Location: `scripts/one_cell_fit.py`
-
-Uses PNAS dataset, fits single cell with:
-- ntilde = 50 inducing points (standardized default)
-- n_train = 500 training samples
-- nEstep = 10, nMstep = 10, nFparamstep = 10, maxiter = 50
-- acosker kernel
-
----
-
-## 3. Porting Strategy
-
-### 3.1 Chosen Approach: GPyTorch-Native (Staged)
-
-Start with GPyTorch's built-in variational inference, then progressively add custom components.
-
-**Why this approach**:
-- Leverages GPyTorch's numerical stability and auto-differentiation
-- Validates model structure before adding complexity
-- Clean separation between model and optimization allows hybrid later
-
-### 3.2 Alternative Approaches Considered
-
-| Approach | Description | Why Not Chosen |
-|----------|-------------|----------------|
-| **Hybrid from start** | GPyTorch for kernels, custom E-step | More complex initial debugging |
-| **Kernels only** | Replace kernels in existing varGP | Doesn't leverage GPyTorch's variational framework |
-| **Full custom** | Rewrite everything with better structure | Loses GPyTorch benefits, more work |
-
-### 3.3 Key Architectural Decision
-
-GPyTorch separates **model architecture** from **optimization**:
-- Model: `ApproximateGP` with `VariationalStrategy`
-- Optimization: standard PyTorch optimizer loop
-
-This means we can:
-1. Start with GPyTorch's Adam-based training
-2. Later replace with custom E-step (just change the optimizer loop, not the model)
-3. Access variational parameters via `model.variational_strategy.variational_distribution`
-
-Note: Avaid using the .data parameter and if you need to, raise it to the user. prefer torch.no_grad() + copy()
-
----
-
-## 4. Decision Log
-
-> **Full decision history in `DECISION_LOG.md`** (Q1-Q25)
->
-> Read this file when something about the implementation seems confusing or when facing similar design choices.
-
-**Key decisions summary:**
-- Q4: Utility functions OUT OF SCOPE
-- Q9: float64 required (kernel values ~10,000)
-- Q20: RF center needs reasonable init (won't learn from bad init)
-- Q22: Pixel masking uses detached theta for structural stability
-- Q25: Kernel caching gives 8.8x E-step speedup
-
----
-
-## 5. Implementation Stages
-
-### Stage 1: Arc-Cosine Kernel with C=I (Identity Covariance)
-**Status**: COMPLETE (January 2025)
-
-**Goal**: GPyTorch model with arc-cosine kernel (C=I) that fits PNAS data. All tasks completed.
-
-**Results**:
-- Model trains successfully on PNAS data
-- Loss decreases (40 → 23 with 50 inducing points, 100 iterations)
-- Test Pearson r ≈ 0.2 (modest correlation - expected without RF structure)
-- Kernel unit test passes (exact match with reference implementation)
-
-**Key implementation notes**:
-1. Must use `float64` for numerical stability (kernel values ~10000)
-2. Amp parameter is internal to ArcCosineKernel (non-linear scaling through sqrt/arccos)
-3. Order matters: call `.double()` before `.to(device)`
-
-**Files created**:
-- `kernels.py` - ArcCosineKernel class (verified against reference)
-- `likelihoods.py` - PoissonLikelihood class with A, λ₀ parameters
-- `model.py` - VariationalGPModel wrapping GPyTorch's ApproximateGP
-- `train.py` - All training loops (`train_gpy_default`, `train_varGP_style`) + evaluation
-- `archive/test_stage1_cI.py` - Stage 1 (C=I) testing script (archived, superseded by run_single_mode.py)
-
-### Stage 2: Structured Covariance Matrix C
-**Status**: COMPLETE (January 2025)
-
-**Goal**: Add locality and smoothness structure to kernel via RF parameters.
-
-**Mathematical reference**: See Section 1.5 for C matrix formula, pixel grid, and implementation details.
-
-**Design decisions**: See Q14-Q17 in Section 4 (Session 3).
-
-All tasks completed. Validations passed: C=I equivalence, gradient flow, performance (r=0.75 vs 0.53), pixel masking.
-
-**Results** (initial quick tests):
-
-| Configuration | Training | Inducing | Pearson r | R² |
-|--------------|----------|----------|-----------|-----|
-| Stage 1 (C=I) | 500 | 100 | 0.53 | 0.22 |
-| Stage 2 (RF) | 500 | 100 | **0.75** | **0.49** |
-
-**Results** (full validation with proper settings):
-
-| Configuration | Training | Inducing | Iterations | Pearson r |
-|--------------|----------|----------|------------|-----------|
-| Reference (varGP) | 2000 | 200 | 300 | **0.87** |
-| GPyTorch (Stage 2) | 2000 | 200 | 500 | **0.84** |
-
-**Final RF parameters** (cell 8, GPyTorch with n_train=2000, ntilde=200):
-- beta: 0.10 → 0.10 (minimal change)
-- rho: 0.10 → 0.08 (learned smaller)
-- eps_0: (0.0, 0.0) → (0.11, -0.04) - RF center learned reasonable location
-
-**Key implementation notes**:
-1. C matrix is 11,664 × 11,664 (~1GB float64) - works but slow on CPU
-2. Use `--device cuda` for reasonable performance
-3. Must use `outputscale=1e-4` to prevent exp() overflow in likelihood
-4. Log-space parameterization:
-   - `raw = -2*log(2*beta)` → `beta = exp(-raw/2) / 2`
-   - `raw = -log(2*rho²)` → `rho = sqrt(exp(-raw) / 2)`
-
-**Files modified**:
-- `kernels.py` - added RF parameters, `_setup_pixel_coords()`, `_compute_C_matrix()`
-- `archive/test_stage1_cI.py` - added `--use-rf`, `--n-train`, `--beta`, `--rho`, `--eps-0x`, `--eps-0y` flags (archived)
-
-### Stage 3: Custom E-step (Deferred)
-**Status**: DEFERRED
-
-**Goal**: Replace GPyTorch's iterative optimization with closed-form Newton update.
-
-**Mathematical reference**: See `.claude/ESTEP_MATH_ANALYSIS.md` for:
-- Correct formulas (V and m updates)
-- Comparison with old LaTeX and current code
-- Key finding: V update in code is CORRECT, m update has minor discrepancy
-
-**Tasks**:
-- [ ] Extract variational parameters from GPyTorch model
-- [ ] Implement E-step update using CORRECT formulas (not old LaTeX)
-- [ ] Convert between Cholesky and full V representations
-- [ ] Write updated parameters back to model
-- [ ] Benchmark speed improvement
-
-### Stage 4: Analytical M-step Gradients
-**Status**: COMPLETE (January 2025)
-
-**Goal**: Implement analytical gradients for kernel hyperparameters, matching varGP.
-
-**Implementation**:
-- New file `analytical_gradients.py` with:
-  - `acosker_with_hyp_grad()`: Computes K and all dK/dθ matrices
-  - `compute_C_and_gradients()`: Computes C and dC matrices
-  - `ArcCosineJacobianGradients(torch.autograd.Function)`: Wrapper for clean integration
-- Use `gradient_mode='jacobian'` in `ArcCosineKernel`
-- When enabled, forward pass computes K and saves dK; backward uses analytical gradients
-
-**Validation results** (from `tests/test_analytical_gradients.py`):
-- Gradient correctness: relative error < 1e-7 vs autograd
-- Numerical check: finite differences match within 1e-6
-- Training equivalence: final loss differs by ~1% between modes
-
-**Usage**:
-```bash
-python run_single_mode.py --mode vargp_style --gradient-mode jacobian
-```
-
-**Performance characteristics** (old Jacobian-materialization approach):
-
-| M | Autograd | Old Analytical | Slowdown | Notes |
-|---|----------|----------------|----------|-------|
-| 50 | 16s | 30s | 1.9x | Equivalent results (0.83) |
-| 75 | 18s | 46s | 2.5x | Equivalent results |
-| 100 | 45s | 84s | 1.9x | **Analytical worse: 0.71 vs 0.87** |
-
-**Why was old implementation 2x slower**: It materialized 5 dC matrices and 5 dK matrices (15 large matrix multiplies). Autograd uses VJPs without materializing intermediates.
-
-### Stage 4b: VJP-Based Analytical Gradients (INTEGRATED)
-**Status**: COMPLETE + INTEGRATED (January 2025)
-
-**Files**:
-- `analytical_gradients_vjp.py` - VJP implementation (fast, recommended)
-- `analytical_gradients.py` - Jacobian implementation (slow, reference)
-
-**Integration**: Both implementations are now accessible via `gradient_mode` parameter:
-
+### torch.pi Workaround (HACKY)
+`tests/test_utils.py:set_reproducible_seed()` contains:
 ```python
-# Use VJP (fast, same speed as autograd)
-kernel = ArcCosineKernel(n_px_side=108, gradient_mode='vjp')
-
-# Use Jacobian (slow, matches original varGP exactly)
-kernel = ArcCosineKernel(n_px_side=108, gradient_mode='jacobian')
-
-# Use autograd (default)
-kernel = ArcCosineKernel(n_px_side=108, gradient_mode='autograd')
+torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
 ```
+This replicates a side effect from `GP_utils.py` line 49. We don't understand why it works.
 
-**CLI usage**:
-```bash
-python run_single_mode.py --gradient-mode vjp       # Fast analytical
-python run_single_mode.py --gradient-mode jacobian  # Slow reference
-python run_single_mode.py --gradient-mode autograd  # PyTorch autograd (default)
-```
+### Jitter Consistency
+All jitter values MUST match `model.jitter`. The fix: all `estep.py` functions now default to `model.jitter`.
 
-**Performance comparison**:
+### set_reproducible_seed Device Parameter
+`set_reproducible_seed(seed, device=device)` produces DIFFERENT random sequences than `set_reproducible_seed(seed)`. Root cause unknown.
 
-| Mode | Time per call | Notes |
-|------|---------------|-------|
-| `autograd` | 16.2 ms | PyTorch automatic differentiation |
-| `vjp` | 16.2 ms | Same speed, explicit kernel formulas |
-| `jacobian` | 73.1 ms | 4.5x slower, matches original varGP |
+### Whitening Seed Sensitivity
+Whitened mode can be sensitive to random seed in some configurations.
 
-**When to use each mode**:
-- `autograd`: Default, simplest, works well
-- `vjp`: When you want explicit control with no speed penalty
-- `jacobian`: When you need exact match with original varGP for debugging
-
-**Key insight**: VJP computes dL/dC ONCE in backward, then chains to each hyperparameter via element-wise ops. Jacobian materializes 5 dK matrices explicitly.
-
-**Math reference**: `.claude/VJP_ANALYTICAL_GRADIENTS.md`
-
-**Note**: `use_analytical_grads` parameter was removed (Jan 2025). Use `gradient_mode='jacobian'` instead.
-
-**estep.py optimization** (still relevant):
-- Training loop toggles `requires_grad` on kernel parameters
-- E-step and F-step: kernel gradients disabled
-- M-step only: kernel gradients enabled
+### RF Center Initialization
+RF center (eps_0x, eps_0y) needs reasonable init near image center. Won't learn from bad init.
 
 ---
 
-## 6. Deferred Items
-
-### 6.1 Utility Functions
-**Status**: EXPLICITLY OUT OF SCOPE
-
-The utility/acquisition functions in `utility.py` are NOT part of this porting effort:
-- `nd_utility_new()`
-- `distribution_aware_utility_gpytorch()`
-- `conditioned_utility_clean()`
-- Any active learning functionality
-
-### 6.2 Custom E-step
-**Status**: vargp_style STABLE across M, outperforms varGP for M≥75 (see `results/BENCHMARK_LOG.md`)
-
-#### Test Script Architecture
-
-| Script | Role | Description |
-|--------|------|-------------|
-| `run_canonical_tests.py` | **Canonical benchmark** - runs test matrix | 12 configs per seed to JSONL |
-| `run_single_mode.py` | **Active development** - experiment with training modes | Single-mode testing |
-
-**Run canonical test:** `python run_canonical_tests.py --seed 123`
-
-**Training modes:**
-- `vargp_old`: Original varGP implementation (reference baseline)
-- `default_gpy`: Standard GPyTorch variational inference (no custom E-step)
-- `vargp_style`: Matches original varGP structure (LBFGS F-step, analytical λ₀)
-- `vargp_direct`: Eigenspace projection matching varGP (see Section 6.5)
-
-**Metrics**: All modes report standardized metrics (test_corr, explained_var, reliability) computed identically.
-
-**Timing Note**: GPU warmup within a Python session can affect timing (~0.5s). First runs are slower due to CUDA kernel compilation.
-
-#### CRITICAL: Parameter Equivalence
-
-**GPyTorch `vargp_style` mode MUST mirror original varGP parameters exactly:**
+## Parameter Matching Table (PREVENTS BUGS)
 
 | Parameter | varGP | vargp_style | default_gpy |
 |-----------|-------|-------------|-------------|
@@ -467,447 +76,194 @@ The utility/acquisition functions in `utility.py` are NOT part of this porting e
 | F-step optimizer | LBFGS | LBFGS | Adam |
 | M-step optimizer | LBFGS | **Adam** | Adam |
 
-**Note**: All modes now use the same initial parameters from `default_params.json`.
+All modes load defaults from `default_params.json`.
 
-**Before modifying training code, ALWAYS verify parameters match between implementations.**
+---
 
-**Known gaps in `vargp_style` vs original varGP:**
-1. M-step uses Adam (not LBFGS with analytical gradients)
-2. No eigenspace projection (works in full M-dimensional space)
+## Variational Strategy and Whitening
 
-Performance: see `results/BENCHMARK_LOG.md`.
+**Two distinct concepts**:
 
-#### Key Implementation Details
+1. **standard_variational_distribution** (model.py):
+   - `True` (default): Use `VariationalStrategy` (whitened params)
+   - `False`: Use `UnwhitenedVariationalStrategy` (natural params)
+   - CLI: `--unwhitened-variational-dist`
 
-- `f_step_lbfgs()`: LBFGS with `logA` parameterization (matching varGP)
-- `m_step()`: Uses Adam (NOT matching varGP's LBFGS)
+2. **explicit_unwhitening** (train.py/estep.py):
+   - Controls L_K whitening conversions in E-step
+   - **REQUIRED** for `vargp_style` with standard distribution
+   - CLI: `--explicit-unwhitening` or `--no-explicit-unwhitening`
 
-#### Kernel Caching Optimization (January 2025)
-
-E-step now caches kernel matrices to avoid redundant computation. See Q25 in Decision Log.
-
-**New functions** (in `estep.py`):
-- `compute_kernel_cache()`: Compute K, K̃, k0 once
-- `compute_moments_from_kernel_cache()`: Compute moments without calling `model(X)`
-- `e_step_with_kernel_cache()`: Newton update using cached kernels
-
-**Performance**: E-step reduced from 8.8s to 1.0s (8.8x faster, now faster than original varGP).
-
-**Usage**: Enabled by default. Use `use_cache=False` or `--no-cache` to disable for testing.
-
-### 6.3 LBFGS M-step
-**Status**: DEFERRED (January 2025) - investigated, Adam works better
-
-**Investigation summary** (see `LBFGS_MSTEP_INVESTIGATION.md`):
-- LBFGS with autograd underperforms Adam (0.61 vs 0.83 explained variance)
-- Root cause: gradient scale imbalance (sigma_0 gradient ~1000x smaller than others)
-- LBFGS uses single step size, follows large gradients, ignores sigma_0
-- Grouped LBFGS experiment also failed (kernel becomes non-PD during line search)
-
-**Conclusion**: Adam's adaptive per-parameter learning rates handle the gradient imbalance naturally. Keep Adam for M-step unless analytical gradients are implemented.
-
-**Code preserved**: `m_step_lbfgs()` and `m_step_lbfgs_grouped()` in `estep.py` for future reference.
-
-### 6.4 Custom M-step Gradients
-**Status**: COMPLETE + INTEGRATED (January 2025) - see Implementation Stage 4b
-
-**Implementation**: Three gradient modes available via `gradient_mode` parameter:
-- `'autograd'`: PyTorch autograd (default)
-- `'vjp'`: VJP-based analytical (fast, same speed as autograd)
-- `'jacobian'`: Jacobian-based analytical (slow, matches original varGP)
-
-**Usage**:
-```python
-kernel = ArcCosineKernel(n_px_side=108, gradient_mode='vjp')
-```
-Or CLI: `python run_single_mode.py --gradient-mode vjp`
-
-**Reference formulas in**:
-- `latex_summaries/acosker_kernel_def_and_gradients.tex`
-- `kernels/kernels.py` (C_gradients_hyp, analytical dK/dX)
-- `.claude/ANALYTICAL_GRADIENTS_MATH.md`
-- `.claude/VJP_ANALYTICAL_GRADIENTS.md` (VJP-specific derivation)
-
-### 6.5 Eigenspace Projection (vargp_direct mode)
-**Status**: COMPLETE (January 2025)
-
-**Implementation**: New `vargp_direct` mode in `run_single_mode.py` uses eigenspace projection matching original varGP.
-
-**Files**: `eigenspace.py`, `direct_vargp.py`
-
-**Usage**:
+**CLI examples**:
 ```bash
-# Recommended: use --float32 for best performance
-python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --n-iterations 50 \
-    --n-estep 10 --n-fstep 10 --n-mstep 10 --seed 123
+# Standard distribution with explicit unwhitening (most common)
+python run_single_mode.py --mode vargp_style --explicit-unwhitening
 
-# With analytical M-step (requires --float32)
-python run_single_mode.py --mode vargp_direct --mstep-analytical --float32 --ntilde 50 \
-    --n-iterations 50 --seed 123
+# Unwhitened strategy
+python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
 ```
+
+---
+
+## Gradient Mode Selection
+
+Use `--gradient-mode MODE` in CLI:
+- `autograd` (default): PyTorch automatic differentiation
+- `vjp`: VJP analytical - same speed as autograd, explicit formulas
+- `jacobian`: Slow but matches original varGP exactly
+
+---
+
+## Training Modes
+
+| Mode | Description |
+|------|-------------|
+| `vargp_old` | Original varGP implementation (reference baseline) |
+| `default_gpy` | Standard GPyTorch variational inference |
+| `vargp_style` | Matches original varGP structure (LBFGS F-step, analytical lambda0) |
+| `vargp_direct` | Eigenspace projection matching varGP (use --float32) |
+
+---
+
+## File Map
+
+| File | Purpose |
+|------|---------|
+| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes |
+| `likelihoods.py` | PoissonLikelihood with A, lambda0 |
+| `model.py` | VariationalGPModel (whitened/unwhitened) |
+| `train.py` | Training loops + evaluation utilities |
+| `estep.py` | E-step with kernel caching (8.8x faster) |
+| `fstep.py` | F-step: LBFGS for A, analytical lambda0 |
+| `mstep.py` | M-step: Adam for kernel hyperparameters |
+| `whitening.py` | Natural <-> whitened param conversions |
+| `eigenspace.py` | Eigenspace projection utilities |
+| `direct_vargp.py` | vargp_direct mode implementation |
+| `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
+| `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
+| `default_params.json` | Centralized defaults for all modes |
+| `run_single_mode.py` | Main test script |
+| `run_canonical_tests.py` | 12-config benchmark matrix |
+| `query_benchmark.py` | Query benchmark results |
+
+**Test files** (in `tests/`):
+- `test_kernel_cache.py`, `test_m_whitening.py`, `test_mask_validation.py`
+- `test_reference_comparison.py`, `test_analytical_gradients.py`
+- `test_vargp_direct_match.py`, `test_mstep_analytical.py`
+
+---
+
+## Deferred Items (DO NOT IMPLEMENT UNLESS ASKED)
+
+### Utility Functions - OUT OF SCOPE
+`utility.py` functions are NOT part of this porting effort:
+- `nd_utility_new()`, `distribution_aware_utility_gpytorch()`, `conditioned_utility_clean()`
+
+### Custom E-step - DEFERRED
+vargp_style is stable. See `results/BENCHMARK_LOG.md` for performance comparison.
+
+### Multi-Cell Validation - DEFERRED
+Cell 8 validation sufficient for initial implementation.
+
+---
+
+## vargp_direct Mode
 
 **Key characteristics**:
 - Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
-- K̃_b is DIAGONAL in eigenspace (trivial inverse)
+- K_tilde_b is DIAGONAL (trivial inverse)
 - Matches vargp_old E-step formulas exactly
-- **IMPORTANT**: Use `--float32` for performance matching vargp_old
+- **IMPORTANT**: Use `--float32` for performance
 
-**Performance** (M=50, 50 iterations, seed=123):
-| Mode | Dtype | M-step | Total | Test r |
-|------|-------|--------|-------|--------|
-| vargp_old | float32 | 4.9s | 6.3s | 0.84 |
-| vargp_direct (autograd) | float64 | 17.4s | 18.9s | 0.81 |
-| vargp_direct (autograd) | **float32** | **4.6s** | **5.6s** | **0.84** |
-| vargp_direct (analytical) | float64 | 52.2s | 54.0s | 0.85 |
-| vargp_direct (analytical) | **float32** | **4.2s** | **5.2s** | **0.85** |
+**Usage**:
+```bash
+python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --n-iterations 50 --seed 123
+```
 
-**float64 is slow**: The float64 overhead dominates. Use `--float32` to match vargp_old performance.
+**Performance** (M=50, 50 iterations):
+| Mode | Dtype | Total Time | Test r |
+|------|-------|------------|--------|
+| vargp_old | float32 | 6.3s | 0.84 |
+| vargp_direct | float32 | 5.6s | 0.84 |
+| vargp_direct | float64 | 18.9s | 0.81 |
 
-**Analytical M-step (--mstep-analytical)**:
-- Implemented in `direct_vargp.py:mstep_lbfgs_analytical()`
-- Computes dK/dθ matrices explicitly (ports utils.py:acosker with grad=True)
-- **Works well with float32** (4.2s, matches vargp_old)
-- **BROKEN with float64** (52s, ~10x slower than expected)
-- Root cause: Implementation is correct but not optimized for float64 matrix operations
-- **Recommendation**: Always use `--float32` with `--mstep-analytical`
-
-**Bug fix (January 2025, commit fa817dc)**:
-- **Problem**: M-step closure used stale eigenvalues from E-step while computing fresh K_tilde_b
-- **Symptom**: Some cells (6, 15) completely failed (r≈0 vs expected r≈0.6)
-- **Fix**: Use `torch.linalg.solve(K_tilde_b, eye)` for K_tilde_inv_b (matching vargp_old), not stale eigenvalues
-
-**Full Reference**: See `.claude/VARGP_DIRECT_REFERENCE.md` for comprehensive implementation guide including:
-- Detailed training loop explanation
-- Component documentation (eigenspace, E-step, F-step, M-step)
-- Important caveats and things to watch for
-- Resolved bugs and lessons learned
-- Unit test reference
-- Code-to-math mapping
-
-### 6.6 Pixel Masking
-**Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.
-
-**Result**: C reduced from 11664×11664 to ~2480×2480 (~20x memory reduction).
-
-### 6.7 Multi-Cell Validation (Test D)
-**Reason for deferral**: Cell 8 validation sufficient for initial implementation.
-
-**Plan**: Run on cells 0, 4, 8, 12 to verify robustness across different neurons.
-
-**Success criteria**: All cells achieve r > 0.3, no NaN/crashes.
+See `VARGP_DIRECT_REFERENCE.md` for full implementation details.
 
 ---
 
-## 7. Key Files Reference
+## Reference Code
 
-### Source LaTeX Documents
-| File | Content |
-|------|---------|
-| `~/IDV_code/Papers/latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation (E-step Newton, M-step) |
-| `~/IDV_code/Papers/latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math |
-| `~/IDV_code/Papers/latex_summaries/distribution_aware_utility_pietro.tex` | Utility functions (OUT OF SCOPE) |
+### Original varGP (utils.py)
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `varGP()` | utils.py:5291 | Main training function |
+| `Estep()` | utils.py:4215 | Newton update for (m, V) |
+| `localker()` | utils.py | Compute C matrix |
+| `acosker()` | utils.py | Arc-cosine kernel |
+| `lambda_moments()` | utils.py | Posterior mean/var |
 
-### Existing Code to Reference
-| File | Content |
-|------|---------|
-| `utils.py` | varGP(), Estep(), acosker(), localker() |
-| `kernels/kernels.py` | Clean kernel implementations with autograd |
-| `scripts/one_cell_fit.py` | Test script with PNAS data |
-| `scripts/1D_playground/gp_utility_playground.py` | GPyTorch example with Poisson likelihood |
-
-### Data
-| File | Content |
-|------|---------|
-| `notebooks/PNAS_paper_sorted_data.npz` | Test dataset (images + neural responses) |
-
-### GPyTorch Porting Files (this project)
-| File | Content |
-|------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure, masking, Amp param, `gradient_mode` selection |
-| `likelihoods.py` | PoissonLikelihood with A, λ₀ |
-| `model.py` | VariationalGPModel (supports whitened/unwhitened strategies) |
-| `train.py` | Training loops (`train_gpy_default`, `train_varGP_style`) + evaluation utilities |
-| `estep.py` | Modular E-step: `_estep_single()`, `e_step_loop()`, kernel caching |
-| `fstep.py` | F-step: LBFGS for A, analytical λ₀ |
-| `mstep.py` | M-step: Adam optimizer for kernel hyperparameters |
-| `whitening.py` | Whitening conversion functions (natural ↔ whitened params) |
-| `default_params.json` | **Centralized defaults** - all modes load parameters from here |
-| `analytical_gradients.py` | Jacobian-based analytical gradients (slow, reference) |
-| `analytical_gradients_vjp.py` | VJP-based analytical gradients (fast, same speed as autograd) |
-| `.claude/VJP_ANALYTICAL_GRADIENTS.md` | Mathematical derivation for VJP approach |
-| `run_single_mode.py` | **Main test script** - all training modes, `--json-append` for benchmark tracking |
-| `run_canonical_tests.py` | **Canonical benchmark runner** - 12-config matrix per seed, outputs to JSONL |
-| `query_benchmark.py` | **Query tool** - filter/compare benchmark results from JSONL |
-| `archive/test_stage1_cI.py` | Stage 1 (C=I) testing with Adam (archived, superseded) |
-| `investigations/test_whitening_paths.py` | Whitening path validation (debug script) |
-| `tests/test_kernel_cache.py` | Kernel caching validation |
-| `tests/test_m_whitening.py` | Whitening conversion unit tests |
-| `tests/test_mask_validation.py` | Pixel masking validation |
-| `tests/test_reference_comparison.py` | GPyTorch vs varGP comparison |
-| `tests/test_analytical_gradients.py` | Analytical gradient validation |
-| `results/benchmark_results.jsonl` | **Primary benchmark output** - machine-readable, append-only |
-| `results/BENCHMARK_LOG.md` | Legacy performance tracking (frozen, historical only) |
-| `results/PROFILING_2026-01-18.md` | E-step profiling results (kernel caching optimization) |
-| `.claude/archive/ARCHIVE_2026-01-18_kernel_caching_and_whitening.md` | Kernel caching implementation details and whitening analysis (historical) |
-
----
-
-## 8. Codebase Structure
-
+### Codebase Structure
 ```
 Spatial_GP_repo/
-├── utils.py                 (301 KB) - Main GP: varGP(), Estep(), acosker(), localker()
-├── utility.py               (290 KB) - Active learning (OUT OF SCOPE)
-├── model.py                 - Backward compat shim for GPModel
-│
-├── GP_model/
-│   └── model.py             - GPModel class (structured model storage)
-│
-├── kernels/
-│   ├── kernels.py           (15.9 KB) - Clean kernel implementations
-│   │   ├── localker_clean() - Locality/RF covariance C
-│   │   ├── acosker_clean()  - Arc-cosine kernel (the one we're porting)
-│   │   └── acosker_with_grad() - Autograd wrapper
-│   └── __init__.py
-│
-├── notebooks/
-│   ├── one_cell_fit.ipynb   - Basic GP fitting workflow (REFERENCE)
-│   └── PNAS_paper_sorted_data.npz - Dataset
-│
-├── scripts/
-│   ├── one_cell_fit.py      - Standalone fitting script (REFERENCE)
-│   ├── 1D_playground/
-│   │   └── gp_utility_playground.py - GPyTorch example (REFERENCE)
-│   └── gpytorch_porting/    - THIS PROJECT
-│       ├── .claude/CLAUDE.md - This file
-│       └── (new files to create)
-│
-└── tests/
-    └── test_acosker_clean.py - Kernel unit tests
-```
-
-**Key insight**: 90% of the GP logic is in `utils.py:varGP()`. The kernels are in `kernels/kernels.py`.
-
----
-
-## 9. Data Format
-
-**File**: `notebooks/PNAS_paper_sorted_data.npz`
-
-| Key | Shape | Dtype | Range | Description |
-|-----|-------|-------|-------|-------------|
-| `images_train` | (2910, 108, 108, 1) | float32 | [-2.4, 2.5] | Training images (normalized) |
-| `images_val` | (250, 108, 108, 1) | float32 | [-2.4, 2.5] | Validation images |
-| `images_test` | (30, 108, 108, 1) | float32 | [-2.4, 2.5] | Test images |
-| `responses_train` | (2910, 41) | float64 | [0, ~25] | Spike counts (41 neurons) |
-| `responses_val` | (250, 41) | float64 | [0, ~26] | Validation responses |
-| `responses_test` | **(30, 30, 41)** | float64 | [0, ~27] | **30 repeats × 30 images × 41 neurons** |
-
-**Important notes**:
-- Images are already normalized (mean ~0, std ~1)
-- Responses are non-negative spike counts
-- Test set has 30 repetitions per image for reliability estimates
-- We fit **one neuron at a time** (cellid selects which)
-
----
-
-## 10. Preprocessing Steps
-
-From `scripts/one_cell_fit.py`:
-
-```python
-# 1. Load data
-data = np.load('notebooks/PNAS_paper_sorted_data.npz')
-X_train = torch.tensor(data['images_train'], dtype=torch.float32, device=device)
-R_train = torch.tensor(data['responses_train'], dtype=torch.float32, device=device)
-
-# 2. Flatten images: (n_samples, 108, 108, 1) → (n_samples, 11664)
-X_train = X_train.reshape(X_train.shape[0], -1)  # (2910, 11664)
-
-# 3. Select single neuron
-cellid = 0
-r = R_train[:, cellid]  # (2910,)
-
-# 4. Select inducing points (random subset)
-ntilde = 100  # or up to 2100
-indices = torch.randperm(X_train.shape[0])[:ntilde]
-xtilde = X_train[indices]  # (ntilde, 11664)
-
-# 5. Initialize hyperparameters
-theta = {
-    'sigma_0': torch.tensor(1.0),
-    'Amp': torch.tensor(1.0),
-    'eps_0x': torch.tensor(0.0),
-    'eps_0y': torch.tensor(0.0),
-    '-2log2beta': torch.tensor(-2 * np.log(2 * 0.1)),  # beta=0.1
-    '-log2rho2': torch.tensor(-np.log(2 * 0.1**2)),    # rho=0.1
-}
-
-# 6. Initialize firing rate parameters
-f_params = {
-    'logA': torch.log(torch.tensor(0.01)),  # A = 0.01
-    'lambda0': torch.tensor(1.0),
-}
+├── utils.py           - Main GP: varGP(), Estep(), acosker()
+├── utility.py         - Active learning (OUT OF SCOPE)
+├── kernels/kernels.py - Clean kernel implementations
+├── notebooks/PNAS_paper_sorted_data.npz - Dataset
+└── scripts/gpytorch_porting/  - THIS PROJECT
 ```
 
 ---
 
-## 11. Working GPyTorch Patterns
+## Authoritative Sources (Single Source of Truth)
 
-From `scripts/1D_playground/gp_utility_playground.py`:
+| If you need... | The authoritative doc is... |
+|----------------|----------------------------|
+| Status, rules, parameter tables | THIS FILE (CLAUDE.md) |
+| Math formulas | MATH_REFERENCE.md |
+| "Why was X designed this way?" | DECISION_LOG.md |
+| Performance numbers | results/BENCHMARK_LOG.md |
+| How to work on this project | WORKING_GUIDELINES.md |
+| vargp_direct implementation | VARGP_DIRECT_REFERENCE.md |
+| Analytical gradients | ANALYTICAL_GRADIENTS_REFERENCE.md |
+| GPyTorch code patterns | PATTERNS_REFERENCE.md |
+| Data format/preprocessing | DATA_REFERENCE.md |
 
-### 11.1 Poisson Likelihood
-
-```python
-class PoissonLikelihood(gpytorch.likelihoods.Likelihood):
-    """Poisson likelihood with log-link: r ~ Poisson(exp(f))
-
-    For our model: f = A·λ + λ₀, so rate = exp(A·λ + λ₀)
-
-    Expected log-likelihood under q(λ) = N(μ, σ²):
-        E[r·f - exp(f)] = r·(A·μ + λ₀) - exp(A·μ + A²σ²/2 + λ₀)
-    """
-
-    def __init__(self, A_init=1.0, lambda0_init=0.0):
-        super().__init__()
-        # Learnable parameters
-        self.register_parameter('raw_A', torch.nn.Parameter(torch.tensor(A_init)))
-        self.register_parameter('lambda0', torch.nn.Parameter(torch.tensor(lambda0_init)))
-
-    @property
-    def A(self):
-        # A = exp(raw_A), where raw_A = logA (matching varGP)
-        return self.raw_A_constraint.transform(self.raw_A)
-
-    def expected_log_prob(self, target, input):
-        """
-        Args:
-            target: Observed spike counts (n_samples,)
-            input: GP output MultivariateNormal with mean, variance
-        Returns:
-            Expected log probability (summed over samples)
-        """
-        mu = input.mean      # (n_samples,)
-        var = input.variance # (n_samples,)
-        A = self.A
-        lambda0 = self.lambda0
-
-        # E[r·(A·λ + λ₀) - exp(A·λ + λ₀)]
-        # = r·(A·μ + λ₀) - exp(A·μ + A²·σ²/2 + λ₀)
-        log_prob = target * (A * mu + lambda0) - torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
-        return log_prob.sum(-1)
-
-    def forward(self, function_samples):
-        """For sampling: return Poisson distribution given function samples."""
-        A = self.A
-        lambda0 = self.lambda0
-        rate = torch.exp(A * function_samples + lambda0)
-        return torch.distributions.Poisson(rate=rate)
-```
-
-### 11.2 Variational GP Model
-
-```python
-class VariationalGPModel(gpytorch.models.ApproximateGP):
-    def __init__(self, inducing_points, kernel):
-        # Variational distribution q(u) = N(m, LLᵀ)
-        variational_distribution = gpytorch.variational.CholeskyVariationalDistribution(
-            inducing_points.size(0)
-        )
-        # Strategy for computing q(f) from q(u)
-        variational_strategy = gpytorch.variational.VariationalStrategy(
-            self,
-            inducing_points,
-            variational_distribution,
-            learn_inducing_locations=False  # Keep inducing points fixed
-        )
-        super().__init__(variational_strategy)
-
-        self.mean_module = gpytorch.means.ZeroMean()
-        self.covar_module = kernel
-
-    def forward(self, x):
-        mean = self.mean_module(x)
-        covar = self.covar_module(x)
-        return gpytorch.distributions.MultivariateNormal(mean, covar)
-```
-
-### 11.3 Training Loop
-
-```python
-def train_gpy_default(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
-    model.train()
-
-    # Optimize both model and likelihood parameters
-    optimizer = torch.optim.Adam([
-        {'params': model.parameters()},
-        {'params': likelihood.parameters()}
-    ], lr=lr)
-
-    with torch.enable_grad():  # Important: utility.py disables grad globally
-        for i in range(n_iterations):
-            optimizer.zero_grad()
-
-            # Forward pass
-            output = model(train_x)
-
-            # ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
-            expected_log_lik = likelihood.expected_log_prob(train_y, output)
-            kl_div = model.variational_strategy.kl_divergence()
-
-            # Minimize negative ELBO
-            loss = -expected_log_lik + kl_div
-
-            loss.backward()
-            optimizer.step()
-
-            if (i + 1) % 100 == 0:
-                print(f"Iter {i+1}/{n_iterations}, Loss: {loss.item():.2f}")
-
-    return model, likelihood
-```
-
-### 11.4 Prediction
-
-```python
-def predict(model, likelihood, test_x):
-    model.eval()
-    with torch.no_grad():
-        # Get posterior q(λ*) at test points
-        posterior = model(test_x)
-        mu = posterior.mean
-        var = posterior.variance
-
-        # Predicted firing rate: E[exp(A·λ + λ₀)] = exp(A·μ + A²σ²/2 + λ₀)
-        A = likelihood.A
-        lambda0 = likelihood.lambda0
-        f_pred = torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
-
-    return f_pred, mu, var
-```
+**DO NOT trust outdated information in other files if it conflicts with the authoritative source.**
 
 ---
 
-## Appendix B: Mathematical Notation Reference
+## When to Read Other Docs
 
-| Symbol | Meaning | Shape |
-|--------|---------|-------|
-| x | Input stimulus (image) | (n_pixels,) |
-| r | Observed spike count | scalar |
-| λ(x) | Latent GP function value | scalar |
-| f(x) | Firing rate = exp(A·λ + λ₀) | scalar |
-| K̃ | Inducing point kernel matrix | (M, M) |
-| K | Cross-kernel (data to inducing) | (N, M) |
-| m | Variational mean | (M,) |
-| V | Variational covariance | (M, M) |
-| C | Structured covariance (RF) | (n_px, n_px) |
-| A | Gain parameter | scalar |
-| λ₀ | Bias parameter | scalar |
-| β | RF size parameter | scalar |
-| ρ | Smoothness parameter | scalar |
-| ξ₀ | RF center (eps_0x, eps_0y) | (2,) |
-| σ₀ | Kernel bias variance | scalar |
+| If you're working on... | READ THIS FIRST |
+|-------------------------|-----------------|
+| Math formulas, E-step derivations | MATH_REFERENCE.md |
+| Design rationale (Q1-Q25) | DECISION_LOG.md |
+| vargp_direct mode | VARGP_DIRECT_REFERENCE.md |
+| Analytical kernel gradients | ANALYTICAL_GRADIENTS_REFERENCE.md |
+| GPyTorch patterns | PATTERNS_REFERENCE.md |
+| Data loading/preprocessing | DATA_REFERENCE.md |
 
 ---
 
-*Last updated: January 2025 (Documentation sync: Amp param, mode renames adam→default_gpy, default_params.json, removed run_benchmark.py)*
+## Session Wrap-up (MUST FOLLOW)
+
+When user says "wrap up", "done for now", or "session end":
+
+1. Summarize what was accomplished (3-5 bullets)
+2. List uncommitted changes (if any)
+3. Update CLAUDE.md Quick Start if status changed
+4. **CRITICAL**: If any conflicting information was found between docs during this session, RAISE IT TO THE USER immediately
+5. Add brief entry to SESSION_LOG.md
+
+---
+
+## Conflict Detection Rule
+
+During session wrap-up, Claude MUST check for conflicting information between docs:
+- If conflict found: RAISE IT TO THE USER immediately, do not silently resolve
+- User decides which version is correct, then authoritative doc is updated
+
+---
+
+*Last updated: January 2025*
+*Reorganized from 913 lines to ~400 lines, moved historical content to reference docs*

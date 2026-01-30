@@ -117,7 +117,20 @@ For specific file reads or known patterns, use direct tools (Read, Grep, Glob).
 
 When exploring math-related code, also read `MATH_REFERENCE.md` for context.
 
-### 3.10 Benchmark System (JSONL-based)
+### 3.10 Read Linked Docs Before Modifying
+
+**IMPORTANT**: Before modifying code in a specific area, read the authoritative doc for that area:
+
+| If modifying... | Read FIRST |
+|-----------------|------------|
+| Math/formulas | MATH_REFERENCE.md |
+| vargp_direct mode | VARGP_DIRECT_REFERENCE.md |
+| Analytical gradients | ANALYTICAL_GRADIENTS_REFERENCE.md |
+| Design decisions | DECISION_LOG.md |
+
+See CLAUDE.md "When to Read Other Docs" table for the full mapping.
+
+### 3.11 Benchmark System (JSONL-based)
 
 **Primary output**: `results/benchmark_results.jsonl` (machine-readable, append-only)
 **Legacy (frozen)**: `results/BENCHMARK_LOG.md` (historical, do not update)
@@ -147,7 +160,7 @@ python query_benchmark.py --compare-seeds 123 456
 | Comparing implementations | Checking if code runs |
 | Results that inform decisions | Exploratory iterations |
 
-### 3.11 Canonical Test Matrix
+### 3.12 Canonical Test Matrix
 
 Standard configurations for regression testing (12 per seed):
 
@@ -168,7 +181,7 @@ Standard configurations for regression testing (12 per seed):
 
 For exploratory work, use `--json-append results/exploratory.jsonl` instead.
 
-### 3.12 Bug Investigation Cleanup
+### 3.13 Bug Investigation Cleanup
 
 Sessions dedicated to codebase exploration or bug investigation require TIDYNESS;
 - Use a dedicated folder with explicit name in the gpytorch_porting/investigations path.

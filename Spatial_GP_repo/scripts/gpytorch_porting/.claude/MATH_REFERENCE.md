@@ -192,8 +192,55 @@ This avoids explicit K̃⁻¹ computation - uses element-wise division with diag
 
 ---
 
-## Related Math Documentation
+## 2. E-Step Formula Analysis
 
-- `ANALYTICAL_GRADIENTS_MATH.md` - Kernel gradient formulas (∂K/∂θ)
-- `VJP_ANALYTICAL_GRADIENTS.md` - Fast VJP approach for gradients
-- `ESTEP_MATH_ANALYSIS.md` - E-step formula analysis
+### 2.1 Correct Formulas (Rigorous Derivation)
+
+**V Update** (closed form from gradient = 0):
+```
+V = K̃(K̃ + G)⁻¹K̃
+```
+
+**m Update** (Newton: m_new = m - H⁻¹∇L):
+```
+m_new = m + K̃(K̃ + G)⁻¹(g - m)
+```
+
+### 2.2 Code Implementation vs Correct Formulas
+
+| Formula | Correct | Code | Status |
+|---------|---------|------|--------|
+| **V** | K̃(K̃+G)⁻¹K̃ | K̃(K̃+G)⁻¹K̃ | **CORRECT** |
+| **m** | m + K̃(K̃+G)⁻¹(g-m) | K̃(K̃+G)⁻¹(GK̃⁻¹m+g) | Has discrepancy |
+
+The code uses transformed g and G (pre-multiplied by K̃⁻¹), which changes the m formula. The discrepancy is:
+```
+m_code - m_correct = [K̃(K̃+G)⁻¹G K̃⁻¹ - G(K̃+G)⁻¹]m
+```
+
+### 2.3 Why Code Works Despite m Discrepancy
+
+1. In eigenspace where K̃_b = Λ (diagonal), non-commutativity error is reduced
+2. V is correct, which is crucial for variance estimates
+3. Iterative convergence: multiple E-steps may still converge to good solution
+4. Code symmetrizes V after each update
+
+### 2.4 Implementation Guidelines
+
+**Option 1 (direct):**
+```python
+V_new = K_tilde @ solve(K_tilde + G, K_tilde)
+m_new = m + K_tilde @ solve(K_tilde + G, g - m)
+```
+
+**In eigenspace:**
+```
+V_b = Λ(Λ + G_b)⁻¹Λ
+m_b = m_b + Λ(Λ + G_b)⁻¹(g_b - m_b)
+```
+
+---
+
+## Related Documentation
+
+- `ANALYTICAL_GRADIENTS_REFERENCE.md` - Kernel gradient formulas and VJP implementation
