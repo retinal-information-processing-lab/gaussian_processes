@@ -571,7 +571,18 @@ python run_single_mode.py --mode vargp_direct --mstep-analytical --float32 --nti
 - Root cause: Implementation is correct but not optimized for float64 matrix operations
 - **Recommendation**: Always use `--float32` with `--mstep-analytical`
 
-**See**: `.claude/VARGP_COPY_CONTEXT.md` for full details and `.claude/MSTEP_ANALYTICAL_HANDOFF.md` for gradient formulas.
+**Bug fix (January 2025, commit fa817dc)**:
+- **Problem**: M-step closure used stale eigenvalues from E-step while computing fresh K_tilde_b
+- **Symptom**: Some cells (6, 15) completely failed (r≈0 vs expected r≈0.6)
+- **Fix**: Use `torch.linalg.solve(K_tilde_b, eye)` for K_tilde_inv_b (matching vargp_old), not stale eigenvalues
+
+**Full Reference**: See `.claude/VARGP_DIRECT_REFERENCE.md` for comprehensive implementation guide including:
+- Detailed training loop explanation
+- Component documentation (eigenspace, E-step, F-step, M-step)
+- Important caveats and things to watch for
+- Resolved bugs and lessons learned
+- Unit test reference
+- Code-to-math mapping
 
 ### 6.6 Pixel Masking
 **Status**: COMPLETE (January 2025). See Q22 for design choices and implementation details.
