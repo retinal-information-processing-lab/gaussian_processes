@@ -436,7 +436,8 @@ def test_loss_gradients(verbose=False):
     likelihood = likelihood.double().to(device)
 
     try:
-        from direct_vargp import compute_loss_gradients, DirectVariationalState
+        from direct_vargp import compute_loss_gradients
+        from eigenspace_model import DirectVariationalState
     except ImportError:
         print("SKIP: Functions not implemented yet")
         return None
@@ -454,9 +455,9 @@ def test_training_equivalence(verbose=False):
     print("\n=== Test 6: training equivalence ===")
 
     try:
-        from direct_vargp import mstep_lbfgs_analytical
+        from mstep import mstep_eigenspace_analytical
     except ImportError:
-        print("SKIP: mstep_lbfgs_analytical not implemented yet")
+        print("SKIP: mstep_eigenspace_analytical not implemented yet")
         return None
 
     # TODO: Compare training with analytical vs autograd M-step
@@ -472,9 +473,9 @@ def test_numerical_stability(verbose=False):
     print("\n=== Test 7: numerical stability ===")
 
     try:
-        from direct_vargp import mstep_lbfgs_analytical
+        from mstep import mstep_eigenspace_analytical
     except ImportError:
-        print("SKIP: mstep_lbfgs_analytical not implemented yet")
+        print("SKIP: mstep_eigenspace_analytical not implemented yet")
         return None
 
     # TODO: Run training and check for NaN/Inf in all gradients
@@ -490,7 +491,7 @@ def test_performance(verbose=False):
     print("\n=== Test 8: performance ===")
 
     try:
-        from direct_vargp import mstep_lbfgs_analytical, mstep_lbfgs_autograd
+        from mstep import mstep_eigenspace_analytical, mstep_eigenspace_autograd
     except ImportError:
         print("SKIP: Functions not implemented yet")
         return None

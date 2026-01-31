@@ -1,0 +1,479 @@
+"""
+Eigenspace-based Variational GP Model
+
+This module contains all state management and model classes for the eigenspace
+(vargp_direct) training mode. It provides a clean GPyTorch-like interface while
+using eigenspace projection for computational efficiency.
+
+Contents:
+- DirectVariationalState: State container for eigenspace quantities
+- compute_kernels_eigenspace(): Initialize eigenspace state
+- recompute_kernels_after_mstep(): Reproject after M-step
+- lambda_moments_eigenspace(): Compute posterior moments
+- EigenspacePosterior: Posterior at query points
+- EigenspaceVariationalDistribution: Variational params interface
+- DirectVGPModel: GPyTorch-like model interface
+
+Usage:
+    model = DirectVGPModel(kernel, likelihood, X, X_tilde, eigval_tol)
+
+    # Get posterior at points
+    posterior = model(X)
+    f_mean = model.likelihood.expected_firing_rate(posterior)
+
+    # Access variational params
+    model.variational_distribution.mean  # Full M-space
+    model.state.m_b  # Eigenspace (for E-step)
+
+    # After M-step, recompute eigenkernel
+    model.recompute_eigenkernel()
+"""
+
+from dataclasses import dataclass
+from typing import Tuple, Optional
+
+import torch
+
+from eigenspace import (
+    EIGVAL_TOL,
+    compute_eigenspace,
+    project_to_eigenspace,
+    reproject_variational_params,
+    compute_KKtilde_inv_b,
+    compute_K_tilde_b_diagonal,
+)
+
+
+# ==============================================================================
+# State Container
+# ==============================================================================
+
+@dataclass
+class DirectVariationalState:
+    """State container for direct variational GP.
+
+    Stores all quantities needed for E-step, F-step, M-step in eigenspace.
+
+    Attributes:
+        m_b: Variational mean in eigenspace, shape (n_b,)
+        V_b: Variational covariance in eigenspace, shape (n_b, n_b) - NOT diagonal!
+        B: Eigenvector matrix, shape (M, n_b)
+        eigvals_b: Kept eigenvalues, shape (n_b,)
+        K_tilde_b: Inducing kernel in eigenspace - DIAGONAL, shape (n_b, n_b)
+        K_b: Cross-kernel in eigenspace, shape (N, n_b)
+        KKtilde_inv_b: K @ K_tilde_inv in eigenspace, shape (N, n_b)
+        Kvec: Diagonal k(x_i, x_i), shape (N,)
+        mask: Pixel mask from kernel (if use_mask=True), shape (n_pixels,) or None
+    """
+    m_b: torch.Tensor
+    V_b: torch.Tensor
+    B: torch.Tensor
+    eigvals_b: torch.Tensor
+    K_tilde_b: torch.Tensor
+    K_b: torch.Tensor
+    KKtilde_inv_b: torch.Tensor
+    Kvec: torch.Tensor
+    mask: Optional[torch.Tensor] = None
+
+
+# ==============================================================================
+# State Initialization and Reprojection
+# ==============================================================================
+
+def compute_kernels_eigenspace(
+    kernel,
+    X: torch.Tensor,
+    X_tilde: torch.Tensor,
+    eigval_tol: float = EIGVAL_TOL
+) -> DirectVariationalState:
+    """Compute initial kernel matrices with eigenspace projection.
+
+    Creates the DirectVariationalState with all quantities needed for training.
+    Initializes m_b = 0 and V_b = K_tilde_b (prior).
+
+    Args:
+        kernel: ArcCosineKernel instance (used as standalone calculator)
+        X: Training inputs, shape (N, n_features)
+        X_tilde: Inducing points, shape (M, n_features)
+        eigval_tol: Eigenvalue threshold for projection
+
+    Returns:
+        DirectVariationalState with initialized quantities
+    """
+    # Compute kernel matrices using GPyTorch kernel
+    # kernel(X1, X2).evaluate() returns the kernel matrix
+    with torch.no_grad():
+        K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
+        K = kernel(X, X_tilde).evaluate()  # (N, M)
+        Kvec = kernel(X, diag=True)  # (N,)
+
+    # Get mask if kernel uses masking
+    mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
+
+    # Eigenspace projection
+    B, eigvals_b, _ = compute_eigenspace(K_tilde, eigval_tol)
+    n_b = len(eigvals_b)
+
+    # Project K to eigenspace
+    _, _, K_b = project_to_eigenspace(B, K=K)
+
+    # K_tilde_b is diagonal in eigenspace
+    K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
+
+    # Efficient K @ K_tilde_inv computation
+    KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)
+
+    # Initialize variational parameters at prior
+    m_b = torch.zeros(n_b, dtype=X.dtype, device=X.device)
+    V_b = K_tilde_b.clone()  # Prior: V = K_tilde
+
+    return DirectVariationalState(
+        m_b=m_b,
+        V_b=V_b,
+        B=B,
+        eigvals_b=eigvals_b,
+        K_tilde_b=K_tilde_b,
+        K_b=K_b,
+        KKtilde_inv_b=KKtilde_inv_b,
+        Kvec=Kvec,
+        mask=mask,
+    )
+
+
+def recompute_kernels_after_mstep(
+    kernel,
+    X: torch.Tensor,
+    X_tilde: torch.Tensor,
+    state: DirectVariationalState,
+    eigval_tol: float = EIGVAL_TOL
+) -> DirectVariationalState:
+    """Recompute kernels after M-step changes hyperparameters.
+
+    When M-step modifies kernel hyperparameters, K_tilde changes, so the
+    eigenspace changes. We recompute all kernel quantities and reproject
+    m_b, V_b to the new eigenspace.
+
+    Reference: utils.py lines 5593-5627
+
+    Args:
+        kernel: ArcCosineKernel instance (with updated hyperparameters)
+        X: Training inputs, shape (N, n_features)
+        X_tilde: Inducing points, shape (M, n_features)
+        state: Current state with old eigenspace
+        eigval_tol: Eigenvalue threshold for projection
+
+    Returns:
+        New DirectVariationalState with reprojected quantities
+    """
+    B_old = state.B
+    m_b_old = state.m_b
+    V_b_old = state.V_b
+
+    # Recompute kernel matrices
+    with torch.no_grad():
+        K_tilde = kernel(X_tilde, X_tilde).evaluate()
+        K = kernel(X, X_tilde).evaluate()
+        Kvec = kernel(X, diag=True)
+
+    mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
+
+    # New eigenspace
+    B_new, eigvals_b, _ = compute_eigenspace(K_tilde, eigval_tol)
+
+    # Project K to new eigenspace
+    _, _, K_b = project_to_eigenspace(B_new, K=K)
+
+    # K_tilde_b diagonal in new eigenspace
+    K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
+
+    # Efficient K @ K_tilde_inv
+    KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)
+
+    # Reproject variational parameters to new eigenspace
+    m_b_new, V_b_new = reproject_variational_params(B_old, B_new, m_b_old, V_b_old)
+
+    return DirectVariationalState(
+        m_b=m_b_new,
+        V_b=V_b_new,
+        B=B_new,
+        eigvals_b=eigvals_b,
+        K_tilde_b=K_tilde_b,
+        K_b=K_b,
+        KKtilde_inv_b=KKtilde_inv_b,
+        Kvec=Kvec,
+        mask=mask,
+    )
+
+
+# ==============================================================================
+# Posterior Moment Computation
+# ==============================================================================
+
+def lambda_moments_eigenspace(state: DirectVariationalState) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute GP posterior moments using eigenspace quantities.
+
+    Computes:
+        lambda_m = K @ K_tilde_inv @ m = KKtilde_inv_b @ m_b
+        lambda_var = Kvec + diag(a @ (V_b - K_tilde_b) @ a.T)
+                   = Kvec + sum(a * (a @ (V_b - K_tilde_b)), dim=1)
+
+    where a = KKtilde_inv_b.
+
+    Reference: utils.py:lambda_moments()
+
+    Args:
+        state: DirectVariationalState with current quantities
+
+    Returns:
+        lambda_m: Posterior mean at training points, shape (N,)
+        lambda_var: Posterior variance at training points, shape (N,)
+    """
+    a = state.KKtilde_inv_b  # (N, n_b)
+
+    # Mean: lambda_m = a @ m_b
+    lambda_m = a @ state.m_b  # (N,)
+
+    # Variance: lambda_var = Kvec + diag(a @ (V - K) @ a.T)
+    V_minus_K = state.V_b - state.K_tilde_b  # (n_b, n_b)
+    aV = a @ V_minus_K  # (N, n_b)
+    lambda_var = state.Kvec + (a * aV).sum(dim=1)  # (N,)
+
+    # Clamp for numerical stability
+    lambda_var = torch.clamp(lambda_var, min=1e-6)
+
+    return lambda_m, lambda_var
+
+
+# ==============================================================================
+# GPyTorch-like Model Classes
+# ==============================================================================
+
+class EigenspacePosterior:
+    """Posterior distribution at query points. Returned by DirectVGPModel(X).
+
+    Provides GPyTorch-like .mean and .variance properties.
+
+    This class computes posterior moments on construction using the same
+    formulas as lambda_moments_eigenspace() and predict_eigenspace().
+    """
+
+    def __init__(
+        self,
+        kernel,
+        state: DirectVariationalState,
+        X_query: torch.Tensor,
+        X_tilde: torch.Tensor,
+        is_training_data: bool = False
+    ):
+        """
+        Args:
+            kernel: ArcCosineKernel instance
+            state: DirectVariationalState with eigenspace params
+            X_query: (N_query, n_features) - points to evaluate posterior at
+            X_tilde: (M, n_features) - inducing points
+            is_training_data: If True, use precomputed KKtilde_inv_b from state
+                (avoids recomputing kernel matrices for training points)
+        """
+        self._kernel = kernel
+        self._state = state
+        self._X_query = X_query
+        self._X_tilde = X_tilde
+        self._is_training_data = is_training_data
+
+        # Compute moments ONCE on construction
+        self._mean, self._variance = self._compute_moments()
+
+    def _compute_moments(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute posterior moments at query points.
+
+        For training points (is_training_data=True): uses precomputed
+        state.KKtilde_inv_b for efficiency and exact equivalence with
+        lambda_moments_eigenspace().
+
+        For test points: computes cross-kernel and projects to eigenspace,
+        matching predict_eigenspace() exactly.
+        """
+        if self._is_training_data:
+            # Use lambda_moments_eigenspace for exact equivalence
+            return lambda_moments_eigenspace(self._state)
+
+        # Test points: compute fresh
+        with torch.no_grad():
+            # Cross-kernel to inducing points
+            K_query = self._kernel(self._X_query, self._X_tilde).evaluate()  # (N_query, M)
+            Kvec_query = self._kernel(self._X_query, diag=True)  # (N_query,)
+
+            # Project to eigenspace
+            K_query_b = K_query @ self._state.B  # (N_query, n_b)
+
+            # a = K @ K_tilde_inv (element-wise because K_tilde_b is diagonal)
+            a = K_query_b / self._state.eigvals_b.unsqueeze(0)  # (N_query, n_b)
+
+            # Posterior mean
+            lambda_m = a @ self._state.m_b  # (N_query,)
+
+            # Posterior variance
+            V_minus_K = self._state.V_b - self._state.K_tilde_b
+            aV = a @ V_minus_K  # (N_query, n_b)
+            lambda_var = Kvec_query + (a * aV).sum(dim=1)  # (N_query,)
+            lambda_var = torch.clamp(lambda_var, min=1e-6)  # Numerical stability
+
+        return lambda_m, lambda_var
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Posterior mean lambda_m at query points. Shape (N_query,)."""
+        return self._mean
+
+    @property
+    def variance(self) -> torch.Tensor:
+        """Posterior variance lambda_var at query points. Shape (N_query,)."""
+        return self._variance
+
+
+class EigenspaceVariationalDistribution:
+    """Variational distribution q(u) interface.
+
+    Provides access to variational parameters in both full M-space
+    and reduced n_b eigenspace.
+    """
+
+    def __init__(self, state: DirectVariationalState):
+        self._state = state
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Variational mean in full M-dimensional space: B @ m_b.
+
+        Shape (M,).
+        """
+        return self._state.B @ self._state.m_b
+
+    @property
+    def mean_eigenspace(self) -> torch.Tensor:
+        """Variational mean in eigenspace (direct access).
+
+        Shape (n_b,). Returns same object as state.m_b.
+        """
+        return self._state.m_b
+
+    @property
+    def covariance_eigenspace(self) -> torch.Tensor:
+        """Variational covariance in eigenspace (direct access).
+
+        Shape (n_b, n_b). NOT diagonal!
+        """
+        return self._state.V_b
+
+    @property
+    def covariance(self) -> torch.Tensor:
+        """Variational covariance in full M-dimensional space: B @ V_b @ B.T.
+
+        Shape (M, M). WARNING: This is expensive for large M.
+        """
+        return self._state.B @ self._state.V_b @ self._state.B.T
+
+
+class DirectVGPModel:
+    """GPyTorch-like interface to eigenspace variational GP. Model owns state.
+
+    This class wraps the eigenspace functions with a clean interface:
+    - Model owns variational state internally
+    - model(X) returns EigenspacePosterior with .mean, .variance
+    - model.recompute_eigenkernel() updates state after M-step
+
+    The wrapper produces EXACTLY identical results to the underlying
+    functions (atol=0, rtol=0).
+
+    Example usage:
+        model = DirectVGPModel(kernel, likelihood, X, X_tilde, eigval_tol)
+
+        # Get posterior at points
+        posterior = model(X)          # Computes moments from model._state
+        f_mean = model.likelihood.expected_firing_rate(posterior)
+
+        # Access variational params
+        model.variational_distribution.mean  # Full M-space
+        model.state.m_b  # Eigenspace (for E-step)
+
+        # After M-step, recompute eigenkernel
+        model.recompute_eigenkernel()
+    """
+
+    def __init__(
+        self,
+        kernel,
+        likelihood,
+        X: torch.Tensor,
+        X_tilde: torch.Tensor,
+        eigval_tol: float = EIGVAL_TOL
+    ):
+        """
+        Args:
+            kernel: ArcCosineKernel instance
+            likelihood: PoissonLikelihood instance
+            X: (N, n_features) - training data
+            X_tilde: (M, n_features) - inducing points
+            eigval_tol: Eigenvalue threshold for projection (default 1e-4)
+        """
+        self.kernel = kernel
+        self.likelihood = likelihood
+        self.X = X
+        self.X_tilde = X_tilde
+        self.eigval_tol = eigval_tol
+
+        # Compute initial eigenkernel and state
+        self._state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
+
+    def recompute_eigenkernel(self):
+        """Recompute eigenspace after M-step changes kernel hyperparameters.
+
+        Updates internal _state with:
+        - New K_tilde, K, Kvec from kernel
+        - New eigendecomposition (B, eigvals_b)
+        - Reprojected m_b, V_b in new eigenspace
+
+        Complexity: O(M^3) for eigendecomposition + O(M*n_b^2) for reprojection.
+        """
+        self._state = recompute_kernels_after_mstep(
+            self.kernel, self.X, self.X_tilde, self._state, self.eigval_tol
+        )
+
+    @property
+    def state(self) -> DirectVariationalState:
+        """Access internal state for E-step operations.
+
+        E-step can mutate state.m_b and state.V_b directly.
+        """
+        return self._state
+
+    def __call__(self, X_query: torch.Tensor) -> EigenspacePosterior:
+        """Compute posterior at query points.
+
+        Args:
+            X_query: (N_query, n_features) - points to evaluate
+
+        Returns:
+            EigenspacePosterior with .mean and .variance properties.
+
+        Note:
+            If X_query is the same object as self.X (training data),
+            uses precomputed state.KKtilde_inv_b for efficiency.
+        """
+        # Check if this is the training data (same object reference)
+        is_training_data = X_query is self.X
+
+        return EigenspacePosterior(
+            self.kernel, self._state, X_query, self.X_tilde, is_training_data
+        )
+
+    @property
+    def variational_distribution(self) -> EigenspaceVariationalDistribution:
+        """Access variational distribution q(u).
+
+        Returns object with:
+        - .mean: Full M-space mean (B @ m_b)
+        - .mean_eigenspace: Reduced n_b-space mean (m_b)
+        - .covariance_eigenspace: Reduced n_b-space covariance (V_b)
+        """
+        return EigenspaceVariationalDistribution(self._state)

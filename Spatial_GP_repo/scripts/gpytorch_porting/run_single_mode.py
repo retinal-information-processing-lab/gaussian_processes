@@ -53,8 +53,11 @@ import matplotlib.pyplot as plt
 from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
-from train import train_varGP_style, train_gpy_default, predict, compute_pearson_correlation, compute_explained_variance
-from direct_vargp import train_vargp_direct, predict_direct
+from train import (
+    train_varGP_style, train_gpy_default, predict,
+    compute_pearson_correlation, compute_explained_variance,
+    train_eigenspace, predict_eigenspace,
+)
 from tests.test_utils import set_reproducible_seed
 
 
@@ -430,6 +433,7 @@ def main():
         # Create kernel with RF structure (standalone, not wrapped in VariationalGPModel)
         kernel = ArcCosineKernel(
             sigma_0=args.sigma_0,
+            Amp=args.Amp,
             n_px_side=n_px_side,
             eps_0x=args.eps_0x,
             eps_0y=args.eps_0y,
@@ -438,7 +442,6 @@ def main():
             use_mask=args.use_mask,
             gradient_mode=args.gradient_mode
         )
-        kernel.Amp = args.Amp
         if args.float32:
             kernel = kernel.float().to(device)
         else:
@@ -470,7 +473,7 @@ def main():
         start_time = time.time()
 
         with torch.enable_grad():
-            result = train_vargp_direct(
+            result = train_eigenspace(
                 kernel, likelihood, X_train, inducing_points, r_train,
                 n_iterations=args.n_iterations,
                 n_estep=args.n_estep,
@@ -499,7 +502,7 @@ def main():
 
         # Evaluate on test data
         print("\nEvaluating on test data...")
-        predictions = predict_direct(kernel, likelihood, state, inducing_points, X_test)
+        predictions = predict_eigenspace(kernel, likelihood, state, inducing_points, X_test)
         f_pred = predictions['f_pred']
 
         r_test_mean = r_test.mean(dim=0)
@@ -507,7 +510,7 @@ def main():
         explained_var, reliability = compute_explained_variance(r_test, f_pred)
 
         # Also check train correlation
-        train_preds = predict_direct(kernel, likelihood, state, inducing_points, X_train)
+        train_preds = predict_eigenspace(kernel, likelihood, state, inducing_points, X_train)
         train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
 
         # Check prediction statistics
@@ -545,8 +548,12 @@ def main():
                                     standard_variational_distribution=not args.unwhitened_variational_dist)
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
-        model = model.double().to(device)
-        likelihood = likelihood.double().to(device)
+        if args.float32:
+            model = model.float().to(device)
+            likelihood = likelihood.float().to(device)
+        else:
+            model = model.double().to(device)
+            likelihood = likelihood.double().to(device)
 
         print(f"\nInitial parameters:")
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")

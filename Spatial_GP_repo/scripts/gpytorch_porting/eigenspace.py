@@ -27,7 +27,7 @@ def compute_eigenspace(
 
     Performs eigendecomposition of K_tilde and keeps only eigenvectors
     corresponding to eigenvalues above threshold. This reduces dimensionality
-    from M (number of inducing points) to n_b (~10-11 typically).
+    from M (number of inducing points) to n_b 
 
     In eigenspace, K_tilde_b = diag(eigvals_b) is DIAGONAL, making
     inverse trivial: K_tilde_inv_b = diag(1/eigvals_b).

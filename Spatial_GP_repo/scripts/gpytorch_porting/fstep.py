@@ -250,3 +250,112 @@ def f_step_lbfgs(
 
     if verbose:
         print(f"F-step LBFGS: {closure_counter[0]} closure calls, A: {likelihood.A.item():.4f}")
+
+
+# =============================================================================
+# Eigenspace F-Step Functions
+# =============================================================================
+
+def compute_f_mean(
+    lambda_m: torch.Tensor,
+    lambda_var: torch.Tensor,
+    A: torch.Tensor,
+    lambda0: torch.Tensor
+) -> torch.Tensor:
+    """Compute expected firing rate.
+
+    f_mean = exp(A * lambda_m + 0.5 * A^2 * lambda_var + lambda0)
+
+    Args:
+        lambda_m: Posterior mean, shape (N,)
+        lambda_var: Posterior variance, shape (N,)
+        A: Gain parameter (scalar)
+        lambda0: Bias parameter (scalar)
+
+    Returns:
+        f_mean: Expected firing rate, shape (N,)
+    """
+    return torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
+
+
+def fstep_eigenspace(
+    likelihood,
+    r: torch.Tensor,
+    lambda_m: torch.Tensor,
+    lambda_var: torch.Tensor,
+    n_fstep: int,
+    lr: float
+):
+    """F-step for eigenspace mode: Optimize A with LBFGS, lambda0 computed analytically.
+
+    This is a simplified version that directly uses LBFGS on raw_A.
+
+    Args:
+        likelihood: PoissonLikelihood instance
+        r: Spike counts, shape (N,)
+        lambda_m: Posterior mean (held fixed), shape (N,)
+        lambda_var: Posterior variance (held fixed), shape (N,)
+        n_fstep: Number of LBFGS iterations
+        lr: Learning rate for LBFGS
+    """
+    if n_fstep == 0:
+        # Still update lambda0 analytically
+        A = likelihood.A.squeeze()
+        with torch.no_grad():
+            new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+        return
+
+    # Initial lambda0 update
+    A = likelihood.A.squeeze()
+    with torch.no_grad():
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+
+    optimizer = torch.optim.LBFGS(
+        [likelihood.raw_A],
+        lr=lr,
+        max_iter=n_fstep,
+        tolerance_change=1e-9,
+        tolerance_grad=1e-7,
+        history_size=n_fstep,
+        line_search_fn='strong_wolfe'
+    )
+
+    def closure():
+        optimizer.zero_grad()
+
+        A = likelihood.A.squeeze()
+
+        # Update lambda0 analytically
+        with torch.no_grad():
+            lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
+
+        # Compute f_mean
+        f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
+
+        # Stability check
+        if f_mean.mean().item() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+            return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
+
+        # Log-likelihood (negative for minimization)
+        log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
+
+        # Compute gradient analytically for efficiency
+        # dL/dA = r @ lambda_m - (lambda_m + A * lambda_var) @ f_mean
+        # dL/d(logA) = A * dL/dA
+        dL_dA = r @ lambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
+        dL_dlogA = A * dL_dA
+
+        likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
+
+        return -log_lik
+
+    optimizer.step(closure)
+
+    # Final lambda0 update
+    with torch.no_grad():
+        A = likelihood.A.squeeze()
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))

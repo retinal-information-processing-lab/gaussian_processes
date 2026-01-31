@@ -116,6 +116,24 @@ class PoissonLikelihood(Likelihood):
         rate = torch.exp(A * function_samples + lambda0)
         return torch.distributions.Poisson(rate=rate)
 
+    def expected_firing_rate(self, posterior) -> torch.Tensor:
+        """Compute expected firing rate from posterior moments.
+
+        f_mean = exp(A * λ_m + 0.5 * A² * λ_var + λ₀)
+
+        This is the expected value of exp(A*λ + λ₀) when λ ~ N(λ_m, λ_var).
+
+        Args:
+            posterior: Object with .mean and .variance attributes
+                (e.g., EigenspacePosterior from DirectVGPModel)
+
+        Returns:
+            Expected firing rate, shape matching posterior.mean
+        """
+        A = self.A.squeeze()
+        lambda0 = self.lambda0.squeeze()
+        return torch.exp(A * posterior.mean + 0.5 * A * A * posterior.variance + lambda0)
+
 
 def test_likelihood():
     """Basic test for PoissonLikelihood."""

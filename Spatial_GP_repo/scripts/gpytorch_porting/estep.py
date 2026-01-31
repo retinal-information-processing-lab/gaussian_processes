@@ -794,6 +794,70 @@ def e_step_loop(
 
 
 # =============================================================================
+# Eigenspace E-Step Functions
+# =============================================================================
+
+def estep_eigenspace(
+    state,  # DirectVariationalState from eigenspace_model
+    r: torch.Tensor,
+    A: torch.Tensor,
+    f_mean: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Newton update for variational parameters in eigenspace.
+
+    This implementation matches utils.py:Estep() lines 4244-4256 exactly.
+
+    The g_b and G_b computed here are the TRANSFORMED versions:
+        g_b = K_tilde_inv @ g_standard
+        G_b = K_tilde_inv @ G_standard @ K_tilde_inv
+
+    The formulas below are correct for these transformed quantities.
+
+    TODO: INVESTIGATE - The m_new formula here matches the old code but may have
+    a mathematical discrepancy. See .claude/ESTEP_MATH_ANALYSIS.md for analysis.
+    The correct formula would be: m_new = m + K_tilde @ solve(K_tilde + G, g - m)
+    But the old code uses: m_new = V_new @ (G @ m + g)
+    These differ unless K_tilde and G commute. Worth investigating if the
+    "correct" formula improves results.
+
+    Args:
+        state: DirectVariationalState with current eigenspace quantities
+        r: Spike counts, shape (N,)
+        A: Gain parameter (scalar)
+        f_mean: Expected firing rate exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0),
+                shape (N,)
+
+    Returns:
+        m_b_new: Updated variational mean, shape (n_b,)
+        V_b_new: Updated variational covariance, shape (n_b, n_b)
+    """
+    a = state.KKtilde_inv_b  # (N, n_b) - this is K @ K_tilde_inv in eigenspace
+
+    # Transformed gradient: g_b = A * a.T @ (r - f_mean)
+    # This is K_tilde_inv @ g_standard
+    g_b = A * (a.T @ (r - f_mean))  # (n_b,)
+
+    # Transformed Hessian: G_b = A^2 * a.T @ diag(f_mean) @ a
+    # This is K_tilde_inv @ G_standard @ K_tilde_inv
+    G_b = (A * A) * (a.T @ (f_mean[:, None] * a))  # (n_b, n_b)
+
+    # V update: V_new = solve(I + K_tilde @ G, K_tilde)
+    # Matches utils.py line 4246
+    n_b = state.K_tilde_b.shape[0]
+    eye = torch.eye(n_b, dtype=state.K_tilde_b.dtype, device=state.K_tilde_b.device)
+    V_b_new = torch.linalg.solve(eye + state.K_tilde_b @ G_b, state.K_tilde_b)
+
+    # m update: m_new = V_new @ (G @ m + g)
+    # Matches utils.py line 4247
+    m_b_new = V_b_new @ (G_b @ state.m_b + g_b)
+
+    # Symmetrize V for numerical stability
+    V_b_new = (V_b_new + V_b_new.T) / 2
+
+    return m_b_new, V_b_new
+
+
+# =============================================================================
 # Re-export whitening functions for backward compatibility
 # =============================================================================
 # Note: These imports at the module level make functions available via:
@@ -807,6 +871,8 @@ __all__ = [
     'e_step_explicit',
     'e_step_with_kernel_cache',
     '_newton_update',
+    # Eigenspace E-step
+    'estep_eigenspace',
     # Kernel caching
     'compute_kernel_cache',
     'compute_moments_from_kernel_cache',
