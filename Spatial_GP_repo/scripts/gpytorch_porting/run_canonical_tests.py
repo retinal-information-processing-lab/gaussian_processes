@@ -5,11 +5,12 @@ run_canonical_tests.py - Run the standard benchmark test matrix.
 Runs all canonical configurations for regression testing and performance tracking.
 Results are appended to results/benchmark_results.jsonl.
 
-Test Matrix (12 configurations per seed):
-  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_style, default_gpy}
-  - ntrain=2000: M=200 × modes={vargp_old, vargp_style, default_gpy}
+Test Matrix (16 configurations per seed):
+  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_style, vargp_direct, default_gpy}
+  - ntrain=2000: M=200 × modes={vargp_old, vargp_style, vargp_direct, default_gpy}
 
 Constraints (not configurable):
+  - float32 precision (for fair comparison - vargp_old uses float32 internally)
   - Whitened mode only (default)
   - Cached kernels only (default)
   - cell_id=8, niter=50, nestep=10, nmstep=10, nfstep=10
@@ -37,16 +38,20 @@ TEST_MATRIX = [
     # ntrain=500: M=50, 100, 200
     ('vargp_old', 50, 500),
     ('vargp_style', 50, 500),
+    ('vargp_direct', 50, 500),
     ('default_gpy', 50, 500),
     ('vargp_old', 100, 500),
     ('vargp_style', 100, 500),
+    ('vargp_direct', 100, 500),
     ('default_gpy', 100, 500),
     ('vargp_old', 200, 500),
     ('vargp_style', 200, 500),
+    ('vargp_direct', 200, 500),
     ('default_gpy', 200, 500),
     # ntrain=2000: M=200 only
     ('vargp_old', 200, 2000),
     ('vargp_style', 200, 2000),
+    ('vargp_direct', 200, 2000),
     ('default_gpy', 200, 2000),
 ]
 
@@ -61,9 +66,10 @@ def run_single_test(mode, M, ntrain, seed, output_file, dry_run=False):
         '--seed', str(seed),
         '--json-append', str(output_file),
         '--save-plot', 'none',  # Disable plot saving for batch runs
+        '--float32',  # Use float32 for fair comparison (vargp_old uses float32 internally)
     ]
 
-    # vargp_style mode requires --explicit-unwhitening flag
+    # Mode-specific flags
     if mode == 'vargp_style':
         cmd.append('--explicit-unwhitening')
 
@@ -123,8 +129,8 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='Print commands without running')
     parser.add_argument('--modes', type=str, nargs='+',
-                        default=['vargp_old', 'vargp_style', 'default_gpy'],
-                        choices=['vargp_old', 'vargp_style', 'default_gpy'],
+                        default=['vargp_old', 'vargp_style', 'vargp_direct', 'default_gpy'],
+                        choices=['vargp_old', 'vargp_style', 'vargp_direct', 'default_gpy'],
                         help='Modes to test (default: all)')
     args = parser.parse_args()
 

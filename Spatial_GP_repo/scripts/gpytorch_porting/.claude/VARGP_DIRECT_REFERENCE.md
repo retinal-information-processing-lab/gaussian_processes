@@ -2,8 +2,8 @@
 
 **Purpose**: Comprehensive guide to the `vargp_direct` training mode - a GPyTorch-based implementation that matches the original `varGP()` algorithm structure.
 
-**Status**: COMPLETE (January 2025)
-**Last Updated**: January 2025
+**Status**: ACTIVE - Performance matches vargp_old; known loss offset remains (see Section 6.8)
+**Last Updated**: January 2025 (Diagonal approximation bug fixed)
 
 ---
 
@@ -15,11 +15,12 @@
 4. [The Training Loop](#4-the-training-loop)
 5. [Component Details](#5-component-details)
 6. [Important Caveats](#6-important-caveats)
-7. [Resolved Bugs](#7-resolved-bugs)
-8. [Deferred Items](#8-deferred-items)
-9. [Unit Tests](#9-unit-tests)
-10. [Math Reference](#10-math-reference)
-11. [Code-to-Math Mapping](#11-code-to-math-mapping)
+7. [GPyTorch Wrapper Classes](#7-gpytorch-wrapper-classes)
+8. [Resolved Bugs](#8-resolved-bugs)
+9. [Deferred Items](#9-deferred-items)
+10. [Unit Tests](#10-unit-tests)
+11. [Math Reference](#11-math-reference)
+12. [Code-to-Math Mapping](#12-code-to-math-mapping)
 
 ---
 
@@ -28,22 +29,24 @@
 ### Run vargp_direct
 
 ```bash
-# Recommended: use --float32 for best performance (matches vargp_old)
-python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 \
-    --n-iterations 50 --n-estep 10 --n-fstep 10 --n-mstep 10 --seed 123
+# Standard usage (autograd M-step)
+python run_single_mode.py --mode vargp_direct --float32 \
+    --ntilde 50 --n-iterations 50 --n-estep 10 --n-fstep 10 --n-mstep 10 --seed 123
 
-# With analytical M-step gradients (faster, requires --float32)
+# Alternative: analytical M-step (slightly different optimization path)
 python run_single_mode.py --mode vargp_direct --mstep-analytical --float32 \
     --ntilde 50 --n-iterations 50 --seed 123
 ```
 
 ### Performance Comparison
 
-| Mode | Dtype | M-step | Total | Test r |
-|------|-------|--------|-------|--------|
-| vargp_old | float32 | 4.9s | 6.3s | 0.84 |
-| vargp_direct (autograd) | float32 | 4.6s | 5.6s | 0.84 |
-| vargp_direct (analytical) | float32 | 4.2s | 5.2s | 0.85 |
+| Mode | Dtype | Total | Test r | Status |
+|------|-------|-------|--------|--------|
+| vargp_old | float32 | 6.3s | 0.84 | Reference |
+| vargp_direct (autograd) | float32 | 5.6s | 0.84 | Matches reference |
+| vargp_direct (analytical) | float32 | 5.2s | 0.85 | Matches reference |
+
+**Note**: Loss values differ by ~0.5*n_b due to KL constant term difference (see Section 6.8). This does NOT affect optimization or predictions.
 
 **Key point**: Use `--float32` to match vargp_old speed. float64 is ~3x slower.
 
@@ -66,7 +69,7 @@ There are three training modes in this codebase:
 ### Key Design Decisions
 
 1. **Eigenspace projection**: Reduces dimensionality from M inducing points to ~10-50 dimensions
-2. **K̃_b is DIAGONAL**: In eigenspace, the inducing kernel becomes `diag(eigenvalues)` - trivial inverse!
+2. **K_tilde_b is DIAGONAL**: In eigenspace, the inducing kernel becomes `diag(eigenvalues)` - trivial inverse!
 3. **LBFGS for M-step**: Matches original optimization dynamics (not Adam)
 4. **GPyTorch for kernels only**: We bypass `VariationalStrategy` entirely
 
@@ -74,37 +77,68 @@ There are three training modes in this codebase:
 
 ## 3. File Structure
 
+The vargp_direct implementation is organized into a **modular structure** with clear separation of concerns:
+
 ```
 gpytorch_porting/
-├── direct_vargp.py          # Main implementation (~1300 lines)
-│   ├── compute_C_and_gradients()           # C matrix and dC/dθ
-│   ├── compute_kernel_and_gradients()      # K matrix and dK/dθ
-│   ├── compute_lambda_moments_and_gradients()  # Posterior moments
-│   ├── compute_loss_gradients()            # dL/dθ for M-step
-│   ├── DirectVariationalState              # Dataclass for state
-│   ├── estep_eigenspace()                  # E-step Newton update
-│   ├── lambda_moments_eigenspace()         # Compute λ_m, λ_var
-│   ├── mstep_lbfgs_autograd()             # M-step with autograd
-│   ├── mstep_lbfgs_analytical()           # M-step with explicit gradients
-│   ├── train_vargp_direct()               # Main training loop
-│   └── predict_direct()                    # Prediction at test points
-│
-├── eigenspace.py            # Eigenspace utilities (~200 lines)
-│   ├── EIGVAL_TOL = 1e-4                  # Eigenvalue threshold
-│   ├── compute_eigenspace()               # Eigendecomposition
-│   ├── project_to_eigenspace()            # m_b = B.T @ m, etc.
-│   ├── reproject_variational_params()     # After M-step changes B
-│   ├── compute_KKtilde_inv_b()            # K @ K̃⁻¹ (element-wise!)
-│   └── compute_K_tilde_b_diagonal()       # diag(eigenvalues)
-│
-├── kernels.py               # ArcCosineKernel (used as calculator)
-├── likelihoods.py           # PoissonLikelihood (A, λ₀ parameters)
-├── fstep.py                 # F-step utilities (lambda0_given_A)
-│
-└── tests/
-    ├── test_vargp_direct_match.py     # Unit tests for vargp_direct
-    └── README_vargp_direct_tests.md   # Test documentation
+|
+|-- eigenspace_model.py      # STATE & MODEL CLASSES (~480 lines)
+|   |-- DirectVariationalState       # Dataclass for eigenspace state
+|   |-- compute_kernels_eigenspace() # Initialize eigenspace state
+|   |-- recompute_kernels_after_mstep()  # Reproject after M-step
+|   |-- lambda_moments_eigenspace()  # Compute posterior moments
+|   |-- DirectVGPModel               # GPyTorch-like model interface
+|   |-- EigenspacePosterior          # Posterior at query points
+|   +-- EigenspaceVariationalDistribution  # Variational params interface
+|
+|-- eigenspace.py            # EIGENSPACE UTILITIES (~200 lines)
+|   |-- EIGVAL_TOL = 1e-4            # Eigenvalue threshold
+|   |-- compute_eigenspace()         # Eigendecomposition
+|   |-- project_to_eigenspace()      # m_b = B.T @ m, etc.
+|   |-- reproject_variational_params()   # After M-step changes B
+|   |-- compute_KKtilde_inv_b()      # K @ K_tilde_inv (element-wise!)
+|   +-- compute_K_tilde_b_diagonal() # diag(eigenvalues)
+|
+|-- train.py                 # TRAINING LOOP (~785 lines total)
+|   |-- train_eigenspace()           # Main training loop for vargp_direct
+|   |-- predict_eigenspace()         # Prediction at test points
+|   +-- compute_elbo_eigenspace()    # ELBO computation
+|
+|-- estep.py                 # E-STEP (~893 lines total)
+|   +-- estep_eigenspace()           # Newton update for (m_b, V_b)
+|
+|-- fstep.py                 # F-STEP (~361 lines total)
+|   |-- compute_f_mean()             # Expected firing rate
+|   +-- fstep_eigenspace()           # LBFGS for A, analytical lambda0
+|
+|-- mstep.py                 # M-STEP (~395 lines total)
+|   |-- mstep_eigenspace_autograd()  # LBFGS with PyTorch autograd
+|   +-- mstep_eigenspace_analytical()# LBFGS with explicit gradients
+|
+|-- direct_vargp.py          # GRADIENT FUNCTIONS ONLY (~440 lines)
+|   |-- compute_C_and_gradients()    # C matrix and dC/dtheta
+|   |-- compute_kernel_and_gradients()   # K matrix and dK/dtheta
+|   |-- compute_lambda_moments_and_gradients()  # Posterior moments + gradients
+|   +-- compute_loss_gradients()     # dL/dtheta for M-step
+|
+|-- kernels.py               # ArcCosineKernel (used as calculator)
+|-- likelihoods.py           # PoissonLikelihood (A, lambda0 parameters)
+|
++-- tests/
+    |-- test_vargp_direct_match.py   # Unit tests for gradient functions
+    |-- test_direct_vgp_model.py     # Unit tests for wrapper classes
+    +-- test_mstep_analytical.py     # M-step gradient tests
 ```
+
+### Key Points About File Organization
+
+1. **eigenspace_model.py** is the central module - it contains both the state management (`DirectVariationalState`) and the GPyTorch wrapper classes (`DirectVGPModel`)
+
+2. **direct_vargp.py** now ONLY contains gradient functions for the analytical M-step. All other code has been moved to appropriate modules.
+
+3. **Naming convention**: Functions use `_eigenspace` suffix (e.g., `estep_eigenspace`, `fstep_eigenspace`) to distinguish from other training modes
+
+4. **DELETED FILE**: `direct_vargp_wrapper.py` no longer exists - its contents were merged into `eigenspace_model.py`
 
 ---
 
@@ -112,49 +146,68 @@ gpytorch_porting/
 
 ### High-Level Structure
 
+The training loop is implemented in `train.py:train_eigenspace()`:
+
 ```python
-def train_vargp_direct(kernel, likelihood, X, X_tilde, r, ...):
+def train_eigenspace(kernel, likelihood, X, X_tilde, r, ...):
     # INITIALIZATION
     # 1. Compute initial kernels: K_tilde, K, Kvec
     # 2. Eigendecomposition: B, eigvals_b from K_tilde
     # 3. Initialize m_b = 0, V_b = K_tilde_b (diagonal)
+    state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
 
-    for iteration in range(1, n_iterations + 1):
+    # MAIN LOOP
+    # NOTE: Uses range(1, n_iterations) to match vargp_old behavior
+    # This means n_iterations=50 gives 49 actual iterations (1-49)
+    for iteration in range(1, n_iterations):
 
         # KERNEL RECOMPUTATION (after iteration 1)
         if n_mstep > 0 and iteration > 1:
-            # M-step changed hyperparams → recompute kernels
-            # New eigenspace → reproject m_b, V_b
+            state = recompute_kernels_after_mstep(kernel, X, X_tilde, state, eigval_tol)
 
         # E-STEP: Newton updates for m_b, V_b
         for _ in range(n_estep):
-            # Compute posterior moments
             lambda_m, lambda_var = lambda_moments_eigenspace(state)
-            f_mean = exp(A*lambda_m + 0.5*A²*lambda_var + λ₀)
-
-            # Newton update (see Section 5.2)
+            f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
             m_b, V_b = estep_eigenspace(state, r, A, f_mean)
 
-        # F-STEP: Optimize A, compute λ₀ analytically
-        lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-        LBFGS([logA], closure=f_closure)
+        # F-STEP: Optimize A, compute lambda0 analytically
+        fstep_eigenspace(likelihood, r, lambda_m, lambda_var, n_fstep, lr_f)
 
-        # M-STEP: Optimize kernel hyperparameters (skip last iter)
-        if iteration < n_iterations:
+        # M-STEP: Optimize kernel hyperparameters
+        # NOTE: Skips when iteration >= n_iterations - 1 (matches vargp_old)
+        if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
-                mstep_lbfgs_analytical(kernel, ...)  # Explicit dK/dθ
+                mstep_eigenspace_analytical(kernel, ...)
             else:
-                mstep_lbfgs_autograd(kernel, ...)    # PyTorch autograd
+                mstep_eigenspace_autograd(kernel, ...)
 
-    return state, losses, timing
+    return {'losses': losses, 'state': state, ...}
 ```
+
+### CRITICAL: Iteration Count Behavior
+
+**The `n_iterations` parameter results in `n_iterations - 1` actual iterations.**
+
+This matches vargp_old behavior exactly:
+
+| Parameter | vargp_old | vargp_direct (train_eigenspace) |
+|-----------|-----------|--------------------------------|
+| Loop | `range(1, maxiter)` | `range(1, n_iterations)` |
+| With n=50 | iterations 1-49 (49 total) | iterations 1-49 (49 total) |
+| M-step skip | `iteration < maxiter - 1` | `iteration < n_iterations - 1` |
+| M-step runs | iterations 1-48 | iterations 1-48 |
+
+**Rationale**: The last M-step is skipped because it would create a new eigenspace that won't be used by the final variational parameters (m, V). This matches the original implementation.
+
+**FUTURE CONSIDERATION**: May want to change to `range(1, n_iterations + 1)` for one additional iteration if testing shows improved convergence.
 
 ### Detailed Step Explanations
 
 #### Initialization
 
 ```python
-# Compute kernel matrices
+# In compute_kernels_eigenspace():
 K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
 K = kernel(X, X_tilde).evaluate()               # (N, M)
 Kvec = kernel(X, diag=True)                     # (N,)
@@ -175,20 +228,20 @@ V_b = K_tilde_b.clone()          # Start with prior covariance
 
 #### E-step Details
 
-The E-step performs Newton updates on the variational parameters:
+The E-step is implemented in `estep.py:estep_eigenspace()`:
 
 ```python
 def estep_eigenspace(state, r, A, f_mean):
-    a = state.KKtilde_inv_b  # (N, n_b), precomputed K @ K̃⁻¹
+    a = state.KKtilde_inv_b  # (N, n_b), precomputed K @ K_tilde_inv
 
     # Gradient and Hessian of log-likelihood w.r.t. natural params
     g_b = A * (a.T @ (r - f_mean))           # (n_b,)
-    G_b = A² * (a.T @ (f_mean[:, None] * a)) # (n_b, n_b)
+    G_b = A**2 * (a.T @ (f_mean[:, None] * a)) # (n_b, n_b)
 
     # Newton update for V
     V_b_new = solve(I + K_tilde_b @ G_b, K_tilde_b)
 
-    # Newton update for m (using OLD formula - see Section 8)
+    # Newton update for m (using OLD formula - see Section 9)
     m_b_new = V_b_new @ (G_b @ m_b + g_b)
 
     # Symmetrize for numerical stability
@@ -199,11 +252,11 @@ def estep_eigenspace(state, r, A, f_mean):
 
 #### F-step Details
 
-The F-step optimizes the firing rate parameters:
+The F-step is implemented in `fstep.py:fstep_eigenspace()`:
 
 ```python
-# λ₀ is computed analytically given A
-lambda0 = log(sum(r) / sum(exp(A*lambda_m + 0.5*A²*lambda_var)))
+# lambda0 is computed analytically given A
+lambda0 = log(sum(r) / sum(exp(A*lambda_m + 0.5*A**2*lambda_var)))
 
 # A is optimized with LBFGS
 def f_closure():
@@ -215,36 +268,40 @@ LBFGS([logA], closure=f_closure, max_iter=n_fstep)
 
 #### M-step Details
 
-The M-step optimizes kernel hyperparameters (σ₀, Amp, β, ρ, ε₀).
+The M-step has two implementations in `mstep.py`:
 
-**With autograd** (`mstep_lbfgs_autograd`):
+**With autograd** (`mstep_eigenspace_autograd`) - **BUGGY, use analytical instead**:
 ```python
 def closure():
     # Recompute kernels with current hyperparams
     K_tilde = kernel(X_tilde, X_tilde).evaluate()
     K = kernel(X, X_tilde).evaluate()
-    # ... compute loss ...
-    loss.backward()  # PyTorch autograd
+    # BUG: Uses diagonal approximation for KL trace (see Section 8)
+    # ... compute loss using fixed eigenspace B ...
+    grads = torch.autograd.grad(loss, kernel_params)
     return loss
 
 LBFGS(kernel.parameters(), closure=closure)
 ```
 
-**With analytical gradients** (`mstep_lbfgs_analytical`):
+**WARNING**: `mstep_eigenspace_autograd` has a known bug in the KL trace computation that degrades test_r by 2-5%. Use `--mstep-analytical` for correct results.
+
+**With analytical gradients** (`mstep_eigenspace_analytical`) - **CORRECT**:
 ```python
 def closure():
-    # Compute kernels AND all dK/dθ matrices
+    # Compute kernels AND all dK/dtheta matrices
     C, mask, dC = compute_C_and_gradients(kernel)
     K_tilde, dK_tilde = compute_kernel_and_gradients(X_tilde, X_tilde, C, dC, ...)
     K, dK = compute_kernel_and_gradients(X, X_tilde, C, dC, ...)
 
-    # Compute loss
-    loss = -log_lik + KL
+    # CORRECT: Uses full matrix inverse for KL trace
+    K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye_b)
+    trace_term = torch.trace(K_tilde_inv_b @ V_b)
 
-    # Compute gradients explicitly
+    # Compute loss and gradients explicitly
     dL = compute_loss_gradients(r, f_mean, A, m_b, V_b, ...)
 
-    # Set parameter gradients manually
+    # Set parameter gradients manually with chain rule
     kernel.raw_sigma_0.grad = dL['sigma_0'] * sigmoid(raw_sigma_0)
     # ... etc ...
 
@@ -255,11 +312,29 @@ def closure():
 
 ## 5. Component Details
 
-### 5.1 Eigenspace Projection
+### 5.1 DirectVariationalState Dataclass
 
-**Why eigenspace?** The inducing point kernel K̃ (M×M) has effective rank ~10-50. Eigenspace projection:
-1. Reduces computation from O(M³) to O(n_b³)
-2. Makes K̃⁻¹ trivial: `diag(1/eigenvalues)`
+Defined in `eigenspace_model.py`, this dataclass holds all eigenspace quantities:
+
+```python
+@dataclass
+class DirectVariationalState:
+    m_b: torch.Tensor        # Variational mean (n_b,)
+    V_b: torch.Tensor        # Variational covariance (n_b, n_b) - NOT diagonal!
+    B: torch.Tensor          # Eigenvector matrix (M, n_b)
+    eigvals_b: torch.Tensor  # Eigenvalues (n_b,)
+    K_tilde_b: torch.Tensor  # Inducing kernel in eigenspace (n_b, n_b) - diagonal
+    K_b: torch.Tensor        # Cross-kernel in eigenspace (N, n_b)
+    KKtilde_inv_b: torch.Tensor  # K @ K_tilde_inv = K_b / eigvals_b (N, n_b)
+    Kvec: torch.Tensor       # Self-kernel diagonal (N,)
+    mask: torch.Tensor       # Pixel mask for RF structure (n_pixels,)
+```
+
+### 5.2 Eigenspace Projection
+
+**Why eigenspace?** The inducing point kernel K_tilde (M x M) has effective rank ~10-50. Eigenspace projection:
+1. Reduces computation from O(M^3) to O(n_b^3)
+2. Makes K_tilde inverse trivial: `diag(1/eigenvalues)`
 3. Provides implicit regularization (drops small eigenvalues)
 
 **Key quantities in eigenspace:**
@@ -267,71 +342,90 @@ def closure():
 | Symbol | Name | Shape | Formula |
 |--------|------|-------|---------|
 | B | Eigenvector matrix | (M, n_b) | From `eigh(K_tilde)` |
-| K̃_b | Inducing kernel | (n_b, n_b) | `diag(eigenvalues)` - DIAGONAL |
+| K_tilde_b | Inducing kernel | (n_b, n_b) | `diag(eigenvalues)` - DIAGONAL |
 | K_b | Cross-kernel | (N, n_b) | `K @ B` |
 | m_b | Variational mean | (n_b,) | `B.T @ m` |
 | V_b | Variational covariance | (n_b, n_b) | `B.T @ V @ B` - NOT diagonal |
 | a | Projection vector | (N, n_b) | `K_b / eigvals_b` (element-wise) |
 
-**Critical insight**: V_b is NOT diagonal even though K̃_b is diagonal. Don't assume diagonal V_b!
+**Critical insight**: V_b is NOT diagonal even though K_tilde_b is diagonal. Don't assume diagonal V_b!
 
-### 5.2 Posterior Moments (λ_m, λ_var)
+### 5.3 Posterior Moments (lambda_m, lambda_var)
 
-The GP posterior mean and variance at training points:
+Implemented in `eigenspace_model.py:lambda_moments_eigenspace()`:
 
 ```python
 # In eigenspace:
-a = K_b / eigvals_b              # K @ K̃⁻¹, element-wise division
+a = K_b / eigvals_b              # K @ K_tilde_inv, element-wise division
 lambda_m = a @ m_b               # Posterior mean
-lambda_var = Kvec + (a @ (V_b - K̃_b) @ a.T).diag()  # Posterior variance
+lambda_var = Kvec + (a @ (V_b - K_tilde_b) @ a.T).diag()  # Posterior variance
 ```
 
-### 5.3 C Matrix (Receptive Field Structure)
+### 5.4 C Matrix (Receptive Field Structure)
 
 The C matrix encodes receptive field (RF) properties:
 
 ```
-C = Amp * α[:, None] * C_smooth * α[None, :]
+C = Amp * alpha[:, None] * C_smooth * alpha[None, :]
 
 where:
-  α[i] = exp(-β_factor * ||pixel_i - center||²)    # Locality weight
-  C_smooth[i,j] = exp(-ρ_factor * ||pixel_i - pixel_j||²)  # Smoothness
-  β_factor = exp(raw_m2log2beta) = 1/(4β²)
-  ρ_factor = exp(raw_mlog2rho2) = 1/(2ρ²)
+  alpha[i] = exp(-beta_factor * ||pixel_i - center||^2)    # Locality weight
+  C_smooth[i,j] = exp(-rho_factor * ||pixel_i - pixel_j||^2)  # Smoothness
+  beta_factor = exp(raw_m2log2beta) = 1/(4*beta^2)
+  rho_factor = exp(raw_mlog2rho2) = 1/(2*rho^2)
 ```
 
-### 5.4 Parameter Transforms
+### 5.5 Parameter Transforms
 
 | Parameter | Raw Name | Transform | Gradient Chain Rule |
 |-----------|----------|-----------|-------------------|
-| σ₀ | `raw_sigma_0` | `softplus(raw)` | `dL/d(raw) = dL/d(σ₀) * sigmoid(raw)` |
+| sigma_0 | `raw_sigma_0` | `softplus(raw)` | `dL/d(raw) = dL/d(sigma_0) * sigmoid(raw)` |
 | Amp | `raw_Amp` | `softplus(raw)` | Same as above |
-| β | `raw_m2log2beta` | `β = exp(-raw/2)/2` | Direct (no transform in gradient) |
-| ρ | `raw_mlog2rho2` | `ρ = sqrt(exp(-raw)/2)` | Direct |
-| ε₀x, ε₀y | `eps_0x`, `eps_0y` | Direct | Direct |
+| beta | `raw_m2log2beta` | `beta = exp(-raw/2)/2` | Direct (no transform in gradient) |
+| rho | `raw_mlog2rho2` | `rho = sqrt(exp(-raw)/2)` | Direct |
+| eps_0x, eps_0y | `eps_0x`, `eps_0y` | Direct | Direct |
 
 ---
 
 ## 6. Important Caveats
 
-### 6.1 K̃_b is Only Diagonal at Initialization
+### 6.1 K_tilde_b is Only Diagonal at Specific Points
 
-**CRITICAL**: K̃_b = diag(eigenvalues) is ONLY valid immediately after eigendecomposition.
+**CRITICAL**: K_tilde_b = diag(eigenvalues) is diagonal ONLY:
+1. Immediately after eigendecomposition (initialization)
+2. After `recompute_kernels_after_mstep()` (which does fresh eigendecomposition)
+3. During E-step and F-step (eigenspace is fixed)
 
-During M-step optimization, when kernel hyperparameters change:
+**K_tilde_b is NOT diagonal**:
+- Inside M-step LBFGS closure when hyperparameters have been updated
+
 ```python
-K_tilde_new = kernel(X_tilde, X_tilde)  # New kernel
-K_tilde_b = B.T @ K_tilde_new @ B        # NOT diagonal anymore!
+# INSIDE M-step closure (DANGER ZONE)
+K_tilde_new = kernel(X_tilde, X_tilde)  # New kernel with updated hyperparams
+K_tilde_b = B.T @ K_tilde_new @ B        # NOT diagonal! B is from OLD K_tilde!
 ```
 
-The fix (see Section 7) uses `torch.linalg.solve()` instead of assuming diagonal structure.
+**Safe vs Unsafe Code Patterns**:
+
+| Location | K_tilde_b diagonal? | Safe to use eigvals? |
+|----------|--------------------|--------------------|
+| After `compute_kernels_eigenspace()` | YES | YES |
+| After `recompute_kernels_after_mstep()` | YES | YES |
+| Inside E-step | YES (fixed) | YES |
+| Inside F-step | YES (fixed) | YES |
+| Inside M-step closure (first call) | YES | YES |
+| Inside M-step closure (after hyperparam update) | **NO** | **NO** |
+
+**The mstep_eigenspace_autograd bug** (Section 8) occurs because it assumes diagonal K_tilde_b inside the M-step closure where hyperparameters are changing.
+
+**The fix** (`mstep_eigenspace_analytical`): Uses `torch.linalg.solve()` instead of diagonal assumption.
 
 ### 6.2 Eigenspace Changes After M-step
 
 After M-step changes kernel hyperparameters, the eigenspace changes. You MUST reproject variational parameters:
 
 ```python
-# After M-step
+# After M-step (in recompute_kernels_after_mstep)
 K_tilde_new = kernel(X_tilde, X_tilde)
 B_new, eigvals_new, _ = compute_eigenspace(K_tilde_new)
 
@@ -359,16 +453,194 @@ Call `kernel.clamp_hyperparameters()` after M-step to ensure parameters stay in 
 - **Float32**: Matches vargp_old, fast, recommended for production
 - **Float64**: More precise but ~3x slower, useful for debugging gradient issues
 
+### 6.7 Iteration Count (n_iterations vs Actual Iterations)
+
+**IMPORTANT**: The `n_iterations` parameter results in `n_iterations - 1` actual iterations.
+
+This matches vargp_old behavior:
+
+| Implementation | Loop | For n=50 | M-step condition | M-step runs |
+|----------------|------|----------|------------------|-------------|
+| vargp_old | `range(1, maxiter)` | iters 1-49 | `iter < maxiter-1` | 1-48 |
+| train_eigenspace | `range(1, n_iterations)` | iters 1-49 | `iter < n_iterations-1` | 1-48 |
+
+**Rationale**: The last M-step is skipped to avoid generating a new eigenspace that won't be used.
+
+**FUTURE**: May want to change to `range(1, n_iterations+1)` for one more iteration.
+
+### 6.8 KL Divergence Formula Discrepancy (CONFIRMED)
+
+When comparing final loss values between vargp_direct and vargp_old, there is a consistent offset of approximately `0.5 * n_b` (around 20-25 units for typical n_b values).
+
+**Confirmed cause**: The KL divergence formula differs by a constant term:
+- vargp_direct uses the standard formula: `KL = 0.5 * (tr + quad - n_b + log|K| - log|V|)`
+- vargp_old omits the `-n_b` term (utils.py:4141): `KL = 0.5 * (tr + quad + log|K| - log|V|)`
+
+**Verification**: Temporarily removing `-n_b` from vargp_direct reduced the loss difference from ~23 to ~1.6 for Cell 8, M=50.
+
+**Important notes**:
+- This does NOT affect optimization (constant terms have zero gradient)
+- This does NOT affect predictions (test_r values are nearly identical)
+- This only affects the absolute loss value reported
+
+**Remaining discrepancy**: Even after accounting for the `-n_b` term, some configurations show larger residual differences (e.g., Cell 8, M=100: ~15 units). This correlates with dynamic eigenspace dimension changes during training (n_b varying from 76→66). **Further investigation needed** to understand eigenspace reprojection differences between implementations.
+
 ---
 
-## 7. Resolved Bugs
+## 7. GPyTorch Wrapper Classes
 
-### BUG #6: Stale Eigenvalues in M-step (FIXED January 2025)
+The `eigenspace_model.py` module provides GPyTorch-compatible wrapper classes that allow vargp_direct to be used like a standard GPyTorch model.
 
-**Problem**: The M-step closure used stale eigenvalues (`state.eigvals_b`) while computing fresh `K_tilde_b` from updated hyperparameters.
+### 7.1 DirectVGPModel
+
+A GPyTorch-like model interface for vargp_direct:
 
 ```python
-# BUGGY CODE
+class DirectVGPModel:
+    """GPyTorch-like interface for eigenspace-based variational GP."""
+
+    def __init__(self, kernel, likelihood, X, X_tilde, eigval_tol=1e-4):
+        self.kernel = kernel
+        self.likelihood = likelihood
+        self.state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
+
+    def __call__(self, X_query) -> EigenspacePosterior:
+        """Returns posterior at query points."""
+        return EigenspacePosterior(self.kernel, self.likelihood, self.state, X_query)
+
+    @property
+    def variational_distribution(self) -> EigenspaceVariationalDistribution:
+        """Returns variational distribution interface."""
+        return EigenspaceVariationalDistribution(self.state)
+```
+
+### 7.2 EigenspacePosterior
+
+Represents the GP posterior at query points:
+
+```python
+class EigenspacePosterior:
+    """Posterior distribution at query points."""
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """Posterior mean lambda_m at query points."""
+
+    @property
+    def variance(self) -> torch.Tensor:
+        """Posterior variance lambda_var at query points."""
+
+    def expected_firing_rate(self) -> torch.Tensor:
+        """E[f] = exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0)"""
+```
+
+### 7.3 EigenspaceVariationalDistribution
+
+Provides access to variational parameters:
+
+```python
+class EigenspaceVariationalDistribution:
+    """Interface to variational parameters in eigenspace."""
+
+    @property
+    def mean_eigenspace(self) -> torch.Tensor:
+        """m_b in eigenspace (n_b,)"""
+        return self.state.m_b
+
+    @property
+    def covariance_eigenspace(self) -> torch.Tensor:
+        """V_b in eigenspace (n_b, n_b)"""
+        return self.state.V_b
+
+    @property
+    def mean(self) -> torch.Tensor:
+        """m in full space: B @ m_b (M,)"""
+        return self.state.B @ self.state.m_b
+
+    @property
+    def covariance(self) -> torch.Tensor:
+        """V in full space: B @ V_b @ B.T (M, M)"""
+        return self.state.B @ self.state.V_b @ self.state.B.T
+```
+
+### 7.4 Usage Example
+
+```python
+from eigenspace_model import DirectVGPModel
+from kernels import ArcCosineKernel
+from likelihoods import PoissonLikelihood
+from train import train_eigenspace, predict_eigenspace
+
+# Create model
+kernel = ArcCosineKernel(...)
+likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0)
+
+# Train using eigenspace mode
+result = train_eigenspace(kernel, likelihood, X_train, X_tilde, r_train, ...)
+state = result['state']
+
+# Make predictions
+predictions = predict_eigenspace(kernel, likelihood, state, X_tilde, X_test)
+f_pred = predictions['f_pred']
+
+# Or use wrapper for GPyTorch-like interface
+model = DirectVGPModel(kernel, likelihood, X_train, X_tilde)
+model.state = state  # Use trained state
+posterior = model(X_test)
+f_pred = posterior.expected_firing_rate()
+```
+
+---
+
+## 8. Resolved Bugs
+
+### RESOLVED: mstep_eigenspace_autograd Diagonal Approximation (FIXED January 2025)
+
+**Status**: FIXED
+
+**Location**: `mstep.py:mstep_eigenspace_autograd()` lines 167-170
+
+**Original Problem**: Inside the LBFGS closure, the KL trace term used a diagonal approximation that was INCORRECT when kernel hyperparameters changed:
+
+```python
+# OLD BUGGY CODE
+V_diag = torch.diag(state.V_b)
+K_tilde_b_diag = torch.diag(K_tilde_b)  # WRONG - K_tilde_b NOT diagonal after hyperparam changes
+trace_term = (V_diag / K_tilde_b_diag.clamp(min=1e-10)).sum()
+```
+
+**Why it was wrong**:
+1. At initialization, `K_tilde_b = diag(eigenvalues)` is diagonal
+2. Inside M-step closure, hyperparameters change → `K_tilde_new ≠ K_tilde_init`
+3. Fresh `K_tilde_b = B.T @ K_tilde_new @ B` is NOT diagonal (B is eigenvectors of OLD K_tilde)
+4. Taking only diagonal elements gave WRONG KL trace → WRONG gradients → suboptimal optimization
+
+**Fix applied**: Use the already-computed full matrix inverse:
+
+```python
+# FIXED CODE (mstep.py lines 167-170)
+# K_tilde_b_inv was already computed via solve() at line 139-143
+trace_term = torch.trace(K_tilde_b_inv @ state.V_b)
+```
+
+**Verification** (January 2025):
+| Mode | test_r (M=50, Cell 8, 5 iters) | Diff vs vargp_old |
+|------|-------------------------------|-------------------|
+| vargp_old | 0.7951 | reference |
+| vargp_direct (autograd) BEFORE fix | 0.7726 | -0.0225 (BUGGY) |
+| vargp_direct (autograd) AFTER fix | 0.7946 | -0.0005 (FIXED) |
+| vargp_direct (analytical) | 0.7959 | +0.0008 |
+
+---
+
+### RESOLVED: Stale Eigenvalues in Analytical M-step (FIXED January 2025)
+
+**Status**: FIXED
+
+**Original Problem**: Used stale `state.eigvals_b` while computing fresh `K_tilde_b`:
+
+```python
+# OLD BUGGY CODE
 K_tilde_b = B.T @ K_tilde_new @ B     # Fresh K_tilde_b
 K_tilde_inv_b = diag(1/eigvals_b)     # STALE eigenvalues!
 ```
@@ -376,25 +648,28 @@ K_tilde_inv_b = diag(1/eigvals_b)     # STALE eigenvalues!
 **Fix**: Use `torch.linalg.solve()` for the inverse:
 
 ```python
-# FIXED CODE
+# FIXED CODE (in mstep.py:mstep_eigenspace_analytical lines 316-317)
 K_tilde_b = B.T @ K_tilde_new @ B
-K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye)  # Works for any SPD matrix
+eye_b = torch.eye(n_b, ...)
+K_tilde_inv_b = torch.linalg.solve(K_tilde_b, eye_b)  # Works for any SPD matrix
 ```
 
-**Location**: `direct_vargp.py:mstep_lbfgs_analytical()` lines 1102-1107
+---
 
 ### Verified Non-Bugs
 
 Unit tests confirmed these are NOT bugs:
 
-- **BUG #4 (Softplus chain rule)**: `dL['σ₀'] * sigmoid(raw)` is correct
+- **BUG #4 (Softplus chain rule)**: `dL['sigma_0'] * sigmoid(raw)` is correct
 - **BUG #3 (Eigenspace projection)**: `dK_tilde_b = B.T @ dK_tilde @ B` preserves gradient structure
+- **compute_elbo_eigenspace trace formula**: Correctly uses diagonal V_b elements when K_tilde_b is guaranteed diagonal (called with fixed eigenspace after E-step, not during M-step)
+- **compute_loss_gradients**: Correctly branches based on `is_diagonal` flag
 
 ---
 
-## 8. Deferred Items
+## 9. Deferred Items
 
-### 8.1 Correct E-step m_new Formula (NOT IMPLEMENTED)
+### 9.1 Correct E-step m_new Formula (NOT IMPLEMENTED)
 
 **Background**: The original varGP uses a mathematically **incorrect** m_new formula that works empirically.
 
@@ -412,7 +687,15 @@ m_new = m + K_tilde @ solve(K_tilde + G, g - m)
 
 **See**: `.claude/ESTEP_MATH_ANALYSIS.md` for full derivation
 
-### 8.2 Extended Testing
+### 9.2 Gradient Function Consolidation (DEFERRED)
+
+There are TWO gradient systems in the codebase:
+1. **Kernel-level gradients** (`analytical_gradients.py`, `analytical_gradients_vjp.py`) - for `--gradient-mode`
+2. **M-step gradients** (`direct_vargp.py`) - for `mstep_eigenspace_analytical()`
+
+These have different APIs but some shared formulas. Consolidation is deferred to avoid breaking anything.
+
+### 9.3 Extended Testing
 
 - Only tested M=50. Original benchmark included M=250.
 - Only tested ntrain=500. Could test ntrain=2000.
@@ -420,23 +703,32 @@ m_new = m + K_tilde @ solve(K_tilde + G, g - m)
 
 ---
 
-## 9. Unit Tests
+## 10. Unit Tests
 
-### Test File: `tests/test_vargp_direct_match.py`
+### Test Files
+
+| File | Purpose |
+|------|---------|
+| `tests/test_vargp_direct_match.py` | Unit tests for gradient functions |
+| `tests/test_direct_vgp_model.py` | Unit tests for wrapper classes |
+| `tests/test_mstep_analytical.py` | M-step gradient validation |
+
+### Key Tests
 
 | Test | Purpose | Acceptance |
 |------|---------|------------|
-| 1. `test_softplus_chain_rule` | Verify gradient transform for σ₀, Amp | rel_err < 1e-4 vs finite diff |
-| 2. `test_eigenspace_projection_gradients` | Verify dK_tilde_b preserves gradients | rel_err < 1e-4 for all params |
-| 3. `test_ktilde_inv_methods` | Verify solve() vs eigenvalue inverse | Match at init, non-diagonal after change |
-| 4. `test_gradient_magnitude_sanity` | Check for NaN/Inf in gradients | No NaN/Inf, reasonable magnitudes |
-| 5. `test_multicell_match` | Compare to vargp_old on cells 6, 8, 15 | test_r diff < 0.05 |
+| `test_softplus_chain_rule` | Verify gradient transform for sigma_0, Amp | rel_err < 1e-4 vs finite diff |
+| `test_eigenspace_projection_gradients` | Verify dK_tilde_b preserves gradients | rel_err < 1e-4 for all params |
+| `test_ktilde_inv_methods` | Verify solve() vs eigenvalue inverse | Match at init, non-diagonal after change |
+| `test_expected_firing_rate` | Verify f_mean formula in wrapper | Exact match |
+| `test_prediction_test_points` | Verify wrapper matches predict_eigenspace | Exact match |
 
 ### Running Tests
 
 ```bash
-# All tests
+# All vargp_direct tests
 python tests/test_vargp_direct_match.py
+python tests/test_direct_vgp_model.py
 
 # Skip slow tests
 python tests/test_vargp_direct_match.py --skip-slow
@@ -451,20 +743,19 @@ All tests PASS:
 - Softplus chain rule: rel_err < 1e-7
 - Eigenspace projection: rel_err < 1e-6 for all 6 hyperparameters
 - K_tilde_inv methods: solve() works for non-diagonal K_tilde_b
-- Multi-cell: matches vargp_old within 0.01 on all tested cells
+- Wrapper classes: exact match with standalone functions
 
 ---
 
-## 10. Math Reference
+## 11. Math Reference
 
 ### LaTeX Source Documents
 
 | File | Content |
 |------|---------|
-| `~/IDV_code/Papers/latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation (E-step, M-step) |
+| `~/IDV_code/Papers/latex_summaries/Gaussian_process_theory.tex` | Full variational GP derivation |
 | `~/IDV_code/Papers/latex_summaries/Estep_corrected.tex` | Correct E-step derivation |
-| `~/IDV_code/Papers/latex_summaries/Estep_corrected_mderivation.tex` | m_new formula derivation |
-| `~/IDV_code/Papers/latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math and gradients |
+| `~/IDV_code/Papers/latex_summaries/acosker_kernel_def_and_gradients.tex` | Arc-cosine kernel math |
 
 ### Local Context Documents
 
@@ -472,11 +763,10 @@ All tests PASS:
 |------|---------|
 | `.claude/ESTEP_MATH_ANALYSIS.md` | Analysis of E-step formula discrepancy |
 | `.claude/MATH_REFERENCE.md` | Quick math reference for this codebase |
-| `.claude/ANALYTICAL_GRADIENTS_MATH.md` | M-step gradient derivations |
 
 ---
 
-## 11. Code-to-Math Mapping
+## 12. Code-to-Math Mapping
 
 ### Variables
 
@@ -484,42 +774,42 @@ All tests PASS:
 |------|------|-------|-------------|
 | `m_b` | m | (n_b,) | Variational mean in eigenspace |
 | `V_b` | V | (n_b, n_b) | Variational covariance (NOT diagonal) |
-| `K_tilde_b` | K̃ | (n_b, n_b) | Inducing kernel (diagonal in eigenspace) |
+| `K_tilde_b` | K_tilde | (n_b, n_b) | Inducing kernel (diagonal in eigenspace) |
 | `K_b` | K | (N, n_b) | Cross-kernel to inducing points |
 | `Kvec` | k(x,x) | (N,) | Self-kernel (diagonal) |
-| `eigvals_b` | λ_i | (n_b,) | Eigenvalues of K̃ |
+| `eigvals_b` | lambda_i | (n_b,) | Eigenvalues of K_tilde |
 | `B` | B | (M, n_b) | Eigenvector matrix |
-| `a` / `KKtilde_inv_b` | K K̃⁻¹ | (N, n_b) | Projection vector |
-| `lambda_m` | μ(x) | (N,) | Posterior mean |
-| `lambda_var` | σ²(x) | (N,) | Posterior variance |
+| `a` / `KKtilde_inv_b` | K K_tilde_inv | (N, n_b) | Projection vector |
+| `lambda_m` | mu(x) | (N,) | Posterior mean |
+| `lambda_var` | sigma^2(x) | (N,) | Posterior variance |
 | `f_mean` | E[f] | (N,) | Expected firing rate |
 | `A` | A | scalar | Gain parameter |
-| `lambda0` | λ₀ | scalar | Bias parameter |
+| `lambda0` | lambda_0 | scalar | Bias parameter |
 
 ### Key Formulas
 
 **Posterior moments**:
 ```
-μ(x) = k(x)ᵀ K̃⁻¹ m
-σ²(x) = k(x,x) + k(x)ᵀ K̃⁻¹ (V - K̃) K̃⁻¹ k(x)
+mu(x) = k(x).T @ K_tilde_inv @ m
+sigma^2(x) = k(x,x) + k(x).T @ K_tilde_inv @ (V - K_tilde) @ K_tilde_inv @ k(x)
 ```
 
 **Expected log-likelihood**:
 ```
-E[log p(r|λ)] = r(Aμ + λ₀) - exp(Aμ + ½A²σ² + λ₀)
+E[log p(r|lambda)] = r*(A*mu + lambda_0) - exp(A*mu + 0.5*A^2*sigma^2 + lambda_0)
 ```
 
 **KL divergence**:
 ```
-KL = ½[tr(K̃⁻¹V) + mᵀK̃⁻¹m - n_b + log|K̃| - log|V|]
+KL = 0.5 * [tr(K_tilde_inv @ V) + m.T @ K_tilde_inv @ m - n_b + log|K_tilde| - log|V|]
 ```
 
 **E-step Newton updates**:
 ```
-g = A · aᵀ(r - f)           # Gradient
-G = A² · aᵀ diag(f) a       # Hessian
-V_new = solve(I + K̃G, K̃)
-m_new = V_new(Gm + g)        # OLD formula (see Section 8.1)
+g = A * a.T @ (r - f)           # Gradient
+G = A^2 * a.T @ diag(f) @ a     # Hessian
+V_new = solve(I + K_tilde @ G, K_tilde)
+m_new = V_new @ (G @ m + g)     # OLD formula (see Section 9.1)
 ```
 
 ---
@@ -532,7 +822,7 @@ m_new = V_new(Gm + g)        # OLD formula (see Section 8.1)
 | C matrix | 3577-3631 | `localker()` |
 | Kernel | 3663-3813 | `acosker()` |
 | E-step | 4217-4277 | `Estep()` |
-| λ moments | 3906-3956 | `lambda_moments()` |
+| lambda moments | 3906-3956 | `lambda_moments()` |
 | Log-likelihood | 4064-4119 | `compute_loglikelihood()` |
 | KL divergence | 4121-4152 | `compute_KL_div()` |
 | Eigenspace | 5435-5444 | Eigendecomposition |
@@ -541,4 +831,5 @@ m_new = V_new(Gm + g)        # OLD formula (see Section 8.1)
 ---
 
 *Created: January 2025*
+*Last Updated: January 2025 (Reorganized to modular structure)*
 *Purpose: Comprehensive reference for vargp_direct implementation*

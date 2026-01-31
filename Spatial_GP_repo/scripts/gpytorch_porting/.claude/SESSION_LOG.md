@@ -5,6 +5,43 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-01-31: vargp_direct Bug Fix & Canonical Test Update (COMPLETE)
+
+**Accomplished:**
+- Fixed critical diagonal approximation bug in `mstep_eigenspace_autograd()` (mstep.py lines 167-170)
+- Extensive investigation using 4 parallel subagents confirmed no other similar bugs
+- Updated `run_canonical_tests.py` to include vargp_direct mode (16 configs instead of 12)
+- Added `--float32` flag to all canonical tests for fair comparison with vargp_old
+- Updated VARGP_DIRECT_REFERENCE.md Section 8 to mark bug as FIXED
+- Updated investigations/eigenspace_dimensions.md to RESOLVED status
+
+**The Bug:**
+- KL trace term used diagonal approximation `sum(V_diag / K_diag)` when K_tilde_b was NOT diagonal
+- Inside M-step LBFGS closure, hyperparameters change → K_tilde_b = B.T @ K_tilde_new @ B is non-diagonal
+- Fix: `trace_term = torch.trace(K_tilde_b_inv @ state.V_b)` using already-computed full matrix inverse
+
+**Performance After Fix** (M=50, Cell 8, 50 iterations):
+| Mode | test_r | Time |
+|------|--------|------|
+| vargp_old | 0.8413 | 6.3s |
+| vargp_direct (FIXED) | 0.8442 | 5.6s |
+
+**Canonical Test Results** (15/16 passed):
+- vargp_direct matches vargp_old within ±0.004 across all configs
+- 1 pre-existing failure: vargp_style at ntrain=2000, M=200 (negative variance)
+
+**Known Remaining Difference:**
+- KL formula: vargp_direct has `-n_b` term, vargp_old omits it
+- Causes ~20-35 loss offset but does NOT affect optimization or predictions
+
+**Files Changed:**
+- `mstep.py` - Fixed diagonal approximation bug (lines 167-170)
+- `run_canonical_tests.py` - Added vargp_direct, added --float32 for all modes
+- `.claude/VARGP_DIRECT_REFERENCE.md` - Updated Section 8, performance table
+- `investigations/eigenspace_dimensions.md` - Status changed to RESOLVED
+
+---
+
 ## 2026-01-28: vargp_direct Mode Implementation (COMPLETE)
 
 **Accomplished:**
