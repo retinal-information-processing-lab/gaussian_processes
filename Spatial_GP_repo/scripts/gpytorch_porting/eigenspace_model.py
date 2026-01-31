@@ -1,32 +1,30 @@
 """
 Eigenspace-based Variational GP Model
 
-This module contains all state management and model classes for the eigenspace
-(vargp_direct) training mode. It provides a clean GPyTorch-like interface while
-using eigenspace projection for computational efficiency.
+This module contains the model class and state management for the eigenspace
+(vargp_direct) training mode. Provides a clean interface using eigenspace
+projection for computational efficiency.
 
 Contents:
 - DirectVariationalState: State container for eigenspace quantities
-- compute_kernels_eigenspace(): Initialize eigenspace state
-- recompute_kernels_after_mstep(): Reproject after M-step
+- DirectVGPModel: Main model class (owns kernel, likelihood, state)
 - lambda_moments_eigenspace(): Compute posterior moments
 - EigenspacePosterior: Posterior at query points
 - EigenspaceVariationalDistribution: Variational params interface
-- DirectVGPModel: GPyTorch-like model interface
 
 Usage:
-    model = DirectVGPModel(kernel, likelihood, X, X_tilde, eigval_tol)
+    model = DirectVGPModel(kernel, likelihood, X_train, X_tilde, eigval_tol)
 
-    # Get posterior at points
-    posterior = model(X)
+    # Get posterior at training points
+    posterior = model(model.X_train)
     f_mean = model.likelihood.expected_firing_rate(posterior)
 
     # Access variational params
     model.variational_distribution.mean  # Full M-space
     model.state.m_b  # Eigenspace (for E-step)
 
-    # After M-step, recompute eigenkernel
-    model.recompute_eigenkernel()
+    # After M-step changes kernel params, sync eigenspace
+    model.recompute_eigenspace()
 """
 
 from dataclasses import dataclass
@@ -80,9 +78,9 @@ class DirectVariationalState:
 # State Initialization and Reprojection
 # ==============================================================================
 
-def compute_kernels_eigenspace(
+def _compute_initial_eigenspace(
     kernel,
-    X: torch.Tensor,
+    X_train: torch.Tensor,
     X_tilde: torch.Tensor,
     eigval_tol: float = EIGVAL_TOL
 ) -> DirectVariationalState:
@@ -92,8 +90,8 @@ def compute_kernels_eigenspace(
     Initializes m_b = 0 and V_b = K_tilde_b (prior).
 
     Args:
-        kernel: ArcCosineKernel instance (used as standalone calculator)
-        X: Training inputs, shape (N, n_features)
+        kernel: ArcCosineKernel instance
+        X_train: Training inputs, shape (N, n_features)
         X_tilde: Inducing points, shape (M, n_features)
         eigval_tol: Eigenvalue threshold for projection
 
@@ -101,11 +99,10 @@ def compute_kernels_eigenspace(
         DirectVariationalState with initialized quantities
     """
     # Compute kernel matrices using GPyTorch kernel
-    # kernel(X1, X2).evaluate() returns the kernel matrix
     with torch.no_grad():
         K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
-        K = kernel(X, X_tilde).evaluate()  # (N, M)
-        Kvec = kernel(X, diag=True)  # (N,)
+        K = kernel(X_train, X_tilde).evaluate()  # (N, M)
+        Kvec = kernel(X_train, diag=True)  # (N,)
 
     # Get mask if kernel uses masking
     mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
@@ -124,7 +121,7 @@ def compute_kernels_eigenspace(
     KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)
 
     # Initialize variational parameters at prior
-    m_b = torch.zeros(n_b, dtype=X.dtype, device=X.device)
+    m_b = torch.zeros(n_b, dtype=X_train.dtype, device=X_train.device)
     V_b = K_tilde_b.clone()  # Prior: V = K_tilde
 
     return DirectVariationalState(
@@ -140,24 +137,22 @@ def compute_kernels_eigenspace(
     )
 
 
-def recompute_kernels_after_mstep(
+def _recompute_eigenspace(
     kernel,
-    X: torch.Tensor,
+    X_train: torch.Tensor,
     X_tilde: torch.Tensor,
     state: DirectVariationalState,
     eigval_tol: float = EIGVAL_TOL
 ) -> DirectVariationalState:
-    """Recompute kernels after M-step changes hyperparameters.
+    """Recompute eigenspace after kernel hyperparameters change.
 
     When M-step modifies kernel hyperparameters, K_tilde changes, so the
-    eigenspace changes. We recompute all kernel quantities and reproject
+    eigenspace changes. Recomputes all kernel quantities and reprojects
     m_b, V_b to the new eigenspace.
-
-    Reference: utils.py lines 5593-5627
 
     Args:
         kernel: ArcCosineKernel instance (with updated hyperparameters)
-        X: Training inputs, shape (N, n_features)
+        X_train: Training inputs, shape (N, n_features)
         X_tilde: Inducing points, shape (M, n_features)
         state: Current state with old eigenspace
         eigval_tol: Eigenvalue threshold for projection
@@ -169,11 +164,11 @@ def recompute_kernels_after_mstep(
     m_b_old = state.m_b
     V_b_old = state.V_b
 
-    # Recompute kernel matrices
+    # Recompute kernel matrices with current hyperparameters
     with torch.no_grad():
         K_tilde = kernel(X_tilde, X_tilde).evaluate()
-        K = kernel(X, X_tilde).evaluate()
-        Kvec = kernel(X, diag=True)
+        K = kernel(X_train, X_tilde).evaluate()
+        Kvec = kernel(X_train, diag=True)
 
     mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
 
@@ -375,36 +370,34 @@ class EigenspaceVariationalDistribution:
 
 
 class DirectVGPModel:
-    """GPyTorch-like interface to eigenspace variational GP. Model owns state.
+    """Eigenspace variational GP model for vargp_direct training mode.
 
-    This class wraps the eigenspace functions with a clean interface:
-    - Model owns variational state internally
+    This class owns kernel, likelihood, training data, and variational state.
+    It provides controlled mutation methods for state updates during training.
+
+    Key methods:
     - model(X) returns EigenspacePosterior with .mean, .variance
-    - model.recompute_eigenkernel() updates state after M-step
-
-    The wrapper produces EXACTLY identical results to the underlying
-    functions (atol=0, rtol=0).
+    - model.update_variational_params(m_b, V_b) - update after E-step
+    - model.recompute_eigenspace() - sync eigenspace after M-step
 
     Example usage:
-        model = DirectVGPModel(kernel, likelihood, X, X_tilde, eigval_tol)
+        model = DirectVGPModel(kernel, likelihood, X_train, X_tilde, eigval_tol)
 
-        # Get posterior at points
-        posterior = model(X)          # Computes moments from model._state
-        f_mean = model.likelihood.expected_firing_rate(posterior)
+        # Get posterior at training points
+        posterior = model(model.X_train)
 
-        # Access variational params
-        model.variational_distribution.mean  # Full M-space
-        model.state.m_b  # Eigenspace (for E-step)
+        # Update variational params (E-step)
+        model.update_variational_params(m_b_new, V_b_new)
 
-        # After M-step, recompute eigenkernel
-        model.recompute_eigenkernel()
+        # After M-step changes kernel params, sync eigenspace
+        model.recompute_eigenspace()
     """
 
     def __init__(
         self,
         kernel,
         likelihood,
-        X: torch.Tensor,
+        X_train: torch.Tensor,
         X_tilde: torch.Tensor,
         eigval_tol: float = EIGVAL_TOL
     ):
@@ -412,38 +405,50 @@ class DirectVGPModel:
         Args:
             kernel: ArcCosineKernel instance
             likelihood: PoissonLikelihood instance
-            X: (N, n_features) - training data
-            X_tilde: (M, n_features) - inducing points
+            X_train: Training data, shape (N, n_features)
+            X_tilde: Inducing points, shape (M, n_features)
             eigval_tol: Eigenvalue threshold for projection (default 1e-4)
         """
         self.kernel = kernel
         self.likelihood = likelihood
-        self.X = X
+        self.X_train = X_train
         self.X_tilde = X_tilde
         self.eigval_tol = eigval_tol
 
-        # Compute initial eigenkernel and state
-        self._state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
+        # Compute initial eigenspace
+        self._state = _compute_initial_eigenspace(kernel, X_train, X_tilde, eigval_tol)
 
-    def recompute_eigenkernel(self):
-        """Recompute eigenspace after M-step changes kernel hyperparameters.
+    def update_variational_params(self, m_b: torch.Tensor, V_b: torch.Tensor) -> None:
+        """Update variational parameters after E-step.
 
-        Updates internal _state with:
-        - New K_tilde, K, Kvec from kernel
-        - New eigendecomposition (B, eigvals_b)
-        - Reprojected m_b, V_b in new eigenspace
+        Args:
+            m_b: New variational mean in eigenspace, shape (n_b,)
+            V_b: New variational covariance in eigenspace, shape (n_b, n_b)
 
-        Complexity: O(M^3) for eigendecomposition + O(M*n_b^2) for reprojection.
+        Note:
+            V_b is symmetrized for numerical stability.
         """
-        self._state = recompute_kernels_after_mstep(
-            self.kernel, self.X, self.X_tilde, self._state, self.eigval_tol
+        self._state.m_b = m_b
+        self._state.V_b = (V_b + V_b.T) / 2  # Symmetrize for stability
+
+    def recompute_eigenspace(self) -> None:
+        """Recompute eigenspace after kernel hyperparameters change.
+
+        Call this after M-step modifies kernel hyperparameters. Updates:
+        - K_tilde, K, Kvec with current kernel hyperparameters
+        - Eigendecomposition (B, eigvals_b)
+        - Reprojected m_b, V_b in new eigenspace
+        """
+        self._state = _recompute_eigenspace(
+            self.kernel, self.X_train, self.X_tilde, self._state, self.eigval_tol
         )
 
     @property
     def state(self) -> DirectVariationalState:
-        """Access internal state for E-step operations.
+        """Access internal state for reading eigenspace quantities.
 
-        E-step can mutate state.m_b and state.V_b directly.
+        Use model.update_variational_params() to update m_b, V_b.
+        Use model.recompute_eigenspace() after M-step.
         """
         return self._state
 
@@ -457,11 +462,10 @@ class DirectVGPModel:
             EigenspacePosterior with .mean and .variance properties.
 
         Note:
-            If X_query is the same object as self.X (training data),
-            uses precomputed state.KKtilde_inv_b for efficiency.
+            If X_query is self.X_train, uses precomputed KKtilde_inv_b.
         """
         # Check if this is the training data (same object reference)
-        is_training_data = X_query is self.X
+        is_training_data = X_query is self.X_train
 
         return EigenspacePosterior(
             self.kernel, self._state, X_query, self.X_tilde, is_training_data

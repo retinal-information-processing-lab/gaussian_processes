@@ -259,20 +259,20 @@ def test_update_variational_params(verbose=False):
 
 
 # ==============================================================================
-# Test 5: recompute_after_mstep Method
+# Test 5: recompute_eigenspace Method
 # ==============================================================================
-def test_recompute_after_mstep(verbose=False):
-    """Verify recompute_after_mstep() correctly updates eigenspace after kernel changes."""
-    print("\n=== Test 5: recompute_after_mstep Method ===")
+def test_recompute_eigenspace(verbose=False):
+    """Verify recompute_eigenspace() correctly updates eigenspace after kernel changes."""
+    print("\n=== Test 5: recompute_eigenspace Method ===")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dtype = torch.float32
 
-    X, X_tilde, _, _ = load_test_data(n_train=100, n_tilde=25, device=device, dtype=dtype)
+    X_train, X_tilde, _, _ = load_test_data(n_train=100, n_tilde=25, device=device, dtype=dtype)
     kernel = create_test_kernel(device, dtype)
     likelihood = create_test_likelihood(device, dtype)
 
-    model = DirectVGPModel(kernel, likelihood, X, X_tilde, EIGVAL_TOL)
+    model = DirectVGPModel(kernel, likelihood, X_train, X_tilde, EIGVAL_TOL)
 
     # Store original eigenspace
     original_B = model.state.B.clone()
@@ -287,7 +287,7 @@ def test_recompute_after_mstep(verbose=False):
         kernel.raw_sigma_0.copy_(torch.tensor(2.0, device=device, dtype=dtype))
 
     # Recompute eigenspace
-    model.recompute_after_mstep()
+    model.recompute_eigenspace()
 
     # Check eigenspace changed
     check1 = not torch.equal(model.state.B, original_B)
@@ -319,7 +319,7 @@ def test_recompute_after_mstep(verbose=False):
     print(f"  eigvals_b == diag(K_tilde_b): {'PASS' if eigvals_match else 'FAIL'}")
     all_passed = all_passed and eigvals_match
 
-    print(f"\n{'PASS' if all_passed else 'FAIL'}: recompute_after_mstep test")
+    print(f"\n{'PASS' if all_passed else 'FAIL'}: recompute_eigenspace test")
     return all_passed
 
 
@@ -333,7 +333,7 @@ def main():
         test_prediction_test_points,
         test_variational_distribution,
         test_update_variational_params,
-        test_recompute_after_mstep,
+        test_recompute_eigenspace,
     ]
 
     results = [test(verbose=args.verbose) for test in tests]

@@ -94,7 +94,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
     """
     kernel = model.kernel
     likelihood = model.likelihood
-    X = model.X
+    X = model.X_train
     X_tilde = model.X_tilde
     state = model.state
     if n_mstep == 0:
@@ -204,7 +204,7 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float)
     """
     kernel = model.kernel
     likelihood = model.likelihood
-    X = model.X
+    X = model.X_train
     X_tilde = model.X_tilde
     state = model.state
     if n_mstep == 0:

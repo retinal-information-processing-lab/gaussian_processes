@@ -3,7 +3,7 @@
 **Purpose**: Comprehensive guide to the `vargp_direct` training mode - a GPyTorch-based implementation that matches the original `varGP()` algorithm structure.
 
 **Status**: ACTIVE - Performance matches vargp_old; known loss offset remains (see Section 6.8)
-**Last Updated**: January 2025 (Diagonal approximation bug fixed)
+**Last Updated**: February 2025 (API cleanup: X→X_train, recompute_eigenspace())
 
 ---
 
@@ -84,10 +84,13 @@ gpytorch_porting/
 |
 |-- eigenspace_model.py      # STATE & MODEL CLASSES (~480 lines)
 |   |-- DirectVariationalState       # Dataclass for eigenspace state
-|   |-- compute_kernels_eigenspace() # Initialize eigenspace state
-|   |-- recompute_kernels_after_mstep()  # Reproject after M-step
+|   |-- DirectVGPModel               # Main model class (owns kernel, likelihood, state)
+|   |   |-- .X_train                 # Training data
+|   |   |-- .X_tilde                 # Inducing points
+|   |   |-- .state                   # DirectVariationalState
+|   |   |-- .update_variational_params()  # Update m_b, V_b after E-step
+|   |   +-- .recompute_eigenspace()  # Sync eigenspace after M-step
 |   |-- lambda_moments_eigenspace()  # Compute posterior moments
-|   |-- DirectVGPModel               # GPyTorch-like model interface
 |   |-- EigenspacePosterior          # Posterior at query points
 |   +-- EigenspaceVariationalDistribution  # Variational params interface
 |
@@ -149,21 +152,21 @@ gpytorch_porting/
 The training loop is implemented in `train.py:train_eigenspace()`:
 
 ```python
-def train_eigenspace(kernel, likelihood, X, X_tilde, r, ...):
-    # INITIALIZATION
-    # 1. Compute initial kernels: K_tilde, K, Kvec
-    # 2. Eigendecomposition: B, eigvals_b from K_tilde
-    # 3. Initialize m_b = 0, V_b = K_tilde_b (diagonal)
-    state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
+def train_eigenspace(model, r, ...):
+    # model is a DirectVGPModel which owns:
+    # - kernel, likelihood, X_train, X_tilde
+    # - state (initialized with eigenspace projection on construction)
+
+    state = model.state  # Already initialized with m_b=0, V_b=K_tilde_b
 
     # MAIN LOOP
     # NOTE: Uses range(1, n_iterations) to match vargp_old behavior
     # This means n_iterations=50 gives 49 actual iterations (1-49)
     for iteration in range(1, n_iterations):
 
-        # KERNEL RECOMPUTATION (after iteration 1)
+        # EIGENSPACE RECOMPUTATION (after iteration 1, when kernel params changed)
         if n_mstep > 0 and iteration > 1:
-            state = recompute_kernels_after_mstep(kernel, X, X_tilde, state, eigval_tol)
+            model.recompute_eigenspace()  # Sync eigenspace with current kernel params
 
         # E-STEP: Newton updates for m_b, V_b
         for _ in range(n_estep):
@@ -207,10 +210,10 @@ This matches vargp_old behavior exactly:
 #### Initialization
 
 ```python
-# In compute_kernels_eigenspace():
+# In DirectVGPModel.__init__() (via _compute_initial_eigenspace):
 K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
-K = kernel(X, X_tilde).evaluate()               # (N, M)
-Kvec = kernel(X, diag=True)                     # (N,)
+K = kernel(X_train, X_tilde).evaluate()        # (N, M)
+Kvec = kernel(X_train, diag=True)              # (N,)
 
 # Eigendecomposition
 B, eigvals_b, _ = compute_eigenspace(K_tilde)  # B: (M, n_b)
@@ -392,8 +395,8 @@ where:
 ### 6.1 K_tilde_b is Only Diagonal at Specific Points
 
 **CRITICAL**: K_tilde_b = diag(eigenvalues) is diagonal ONLY:
-1. Immediately after eigendecomposition (initialization)
-2. After `recompute_kernels_after_mstep()` (which does fresh eigendecomposition)
+1. Immediately after eigendecomposition (model initialization)
+2. After `model.recompute_eigenspace()` (which does fresh eigendecomposition)
 3. During E-step and F-step (eigenspace is fixed)
 
 **K_tilde_b is NOT diagonal**:
@@ -409,8 +412,8 @@ K_tilde_b = B.T @ K_tilde_new @ B        # NOT diagonal! B is from OLD K_tilde!
 
 | Location | K_tilde_b diagonal? | Safe to use eigvals? |
 |----------|--------------------|--------------------|
-| After `compute_kernels_eigenspace()` | YES | YES |
-| After `recompute_kernels_after_mstep()` | YES | YES |
+| After model initialization | YES | YES |
+| After `model.recompute_eigenspace()` | YES | YES |
 | Inside E-step | YES (fixed) | YES |
 | Inside F-step | YES (fixed) | YES |
 | Inside M-step closure (first call) | YES | YES |
@@ -422,15 +425,14 @@ K_tilde_b = B.T @ K_tilde_new @ B        # NOT diagonal! B is from OLD K_tilde!
 
 ### 6.2 Eigenspace Changes After M-step
 
-After M-step changes kernel hyperparameters, the eigenspace changes. You MUST reproject variational parameters:
+After M-step changes kernel hyperparameters, the eigenspace changes. You MUST call `model.recompute_eigenspace()` to sync the state:
 
 ```python
-# After M-step (in recompute_kernels_after_mstep)
-K_tilde_new = kernel(X_tilde, X_tilde)
-B_new, eigvals_new, _ = compute_eigenspace(K_tilde_new)
-
-# Reproject m_b, V_b to new eigenspace
-m_b_new, V_b_new = reproject_variational_params(B_old, B_new, m_b, V_b)
+# After M-step - call recompute_eigenspace() which:
+# 1. Recomputes K_tilde, K, Kvec with current kernel params
+# 2. Does fresh eigendecomposition: B_new, eigvals_new
+# 3. Reprojects m_b, V_b to new eigenspace
+model.recompute_eigenspace()
 ```
 
 ### 6.3 LBFGS Closure Called Multiple Times
@@ -493,25 +495,40 @@ The `eigenspace_model.py` module provides GPyTorch-compatible wrapper classes th
 
 ### 7.1 DirectVGPModel
 
-A GPyTorch-like model interface for vargp_direct:
+The main model class for vargp_direct training mode:
 
 ```python
 class DirectVGPModel:
-    """GPyTorch-like interface for eigenspace-based variational GP."""
+    """Eigenspace variational GP model for vargp_direct training mode."""
 
-    def __init__(self, kernel, likelihood, X, X_tilde, eigval_tol=1e-4):
+    def __init__(self, kernel, likelihood, X_train, X_tilde, eigval_tol=1e-4):
         self.kernel = kernel
         self.likelihood = likelihood
-        self.state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
+        self.X_train = X_train      # Training data (stored for eigenspace ops)
+        self.X_tilde = X_tilde      # Inducing points
+        self._state = ...           # Initialized with eigenspace projection
 
     def __call__(self, X_query) -> EigenspacePosterior:
         """Returns posterior at query points."""
-        return EigenspacePosterior(self.kernel, self.likelihood, self.state, X_query)
+        ...
+
+    def update_variational_params(self, m_b, V_b):
+        """Update m_b, V_b after E-step."""
+        ...
+
+    def recompute_eigenspace(self):
+        """Sync eigenspace with current kernel hyperparameters. Call after M-step."""
+        ...
+
+    @property
+    def state(self) -> DirectVariationalState:
+        """Access eigenspace state (read-only preferred)."""
+        ...
 
     @property
     def variational_distribution(self) -> EigenspaceVariationalDistribution:
         """Returns variational distribution interface."""
-        return EigenspaceVariationalDistribution(self.state)
+        ...
 ```
 
 ### 7.2 EigenspacePosterior
@@ -571,23 +588,22 @@ from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from train import train_eigenspace, predict_eigenspace
 
-# Create model
+# Create model (owns kernel, likelihood, training data, and state)
 kernel = ArcCosineKernel(...)
 likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0)
+model = DirectVGPModel(kernel, likelihood, X_train, X_tilde)
 
 # Train using eigenspace mode
-result = train_eigenspace(kernel, likelihood, X_train, X_tilde, r_train, ...)
-state = result['state']
+result = train_eigenspace(model, r_train, n_iterations=50, ...)
 
-# Make predictions
-predictions = predict_eigenspace(kernel, likelihood, state, X_tilde, X_test)
+# Make predictions at test points
+predictions = predict_eigenspace(model, X_test)
 f_pred = predictions['f_pred']
 
-# Or use wrapper for GPyTorch-like interface
-model = DirectVGPModel(kernel, likelihood, X_train, X_tilde)
-model.state = state  # Use trained state
+# Or use model directly for posterior
 posterior = model(X_test)
-f_pred = posterior.expected_firing_rate()
+lambda_m = posterior.mean
+lambda_var = posterior.variance
 ```
 
 ---

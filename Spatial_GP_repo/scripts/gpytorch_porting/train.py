@@ -567,7 +567,7 @@ def train_eigenspace(
 
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
-            model.recompute_after_mstep()
+            model.recompute_eigenspace()
             lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
             A = model.likelihood.A.squeeze()
             lambda0 = model.likelihood.lambda0.squeeze()
