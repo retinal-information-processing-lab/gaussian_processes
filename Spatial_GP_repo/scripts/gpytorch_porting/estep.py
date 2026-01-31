@@ -797,12 +797,7 @@ def e_step_loop(
 # Eigenspace E-Step Functions
 # =============================================================================
 
-def estep_eigenspace(
-    state,  # DirectVariationalState from eigenspace_model
-    r: torch.Tensor,
-    A: torch.Tensor,
-    f_mean: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
+def estep_eigenspace(model, r: torch.Tensor, f_mean: torch.Tensor) -> None:
     """Newton update for variational parameters in eigenspace.
 
     This implementation matches utils.py:Estep() lines 4244-4256 exactly.
@@ -821,16 +816,14 @@ def estep_eigenspace(
     "correct" formula improves results.
 
     Args:
-        state: DirectVariationalState with current eigenspace quantities
+        model: DirectVGPModel instance
         r: Spike counts, shape (N,)
-        A: Gain parameter (scalar)
         f_mean: Expected firing rate exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0),
                 shape (N,)
-
-    Returns:
-        m_b_new: Updated variational mean, shape (n_b,)
-        V_b_new: Updated variational covariance, shape (n_b, n_b)
     """
+    state = model.state
+    A = model.likelihood.A.squeeze()
+
     a = state.KKtilde_inv_b  # (N, n_b) - this is K @ K_tilde_inv in eigenspace
 
     # Transformed gradient: g_b = A * a.T @ (r - f_mean)
@@ -854,7 +847,7 @@ def estep_eigenspace(
     # Symmetrize V for numerical stability
     V_b_new = (V_b_new + V_b_new.T) / 2
 
-    return m_b_new, V_b_new
+    model.update_variational_params(m_b_new, V_b_new)
 
 
 # =============================================================================

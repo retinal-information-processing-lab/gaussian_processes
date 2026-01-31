@@ -279,7 +279,7 @@ def compute_f_mean(
 
 
 def fstep_eigenspace(
-    likelihood,
+    model,
     r: torch.Tensor,
     lambda_m: torch.Tensor,
     lambda_var: torch.Tensor,
@@ -291,13 +291,15 @@ def fstep_eigenspace(
     This is a simplified version that directly uses LBFGS on raw_A.
 
     Args:
-        likelihood: PoissonLikelihood instance
+        model: DirectVGPModel instance
         r: Spike counts, shape (N,)
         lambda_m: Posterior mean (held fixed), shape (N,)
         lambda_var: Posterior variance (held fixed), shape (N,)
         n_fstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
     """
+    likelihood = model.likelihood
+
     if n_fstep == 0:
         # Still update lambda0 analytically
         A = likelihood.A.squeeze()
@@ -344,7 +346,7 @@ def fstep_eigenspace(
 
         # Compute gradient analytically for efficiency
         # dL/dA = r @ lambda_m - (lambda_m + A * lambda_var) @ f_mean
-        # dL/d(logA) = A * dL/dA
+        # dL/d(logA) = A * dL_dA
         dL_dA = r @ lambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
         dL_dlogA = A * dL_dA
 

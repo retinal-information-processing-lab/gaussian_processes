@@ -58,6 +58,8 @@ from train import (
     compute_pearson_correlation, compute_explained_variance,
     train_eigenspace, predict_eigenspace,
 )
+from eigenspace_model import DirectVGPModel
+from eigenspace import EIGVAL_TOL
 from tests.test_utils import set_reproducible_seed
 
 
@@ -428,9 +430,10 @@ def main():
 
     # =========================================================================
     # VARGP_DIRECT MODE: Eigenspace projection, LBFGS M-step
+    # Uses DirectVGPModel which owns kernel, likelihood, and state
     # =========================================================================
     elif args.mode == 'vargp_direct':
-        # Create kernel with RF structure (standalone, not wrapped in VariationalGPModel)
+        # Create kernel with RF structure
         kernel = ArcCosineKernel(
             sigma_0=args.sigma_0,
             Amp=args.Amp,
@@ -456,11 +459,14 @@ def main():
         else:
             likelihood = likelihood.double().to(device)
 
+        # Create model (owns kernel, likelihood, and state)
+        model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, EIGVAL_TOL)
+
         print(f"\nInitial parameters:")
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
-        print(f"  A: {likelihood.A.item():.4f}")
-        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
-        print(f"  Amp: {kernel.Amp.item():.6f}")
+        print(f"  A: {model.likelihood.A.item():.4f}")
+        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
+        print(f"  Amp: {model.kernel.Amp.item():.6f}")
 
         # Train with eigenspace projection
         mstep_mode = 'analytical' if args.mstep_analytical else 'autograd'
@@ -474,7 +480,7 @@ def main():
 
         with torch.enable_grad():
             result = train_eigenspace(
-                kernel, likelihood, X_train, inducing_points, r_train,
+                model, r_train,
                 n_iterations=args.n_iterations,
                 n_estep=args.n_estep,
                 n_fstep=args.n_fstep,
@@ -489,20 +495,19 @@ def main():
         losses = result['losses']
         time_estep_total = result['time_estep_total']
         time_mstep_total = result['time_mstep_total']
-        state = result['state']
 
         print(f"\nTraining time: {train_time:.1f}s")
         print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
         print(f"  M-step:            {time_mstep_total:.1f}s")
-        print(f"  Eigenspace dim:    {len(state.eigvals_b)}")
+        print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
 
         print(f"\nFinal parameters:")
-        print(f"  A: {likelihood.A.item():.4f}")
-        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+        print(f"  A: {model.likelihood.A.item():.4f}")
+        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
 
         # Evaluate on test data
         print("\nEvaluating on test data...")
-        predictions = predict_eigenspace(kernel, likelihood, state, inducing_points, X_test)
+        predictions = predict_eigenspace(model, X_test)
         f_pred = predictions['f_pred']
 
         r_test_mean = r_test.mean(dim=0)
@@ -510,7 +515,7 @@ def main():
         explained_var, reliability = compute_explained_variance(r_test, f_pred)
 
         # Also check train correlation
-        train_preds = predict_eigenspace(kernel, likelihood, state, inducing_points, X_train)
+        train_preds = predict_eigenspace(model, X_train)
         train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
 
         # Check prediction statistics

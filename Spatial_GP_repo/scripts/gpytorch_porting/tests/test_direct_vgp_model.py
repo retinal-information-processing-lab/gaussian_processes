@@ -132,8 +132,8 @@ def test_prediction_test_points(verbose=False):
     # Method 1: Wrapper (EigenspacePosterior._compute_moments - my new code)
     posterior_test = model(X_test)
 
-    # Method 2: predict_eigenspace (existing code in direct_vargp.py)
-    pred_direct = predict_eigenspace(kernel, likelihood, model.state, X_tilde, X_test)
+    # Method 2: predict_eigenspace function (separate implementation path)
+    pred_direct = predict_eigenspace(model, X_test)
 
     mean_exact = torch.equal(posterior_test.mean, pred_direct['lambda_m'])
     var_exact = torch.equal(posterior_test.variance, pred_direct['lambda_var'])
@@ -208,6 +208,121 @@ def test_variational_distribution(verbose=False):
     return all_passed
 
 
+# ==============================================================================
+# Test 4: update_variational_params Method
+# ==============================================================================
+def test_update_variational_params(verbose=False):
+    """Verify update_variational_params() correctly updates state with symmetrization."""
+    print("\n=== Test 4: update_variational_params Method ===")
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    dtype = torch.float32
+
+    X, X_tilde, _, _ = load_test_data(n_train=100, n_tilde=25, device=device, dtype=dtype)
+    kernel = create_test_kernel(device, dtype)
+    likelihood = create_test_likelihood(device, dtype)
+
+    model = DirectVGPModel(kernel, likelihood, X, X_tilde, EIGVAL_TOL)
+    n_b = len(model.state.eigvals_b)
+
+    all_passed = True
+
+    # Test 1: m_b update
+    torch.manual_seed(42)
+    new_m_b = torch.randn(n_b, device=device, dtype=dtype)
+    new_V_b = torch.eye(n_b, device=device, dtype=dtype) * 0.5
+
+    model.update_variational_params(new_m_b, new_V_b)
+
+    check1 = torch.equal(model.state.m_b, new_m_b)
+    print(f"  m_b updated correctly: {'PASS' if check1 else 'FAIL'}")
+    all_passed = all_passed and check1
+
+    # Test 2: V_b symmetrization
+    # Create asymmetric V_b
+    asymmetric_V_b = torch.randn(n_b, n_b, device=device, dtype=dtype)
+    model.update_variational_params(new_m_b, asymmetric_V_b)
+
+    # Check V_b is symmetric after update
+    is_symmetric = torch.allclose(model.state.V_b, model.state.V_b.T, atol=1e-7)
+    print(f"  V_b symmetrized: {'PASS' if is_symmetric else 'FAIL'}")
+    all_passed = all_passed and is_symmetric
+
+    # Check it matches expected symmetrization formula
+    expected_V_b = (asymmetric_V_b + asymmetric_V_b.T) / 2
+    check2 = torch.allclose(model.state.V_b, expected_V_b, atol=1e-7)
+    print(f"  V_b = (V + V.T) / 2: {'PASS' if check2 else 'FAIL'}")
+    all_passed = all_passed and check2
+
+    print(f"\n{'PASS' if all_passed else 'FAIL'}: update_variational_params test")
+    return all_passed
+
+
+# ==============================================================================
+# Test 5: recompute_after_mstep Method
+# ==============================================================================
+def test_recompute_after_mstep(verbose=False):
+    """Verify recompute_after_mstep() correctly updates eigenspace after kernel changes."""
+    print("\n=== Test 5: recompute_after_mstep Method ===")
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    dtype = torch.float32
+
+    X, X_tilde, _, _ = load_test_data(n_train=100, n_tilde=25, device=device, dtype=dtype)
+    kernel = create_test_kernel(device, dtype)
+    likelihood = create_test_likelihood(device, dtype)
+
+    model = DirectVGPModel(kernel, likelihood, X, X_tilde, EIGVAL_TOL)
+
+    # Store original eigenspace
+    original_B = model.state.B.clone()
+    original_eigvals = model.state.eigvals_b.clone()
+    original_K_b = model.state.K_b.clone()
+
+    all_passed = True
+
+    # Modify kernel hyperparameters
+    with torch.no_grad():
+        # Change sigma_0 (affects kernel output)
+        kernel.raw_sigma_0.copy_(torch.tensor(2.0, device=device, dtype=dtype))
+
+    # Recompute eigenspace
+    model.recompute_after_mstep()
+
+    # Check eigenspace changed
+    check1 = not torch.equal(model.state.B, original_B)
+    check2 = not torch.equal(model.state.eigvals_b, original_eigvals)
+    check3 = not torch.equal(model.state.K_b, original_K_b)
+
+    print(f"  B changed after kernel modification: {'PASS' if check1 else 'FAIL'}")
+    print(f"  eigvals changed: {'PASS' if check2 else 'FAIL'}")
+    print(f"  K_b changed: {'PASS' if check3 else 'FAIL'}")
+
+    all_passed = all_passed and check1 and check2 and check3
+
+    # Check state is still valid (K_tilde_b is diagonal)
+    K_tilde_b = model.state.K_tilde_b
+    is_diagonal = torch.allclose(
+        K_tilde_b,
+        torch.diag(torch.diag(K_tilde_b)),
+        atol=1e-6
+    )
+    print(f"  K_tilde_b still diagonal: {'PASS' if is_diagonal else 'FAIL'}")
+    all_passed = all_passed and is_diagonal
+
+    # Check eigvals match K_tilde_b diagonal
+    eigvals_match = torch.allclose(
+        model.state.eigvals_b,
+        torch.diag(model.state.K_tilde_b),
+        atol=1e-6
+    )
+    print(f"  eigvals_b == diag(K_tilde_b): {'PASS' if eigvals_match else 'FAIL'}")
+    all_passed = all_passed and eigvals_match
+
+    print(f"\n{'PASS' if all_passed else 'FAIL'}: recompute_after_mstep test")
+    return all_passed
+
+
 def main():
     parser = argparse.ArgumentParser(description='Test DirectVGPModel wrapper')
     parser.add_argument('--verbose', '-v', action='store_true')
@@ -217,6 +332,8 @@ def main():
         test_expected_firing_rate,
         test_prediction_test_points,
         test_variational_distribution,
+        test_update_variational_params,
+        test_recompute_after_mstep,
     ]
 
     results = [test(verbose=args.verbose) for test in tests]

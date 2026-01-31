@@ -77,16 +77,7 @@ def m_step(
 # Eigenspace M-Step Functions
 # =============================================================================
 
-def mstep_eigenspace_autograd(
-    kernel,
-    likelihood,
-    X: torch.Tensor,
-    X_tilde: torch.Tensor,
-    r: torch.Tensor,
-    state,  # DirectVariationalState from eigenspace_model
-    n_mstep: int,
-    lr: float
-):
+def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
     Uses LBFGS with PyTorch autograd for gradients (not analytical gradients).
@@ -96,15 +87,16 @@ def mstep_eigenspace_autograd(
     The eigenspace is fixed during M-step; reprojection happens after.
 
     Args:
-        kernel: ArcCosineKernel instance
-        likelihood: PoissonLikelihood instance
-        X: Training inputs, shape (N, n_features)
-        X_tilde: Inducing points, shape (M, n_features)
+        model: DirectVGPModel instance
         r: Spike counts, shape (N,)
-        state: DirectVariationalState (m_b, V_b held fixed)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
     """
+    kernel = model.kernel
+    likelihood = model.likelihood
+    X = model.X
+    X_tilde = model.X_tilde
+    state = model.state
     if n_mstep == 0:
         return
 
@@ -193,16 +185,7 @@ def mstep_eigenspace_autograd(
     kernel.clamp_hyperparameters()
 
 
-def mstep_eigenspace_analytical(
-    kernel,
-    likelihood,
-    X: torch.Tensor,
-    X_tilde: torch.Tensor,
-    r: torch.Tensor,
-    state,  # DirectVariationalState from eigenspace_model
-    n_mstep: int,
-    lr: float
-):
+def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float):
     """M-step for eigenspace mode with analytical gradients (matching vargp_old).
 
     Computes dK/dtheta matrices ONCE and caches them for LBFGS closure.
@@ -211,18 +194,19 @@ def mstep_eigenspace_analytical(
     Implements all 8 numerical guardrails from original varGP.
 
     Args:
-        kernel: ArcCosineKernel instance
-        likelihood: PoissonLikelihood instance
-        X: Training inputs, shape (N, n_features)
-        X_tilde: Inducing points, shape (M, n_features)
+        model: DirectVGPModel instance
         r: Spike counts, shape (N,)
-        state: DirectVariationalState (m_b, V_b, B held fixed)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
 
     Reference:
         utils.py M-step closure, lines 5859-5963
     """
+    kernel = model.kernel
+    likelihood = model.likelihood
+    X = model.X
+    X_tilde = model.X_tilde
+    state = model.state
     if n_mstep == 0:
         return
 

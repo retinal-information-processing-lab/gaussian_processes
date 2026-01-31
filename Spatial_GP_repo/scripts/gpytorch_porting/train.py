@@ -500,10 +500,7 @@ def compute_elbo_eigenspace(
 
 
 def train_eigenspace(
-    kernel,
-    likelihood,
-    X: torch.Tensor,
-    X_tilde: torch.Tensor,
+    model,  # DirectVGPModel
     r: torch.Tensor,
     n_iterations: int,
     n_estep: int,
@@ -512,23 +509,16 @@ def train_eigenspace(
     lr_f: float,
     lr_m: float,
     print_every: int = 10,
-    eigval_tol: float = None,
     verbose: bool = False,
-    use_analytical_mstep: bool = False
+    use_analytical_mstep: bool = False,
+    capture_checkpoints: bool = False
 ) -> Dict:
-    """Train using eigenspace-based variational GP (vargp_direct mode).
+    """Train using eigenspace-based variational GP - model-based API.
 
-    Implements the original varGP loop structure:
-    1. Kernel recomputation (after M-step)
-    2. E-step: Newton updates on m_b, V_b
-    3. F-step: LBFGS on A with analytical lambda0
-    4. M-step: LBFGS on kernel hyperparameters
+    Uses DirectVGPModel which owns kernel, likelihood, and state.
 
     Args:
-        kernel: ArcCosineKernel instance
-        likelihood: PoissonLikelihood instance
-        X: Training inputs, shape (N, n_features)
-        X_tilde: Inducing points, shape (M, n_features)
+        model: DirectVGPModel instance (owns kernel, likelihood, X, X_tilde, state)
         r: Spike counts, shape (N,)
         n_iterations: Number of EM iterations
         n_estep: Number of E-step Newton iterations per EM iteration
@@ -537,146 +527,146 @@ def train_eigenspace(
         lr_f: Learning rate for F-step
         lr_m: Learning rate for M-step
         print_every: Print progress every N iterations
-        eigval_tol: Eigenvalue tolerance for eigenspace projection (default: EIGVAL_TOL)
         verbose: Print detailed debugging info
-        use_analytical_mstep: Use analytical gradients for M-step (faster, matches varGP)
+        use_analytical_mstep: Use analytical gradients for M-step
+        capture_checkpoints: If True, capture state at each checkpoint for validation
 
     Returns:
         Dict with:
             'losses': List of ELBO values per iteration
-            'state': Final DirectVariationalState
+            'model': Trained DirectVGPModel
             'time_estep_total': Total E-step time (includes F-step)
             'time_mstep_total': Total M-step time
+            'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
-    # Import here to avoid circular dependency
-    from eigenspace import EIGVAL_TOL
-    from eigenspace_model import (
-        compute_kernels_eigenspace,
-        recompute_kernels_after_mstep,
-        lambda_moments_eigenspace,
-    )
+    from eigenspace_model import lambda_moments_eigenspace
     from estep import estep_eigenspace, STABILITY_THRESHOLD
     from fstep import fstep_eigenspace, compute_f_mean
     from mstep import mstep_eigenspace_autograd, mstep_eigenspace_analytical
 
-    if eigval_tol is None:
-        eigval_tol = EIGVAL_TOL
+    if capture_checkpoints:
+        from investigations.test_restructuring_invariance.checkpoint_utils import capture_checkpoint
 
-    # Initialize
-    state = compute_kernels_eigenspace(kernel, X, X_tilde, eigval_tol)
-
+    state = model.state
     n_b = len(state.eigvals_b)
-    M = X_tilde.shape[0]
-    N = X.shape[0]
+    M = model.X_tilde.shape[0]
     print(f"Eigenspace dimension: n_b={n_b} (from M={M} inducing points)")
 
     time_estep_total = 0.0
     time_mstep_total = 0.0
     losses = []
+    checkpoints = [] if capture_checkpoints else None
 
     # Initial moments
-    lambda_m, lambda_var = lambda_moments_eigenspace(state)
-    A = likelihood.A.squeeze()
-    lambda0 = likelihood.lambda0.squeeze()
+    lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
+    A = model.likelihood.A.squeeze()
+    lambda0 = model.likelihood.lambda0.squeeze()
     f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
-    # NOTE: Loop uses range(1, n_iterations) to match vargp_old behavior:
-    #   - vargp_old: range(1, maxiter) with maxiter=50 → iterations 1-49 (49 total)
-    #   - M-step skipped on last iteration to avoid generating new eigenspace that won't be used
-    # This ensures test_r and loss values match between vargp_direct and vargp_old.
-    # FUTURE: May want to change to range(1, n_iterations+1) for one more iteration.
     for iteration in range(1, n_iterations):
 
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
-            state = recompute_kernels_after_mstep(kernel, X, X_tilde, state, eigval_tol)
-            # Recompute moments with new kernels
-            lambda_m, lambda_var = lambda_moments_eigenspace(state)
-            A = likelihood.A.squeeze()
-            lambda0 = likelihood.lambda0.squeeze()
+            model.recompute_after_mstep()
+            lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
+            A = model.likelihood.A.squeeze()
+            lambda0 = model.likelihood.lambda0.squeeze()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
+
+            if capture_checkpoints:
+                checkpoints.append(capture_checkpoint(
+                    'C1_eigenspace', iteration, model.state,
+                    lambda_m=lambda_m, lambda_var=lambda_var, f_mean=f_mean
+                ))
 
         # ===== E-step: Newton loop =====
         start_estep = time.time()
 
         for i_estep in range(n_estep):
-            m_b_new, V_b_new = estep_eigenspace(state, r, A, f_mean)
+            estep_eigenspace(model, r, f_mean)
 
-            # Update state
-            state.m_b = m_b_new
-            state.V_b = V_b_new
-
-            # Recompute moments
-            lambda_m, lambda_var = lambda_moments_eigenspace(state)
-
-            # Recompute f_mean
+            lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
-            # Stability check
+            if capture_checkpoints:
+                checkpoints.append(capture_checkpoint(
+                    'C2_estep', iteration, model.state,
+                    lambda_m=lambda_m, lambda_var=lambda_var, f_mean=f_mean,
+                    estep_idx=i_estep
+                ))
+
             if f_mean.mean().item() > STABILITY_THRESHOLD:
                 if verbose:
                     print(f"  E-step {i_estep}: f_mean unstable ({f_mean.mean().item():.1f})")
                 break
 
-            # Early stopping: check convergence
-            # (Could add convergence criterion here)
-
         # ===== F-step: Optimize A =====
-        fstep_eigenspace(likelihood, r, lambda_m, lambda_var, n_fstep, lr_f)
+        fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f)
 
-        # Update A, lambda0 and recompute f_mean
-        A = likelihood.A.squeeze()
-        lambda0 = likelihood.lambda0.squeeze()
+        A = model.likelihood.A.squeeze()
+        lambda0 = model.likelihood.lambda0.squeeze()
         f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
+
+        if capture_checkpoints:
+            checkpoints.append(capture_checkpoint(
+                'C3_fstep', iteration, model.state,
+                likelihood=model.likelihood,
+                lambda_m=lambda_m, lambda_var=lambda_var, f_mean=f_mean
+            ))
 
         time_estep_total += time.time() - start_estep
 
         # ===== M-step: Optimize kernel hyperparameters =====
         start_mstep = time.time()
 
-        # Skip M-step on last iteration (matches vargp_old: iteration < maxiter-1)
         if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
-                mstep_eigenspace_analytical(kernel, likelihood, X, X_tilde, r, state, n_mstep, lr_m)
+                mstep_eigenspace_analytical(model, r, n_mstep, lr_m)
             else:
-                mstep_eigenspace_autograd(kernel, likelihood, X, X_tilde, r, state, n_mstep, lr_m)
+                mstep_eigenspace_autograd(model, r, n_mstep, lr_m)
+
+            if capture_checkpoints:
+                checkpoints.append(capture_checkpoint(
+                    'C4_mstep', iteration, model.state,
+                    kernel=model.kernel
+                ))
 
         time_mstep_total += time.time() - start_mstep
 
         # ===== Compute and record loss =====
-        elbo = compute_elbo_eigenspace(state, r, lambda_m, lambda_var, A, lambda0)
-        loss = -elbo.item()  # Negative ELBO for consistency with other modes
+        elbo = compute_elbo_eigenspace(model.state, r, lambda_m, lambda_var, A, lambda0)
+        loss = -elbo.item()
         losses.append(loss)
+
+        if capture_checkpoints:
+            checkpoints.append(capture_checkpoint(
+                'C5_end', iteration, model.state,
+                loss=loss
+            ))
 
         if iteration % print_every == 0 or iteration == 1:
             print(f"Iter {iteration}/{n_iterations-1}: loss={loss:.2f}, "
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
-                  f"n_b={len(state.eigvals_b)}")
+                  f"n_b={len(model.state.eigvals_b)}")
 
-    return {
+    result = {
         'losses': losses,
-        'state': state,
+        'model': model,
         'time_estep_total': time_estep_total,
         'time_mstep_total': time_mstep_total,
     }
+    if capture_checkpoints:
+        result['checkpoints'] = checkpoints
+    return result
 
 
-def predict_eigenspace(
-    kernel,
-    likelihood,
-    state,  # DirectVariationalState
-    X_tilde: torch.Tensor,
-    X_test: torch.Tensor
-) -> Dict:
+def predict_eigenspace(model, X_test: torch.Tensor) -> Dict:
     """Predict at test points using trained eigenspace variational GP.
 
     Computes posterior moments at test points and expected firing rates.
 
     Args:
-        kernel: Trained ArcCosineKernel
-        likelihood: Trained PoissonLikelihood
-        state: Trained DirectVariationalState
-        X_tilde: Inducing points, shape (M, n_features)
+        model: Trained DirectVGPModel
         X_test: Test inputs, shape (N_test, n_features)
 
     Returns:
@@ -685,6 +675,11 @@ def predict_eigenspace(
             'lambda_m': Posterior mean at test points, shape (N_test,)
             'lambda_var': Posterior variance at test points, shape (N_test,)
     """
+    kernel = model.kernel
+    likelihood = model.likelihood
+    state = model.state
+    X_tilde = model.X_tilde
+
     with torch.no_grad():
         # Compute cross-kernel to inducing points
         K_test = kernel(X_test, X_tilde).evaluate()  # (N_test, M)
