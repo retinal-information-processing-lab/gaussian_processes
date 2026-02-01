@@ -61,33 +61,63 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     model.train()
     likelihood.train()
 
+    # Collect all parameters
+    all_params = list(model.parameters()) + list(likelihood.parameters())
+
     # Create optimizer
-    if optimizer_name == 'adam':
+    if optimizer_name == 'lbfgs':
+        optimizer = torch.optim.LBFGS(
+            all_params,
+            lr=lr,
+            max_iter=20,
+            line_search_fn='strong_wolfe'
+        )
+    elif optimizer_name == 'adam':
         optimizer = torch.optim.Adam([
             {'params': model.parameters()},
             {'params': likelihood.parameters()}
         ], lr=lr)
     else:
-        raise ValueError(f"Unknown optimizer: {optimizer_name}. Only 'adam' is supported.")
+        raise ValueError(f"Unknown optimizer: {optimizer_name}. Supported: 'lbfgs', 'adam'.")
 
     losses = []
 
+    # For LBFGS, we need a closure that computes loss and gradients
+    # We store the last computed values for logging
+    last_output = [None]
+    last_loss = [None]
+    last_ell = [None]
+    last_kl = [None]
+
+    def closure():
+        optimizer.zero_grad()
+        output = model(train_x)
+        ell = likelihood.expected_log_prob(train_y, output)
+        kl = model.variational_strategy.kl_divergence()
+        loss = -ell + kl
+        loss.backward()
+        # Store for logging
+        last_output[0] = output
+        last_loss[0] = loss
+        last_ell[0] = ell
+        last_kl[0] = kl
+        return loss
+
     with torch.enable_grad():
         for i in range(n_iterations):
-            optimizer.zero_grad()
-
-            # Forward pass: get GP posterior at training points
-            output = model(train_x)
-
-            # ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
-            expected_log_lik = likelihood.expected_log_prob(train_y, output)
-            kl_div = model.variational_strategy.kl_divergence()
-
-            # Minimize negative ELBO
-            loss = -expected_log_lik + kl_div
-
-            loss.backward()
-            optimizer.step()
+            if optimizer_name == 'lbfgs':
+                optimizer.step(closure)
+                loss = last_loss[0]
+                expected_log_lik = last_ell[0]
+                kl_div = last_kl[0]
+            else:
+                optimizer.zero_grad()
+                output = model(train_x)
+                expected_log_lik = likelihood.expected_log_prob(train_y, output)
+                kl_div = model.variational_strategy.kl_divergence()
+                loss = -expected_log_lik + kl_div
+                loss.backward()
+                optimizer.step()
 
             losses.append(loss.item())
 

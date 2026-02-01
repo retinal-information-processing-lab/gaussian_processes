@@ -4,6 +4,23 @@
 
 ---
 
+## ⚠️ REQUIRED READING - DO THIS FIRST ⚠️
+
+**BLOCKING REQUIREMENT**: Before doing ANYTHING on this project, you MUST read:
+
+**`.claude/WORKING_GUIDELINES.md`**
+
+This file defines:
+- Core philosophy (scientist-developer balance, simplicity first)
+- Communication rules (push back, ask questions)
+- Development process (staged implementation, validation layers)
+- Code style and documentation requirements
+- Git hygiene for new users
+
+**DO NOT skip this.** It contains critical process rules that apply to EVERY task on this project. Read it at the start of EVERY session before proceeding with any work.
+
+---
+
 ## Quick Start
 
 | Item | Value |
@@ -13,7 +30,6 @@
 | **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening` |
 | **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. |
-| **Read first** | WORKING_GUIDELINES.md (process), then this file |
 
 **Current Status**:
 | Component | Status |
@@ -40,6 +56,8 @@
 
 5. **Avoid .data parameter** - Use `torch.no_grad() + copy()` instead.
 
+6. **Conda environment hook** - If a Bash command fails with `CONDA_ENV_WRONG`, immediately run `conda activate pytorch_gpytorch` and retry the command.
+
 ---
 
 ## Known Limitations
@@ -63,6 +81,14 @@ Whitened mode can be sensitive to random seed in some configurations.
 ### RF Center Initialization
 RF center (eps_0x, eps_0y) needs reasonable init near image center. Won't learn from bad init.
 
+### default_gpy Mode Now Uses LBFGS
+Previously used Adam which failed on some cells due to inability to navigate the curved ELBO landscape.
+**Fixed:** LBFGS is now the default optimizer (`--optimizer lbfgs`).
+Use `--optimizer adam` to revert to old behavior if needed.
+
+### Performance Degradation with Large ntrain+M
+Both vargp_direct and vargp_old show performance loss when ntrain=2000 and M≥100 on some cells (Cell 8: -10% loss). Cell-dependent issue under investigation. See `investigations/performance_loss_ntrain_M/`.
+
 ---
 
 ## Parameter Matching Table (PREVENTS BUGS)
@@ -71,10 +97,10 @@ RF center (eps_0x, eps_0y) needs reasonable init near image center. Won't learn 
 |-----------|-------|-------------|-------------|
 | A_init | 0.01 | 0.01 | 0.01 |
 | lambda0_init | 1.0 | 1.0 | 1.0 |
-| lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) | 0.01 (Adam) |
-| lr_m (M-step) | 0.1 | 0.1 | 0.01 |
-| F-step optimizer | LBFGS | LBFGS | Adam |
-| M-step optimizer | LBFGS | **Adam** | Adam |
+| lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) | 0.1 (LBFGS) |
+| lr_m (M-step) | 0.1 | 0.1 | 0.1 |
+| F-step optimizer | LBFGS | LBFGS | LBFGS |
+| M-step optimizer | LBFGS | **Adam** | LBFGS |
 
 All modes load defaults from `default_params.json`.
 
@@ -119,7 +145,7 @@ Use `--gradient-mode MODE` in CLI:
 | Mode | Description |
 |------|-------------|
 | `vargp_old` | Original varGP implementation (reference baseline) |
-| `default_gpy` | Standard GPyTorch variational inference |
+| `default_gpy` | Standard GPyTorch variational inference with LBFGS |
 | `vargp_style` | Matches original varGP structure (LBFGS F-step, analytical lambda0) |
 | `vargp_direct` | Eigenspace projection matching varGP (use --float32) |
 

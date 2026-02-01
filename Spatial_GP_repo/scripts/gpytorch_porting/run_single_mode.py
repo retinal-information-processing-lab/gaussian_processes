@@ -175,6 +175,9 @@ def main():
     parser.add_argument('--n-fstep', type=int, default=defaults['training']['n_fstep'], help=f'F-steps per iteration (default: {defaults["training"]["n_fstep"]})')
     parser.add_argument('--n-mstep', type=int, default=defaults['training']['n_mstep'], help=f'M-steps per iteration (default: {defaults["training"]["n_mstep"]})')
     parser.add_argument('--lr', type=float, default=defaults['training']['lr'], help=f'Learning rate (default: {defaults["training"]["lr"]})')
+    parser.add_argument('--optimizer', type=str, default=defaults['training'].get('optimizer', 'lbfgs'),
+                        choices=['adam', 'lbfgs'],
+                        help=f'Optimizer for default_gpy mode (default: {defaults["training"].get("optimizer", "lbfgs")})')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
     parser.add_argument('--mode', type=str, default='vargp_style',
                         choices=['vargp_old', 'default_gpy', 'vargp_style', 'vargp_direct'],
@@ -576,10 +579,10 @@ def main():
 
         with torch.enable_grad():
             if args.mode == 'default_gpy':
-                print(f"  optimizer='adam', n_iterations={args.n_iterations}, lr={args.lr}")
+                print(f"  optimizer='{args.optimizer}', n_iterations={args.n_iterations}, lr={args.lr}")
                 losses = train_gpy_default(
                     model, likelihood, X_train, r_train,
-                    optimizer_name='adam',
+                    optimizer_name=args.optimizer,
                     lr=args.lr,
                     n_iterations=args.n_iterations,
                     print_every=print_every,

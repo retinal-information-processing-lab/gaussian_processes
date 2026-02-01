@@ -22,7 +22,8 @@
     "n_estep": 10,
     "n_fstep": 10,
     "n_mstep": 10,
-    "lr": 0.1
+    "lr": 0.1,
+    "optimizer": "lbfgs"
   },
 
   "model": {
