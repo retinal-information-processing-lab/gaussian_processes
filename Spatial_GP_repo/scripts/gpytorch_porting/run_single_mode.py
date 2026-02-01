@@ -325,6 +325,28 @@ def main():
     n_px_side = 108
 
     # =========================================================================
+    # Compute RF center from spike-triggered average (STA)
+    # This provides a data-driven initialization for eps_0x, eps_0y
+    # =========================================================================
+    from utils_gpy import compute_rf_center_from_sta
+
+    eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
+        X_train, r_train, n_px_side, zscore=True
+    )
+
+    # Use STA-computed center unless CLI explicitly overrides
+    if args.eps_0x == defaults['kernel']['eps_0x']:  # Still at default (0.0)
+        args.eps_0x = eps_0x_sta
+    if args.eps_0y == defaults['kernel']['eps_0y']:  # Still at default (0.0)
+        args.eps_0y = eps_0y_sta
+
+    print(f"\nRF center: ({args.eps_0x:.4f}, {args.eps_0y:.4f})")
+    if args.eps_0x == eps_0x_sta and args.eps_0y == eps_0y_sta:
+        print(f"  (computed from STA)")
+    else:
+        print(f"  (from CLI override, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+
+    # =========================================================================
     # VARGP MODE: Use original varGP implementation
     # =========================================================================
     if args.mode == 'vargp_old':

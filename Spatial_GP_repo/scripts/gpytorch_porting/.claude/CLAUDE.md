@@ -78,8 +78,15 @@ All jitter values MUST match `model.jitter`. The fix: all `estep.py` functions n
 ### Whitening Seed Sensitivity
 Whitened mode can be sensitive to random seed in some configurations.
 
-### RF Center Initialization
-RF center (eps_0x, eps_0y) needs reasonable init near image center. Won't learn from bad init.
+### RF Center Initialization (STA-based)
+RF center (eps_0x, eps_0y) is now automatically computed from spike-triggered average (STA) in `run_single_mode.py`. This provides a data-driven initialization based on which image regions drive neural responses.
+
+Implementation: `utils_gpy.py:compute_rf_center_from_sta()`
+- Uses center-of-mass of |STA| (robust to noise)
+- Z-score normalizes images before computing (recommended for natural images)
+- Returns coordinates in normalized [-1, 1] range
+
+CLI override: `--eps-0x` and `--eps-0y` flags override STA values if specified.
 
 ### default_gpy Mode Now Uses LBFGS
 Previously used Adam which failed on some cells due to inability to navigate the curved ELBO landscape.
@@ -169,6 +176,7 @@ Use `--gradient-mode MODE` in CLI:
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
+| `utils_gpy.py` | Standalone utilities (STA-based RF center) |
 | `run_single_mode.py` | Main test script |
 | `run_canonical_tests.py` | 12-config benchmark matrix |
 | `query_benchmark.py` | Query benchmark results |
