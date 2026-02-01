@@ -96,6 +96,20 @@ Use `--optimizer adam` to revert to old behavior if needed.
 ### Performance Degradation with Large ntrain+M
 Both vargp_direct and vargp_old show performance loss when ntrain=2000 and M≥100 on some cells (Cell 8: -10% loss). Cell-dependent issue under investigation. See `investigations/performance_loss_ntrain_M/`.
 
+### Overfitting with Extended Training
+vargp_direct overfits when trained too long. Test performance peaks early then declines while training loss continues to improve. Use early stopping. See `investigations/overfitting_analysis/`.
+
+### Early Stopping (Window-Based)
+Early stopping uses window-based relative improvement instead of patience-based.
+
+**Parameters** (CLI flags):
+- `--stop-window 20` - Look back N iterations
+- `--stop-thresh 0.005` - Stop if improvement < 0.5% over window
+- `--min-iterations 10` - Minimum before checking
+- `--no-early-stop` - Disable early stopping
+
+**Why not patience-based?** Loss improves in bursts after M-step, causing premature stopping with patience-based approach.
+
 ---
 
 ## Parameter Matching Table (PREVENTS BUGS)

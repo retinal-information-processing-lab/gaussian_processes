@@ -236,6 +236,16 @@ def main():
     parser.add_argument('--json-append', type=str, default=None,
                         help='Append results as JSON line to specified file (for benchmark tracking)')
 
+    # Early stopping options (ON by default, window-based)
+    parser.add_argument('--no-early-stop', action='store_true',
+                        help='Disable early stopping (early stopping is ON by default)')
+    parser.add_argument('--stop-window', type=int, default=20,
+                        help='Number of iterations to look back for improvement (default: 20)')
+    parser.add_argument('--stop-thresh', type=float, default=5e-3,
+                        help='Minimum relative improvement over window to continue (default: 0.005 = 0.5%%)')
+    parser.add_argument('--min-iterations', type=int, default=10,
+                        help='Minimum iterations before early stopping can trigger (default: 10)')
+
     args = parser.parse_args()
 
     # Validation for vargp_style mode: explicit_unwhitening must be explicitly specified
@@ -503,6 +513,7 @@ def main():
         print_every = max(1, args.n_iterations // 5)
         start_time = time.time()
 
+        early_stop = not args.no_early_stop
         with torch.enable_grad():
             result = train_eigenspace(
                 model, r_train,
@@ -514,17 +525,25 @@ def main():
                 lr_m=lr,
                 print_every=print_every,
                 use_analytical_mstep=args.mstep_analytical,
+                early_stop=early_stop,
+                stop_window=args.stop_window,
+                stop_thresh=args.stop_thresh,
+                min_iterations=args.min_iterations,
             )
 
         train_time = time.time() - start_time
         losses = result['losses']
         time_estep_total = result['time_estep_total']
         time_mstep_total = result['time_mstep_total']
+        stopped_early = result.get('stopped_early', False)
+        final_iteration = result.get('final_iteration', len(losses))
 
         print(f"\nTraining time: {train_time:.1f}s")
         print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
         print(f"  M-step:            {time_mstep_total:.1f}s")
         print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
+        if stopped_early:
+            print(f"  Stopped early at iteration {final_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {model.likelihood.A.item():.4f}")
@@ -599,17 +618,25 @@ def main():
         print_every = max(1, args.n_iterations // 5)
         start_time = time.time()
 
+        early_stop = not args.no_early_stop
         with torch.enable_grad():
             if args.mode == 'default_gpy':
                 print(f"  optimizer='{args.optimizer}', n_iterations={args.n_iterations}, lr={args.lr}")
-                losses = train_gpy_default(
+                result = train_gpy_default(
                     model, likelihood, X_train, r_train,
                     optimizer_name=args.optimizer,
                     lr=args.lr,
                     n_iterations=args.n_iterations,
                     print_every=print_every,
-                    device=device
+                    device=device,
+                    early_stop=early_stop,
+                    stop_window=args.stop_window,
+                    stop_thresh=args.stop_thresh,
+                    min_iterations=args.min_iterations,
                 )
+                losses = result['losses']
+                stopped_early = result.get('stopped_early', False)
+                final_iteration = result.get('final_iteration', len(losses))
             else:  # vargp_style
                 # Use defaults for lr_f and lr_m (both set to same lr value)
                 lr = defaults['training']['lr']
@@ -641,6 +668,10 @@ def main():
         if args.mode == 'vargp_style':
             print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
             print(f"  M-step:            {time_mstep_total:.1f}s")
+
+        # Print early stopping info for default_gpy
+        if args.mode == 'default_gpy' and stopped_early:
+            print(f"  Stopped early at iteration {final_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {likelihood.A.item():.4f}")

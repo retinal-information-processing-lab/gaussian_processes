@@ -24,7 +24,8 @@ import gpytorch
 
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
-                       print_every=100, device=None):
+                       print_every=100, device=None,
+                       early_stop=True, stop_window=20, stop_thresh=1e-3, min_iterations=10):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -36,12 +37,16 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         train_y: Training targets (spike counts), shape (n_train,)
         optimizer_name: Optimizer to use ('adam')
         lr: Learning rate
-        n_iterations: Number of optimization iterations
+        n_iterations: Maximum number of optimization iterations
         print_every: Print loss every N iterations (0 to disable)
         device: Device to use (defaults to train_x.device)
+        early_stop: Enable early stopping based on loss stability (default: True)
+        stop_window: Number of iterations to look back for improvement (default: 20)
+        stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
+        min_iterations: Minimum iterations before early stopping can trigger (default: 10)
 
     Returns:
-        losses: List of loss values during training
+        dict: {'losses': list, 'stopped_early': bool, 'final_iteration': int}
     """
     if device is None:
         device = train_x.device
@@ -103,6 +108,10 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         last_kl[0] = kl
         return loss
 
+    # Early stopping state
+    stopped_early = False
+    final_iteration = 0
+
     with torch.enable_grad():
         for i in range(n_iterations):
             if optimizer_name == 'lbfgs':
@@ -119,13 +128,30 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 loss.backward()
                 optimizer.step()
 
-            losses.append(loss.item())
+            current_loss = loss.item()
+            losses.append(current_loss)
+            final_iteration = i + 1
 
             if print_every > 0 and (i + 1) % print_every == 0:
-                print(f"Iter {i+1}/{n_iterations}, Loss: {loss.item():.2f}, "
+                print(f"Iter {i+1}/{n_iterations}, Loss: {current_loss:.2f}, "
                       f"ELL: {expected_log_lik.item():.2f}, KL: {kl_div.item():.2f}")
 
-    return losses
+            # Early stopping: check if loss improved enough over last stop_window iterations
+            if early_stop and len(losses) >= stop_window + min_iterations:
+                old_loss = losses[-(stop_window + 1)]
+                rel_improvement = (old_loss - current_loss) / abs(old_loss)
+                if rel_improvement < stop_thresh:
+                    stopped_early = True
+                    if print_every > 0:
+                        print(f"Early stopping at iteration {i+1}: "
+                              f"loss improved only {rel_improvement*100:.3f}% over last {stop_window} iterations")
+                    break
+
+    return {
+        'losses': losses,
+        'stopped_early': stopped_early,
+        'final_iteration': final_iteration
+    }
 
 
 def predict(model, likelihood, test_x, device=None):
@@ -541,7 +567,11 @@ def train_eigenspace(
     print_every: int = 10,
     verbose: bool = False,
     use_analytical_mstep: bool = False,
-    capture_checkpoints: bool = False
+    capture_checkpoints: bool = False,
+    early_stop: bool = True,
+    stop_window: int = 20,
+    stop_thresh: float = 5e-3,
+    min_iterations: int = 10
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -550,7 +580,7 @@ def train_eigenspace(
     Args:
         model: DirectVGPModel instance (owns kernel, likelihood, X, X_tilde, state)
         r: Spike counts, shape (N,)
-        n_iterations: Number of EM iterations
+        n_iterations: Maximum number of EM iterations
         n_estep: Number of E-step Newton iterations per EM iteration
         n_fstep: Number of F-step LBFGS iterations
         n_mstep: Number of M-step LBFGS iterations
@@ -560,6 +590,10 @@ def train_eigenspace(
         verbose: Print detailed debugging info
         use_analytical_mstep: Use analytical gradients for M-step
         capture_checkpoints: If True, capture state at each checkpoint for validation
+        early_stop: Enable early stopping based on loss stability (default: True)
+        stop_window: Number of iterations to look back for improvement (default: 20)
+        stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
+        min_iterations: Minimum iterations before early stopping can trigger (default: 10)
 
     Returns:
         Dict with:
@@ -567,6 +601,8 @@ def train_eigenspace(
             'model': Trained DirectVGPModel
             'time_estep_total': Total E-step time (includes F-step)
             'time_mstep_total': Total M-step time
+            'stopped_early': Whether training stopped early
+            'final_iteration': Final iteration number
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
     from estep import estep_eigenspace, STABILITY_THRESHOLD
@@ -585,6 +621,10 @@ def train_eigenspace(
     time_mstep_total = 0.0
     losses = []
     checkpoints = [] if capture_checkpoints else None
+
+    # Early stopping state
+    stopped_early = False
+    final_iteration = 0
 
     # Initial moments (GPyTorch-like: call model to get posterior)
     posterior = model(model.X_train)
@@ -669,6 +709,7 @@ def train_eigenspace(
         elbo = compute_elbo_eigenspace(model.state, r, lambda_m, lambda_var, A, lambda0)
         loss = -elbo.item()
         losses.append(loss)
+        final_iteration = iteration
 
         if capture_checkpoints:
             checkpoints.append(capture_checkpoint(
@@ -681,11 +722,23 @@ def train_eigenspace(
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
                   f"n_b={len(model.state.eigvals_b)}")
 
+        # Early stopping: check if loss improved enough over last stop_window iterations
+        if early_stop and len(losses) >= stop_window + min_iterations:
+            old_loss = losses[-(stop_window + 1)]
+            rel_improvement = (old_loss - loss) / abs(old_loss)
+            if rel_improvement < stop_thresh:
+                stopped_early = True
+                print(f"Early stopping at iteration {iteration}: "
+                      f"loss improved only {rel_improvement*100:.3f}% over last {stop_window} iterations")
+                break
+
     result = {
         'losses': losses,
         'model': model,
         'time_estep_total': time_estep_total,
         'time_mstep_total': time_mstep_total,
+        'stopped_early': stopped_early,
+        'final_iteration': final_iteration,
     }
     if capture_checkpoints:
         result['checkpoints'] = checkpoints
