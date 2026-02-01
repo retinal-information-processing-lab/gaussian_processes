@@ -8,8 +8,7 @@ projection for computational efficiency.
 Contents:
 - DirectVariationalState: State container for eigenspace quantities
 - DirectVGPModel: Main model class (owns kernel, likelihood, state)
-- lambda_moments_eigenspace(): Compute posterior moments
-- EigenspacePosterior: Posterior at query points
+- EigenspacePosterior: Posterior at query points (use model(X) to get)
 - EigenspaceVariationalDistribution: Variational params interface
 
 Usage:
@@ -34,11 +33,8 @@ import torch
 
 from eigenspace import (
     EIGVAL_TOL,
-    compute_eigenspace,
-    project_to_eigenspace,
+    eigendecompose_K_tilde,
     reproject_variational_params,
-    compute_KKtilde_inv_b,
-    compute_K_tilde_b_diagonal,
 )
 
 
@@ -75,6 +71,81 @@ class DirectVariationalState:
 
 
 # ==============================================================================
+# Eigenspace Computation (Shared Logic)
+# ==============================================================================
+
+def _compute_eigenspace_quantities(
+    kernel,
+    X_train: torch.Tensor,
+    X_tilde: torch.Tensor,
+    eigval_tol: float = EIGVAL_TOL
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Compute all eigenspace quantities from kernel and data.
+
+    This is the core computation shared by:
+    - _compute_initial_eigenspace() (model initialization)
+    - _recompute_eigenspace() (after M-step changes kernel params)
+
+    The eigenspace projection reduces dimensionality from M (inducing points)
+    to n_b (kept eigenvalues), making K_tilde_b diagonal and K_tilde_inv trivial.
+
+    Args:
+        kernel: ArcCosineKernel instance
+        X_train: Training inputs, shape (N, n_features)
+        X_tilde: Inducing points, shape (M, n_features)
+        eigval_tol: Eigenvalue threshold for projection
+
+    Returns:
+        B: Eigenvector matrix, shape (M, n_b)
+        eigvals_b: Kept eigenvalues, shape (n_b,)
+        K_b: Cross-kernel in eigenspace, K @ B, shape (N, n_b)
+        K_tilde_b: Inducing kernel in eigenspace (DIAGONAL), shape (n_b, n_b)
+        K_times_Ktilde_inv_b: K @ K_tilde_inv in eigenspace, shape (N, n_b)
+        Kvec: Diagonal k(x_i, x_i), shape (N,)
+        mask: Pixel mask from kernel, or None
+    """
+    # -------------------------------------------------------------------------
+    # Step 1: Compute kernel matrices using GPyTorch kernel
+    # -------------------------------------------------------------------------
+    with torch.no_grad():
+        K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M) inducing kernel
+        K = kernel(X_train, X_tilde).evaluate()        # (N, M) cross-kernel
+        Kvec = kernel(X_train, diag=True)              # (N,) diagonal k(x_i, x_i)
+
+    # Get mask if kernel uses masking
+    mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
+
+    # -------------------------------------------------------------------------
+    # Step 2: Eigendecomposition of K_tilde
+    # K_tilde = B @ diag(eigvals) @ B.T
+    # We keep only eigenvectors with eigenvalues > threshold
+    # -------------------------------------------------------------------------
+    B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde, eigval_tol)
+
+    # -------------------------------------------------------------------------
+    # Step 3: Project cross-kernel K to eigenspace
+    # K_b = K @ B, shape (N, n_b)
+    # -------------------------------------------------------------------------
+    K_b = K @ B
+
+    # -------------------------------------------------------------------------
+    # Step 4: K_tilde in eigenspace is DIAGONAL (this is the key insight!)
+    # K_tilde_b = B.T @ K_tilde @ B = diag(eigvals_b)
+    # -------------------------------------------------------------------------
+    K_tilde_b = torch.diag(eigvals_b)
+
+    # -------------------------------------------------------------------------
+    # Step 5: Compute K @ K_tilde_inv in eigenspace
+    # Since K_tilde_b is diagonal, K_tilde_inv_b = diag(1/eigvals_b)
+    # So K @ K_tilde_inv = K_b @ diag(1/eigvals_b) = K_b / eigvals_b (element-wise!)
+    # This avoids expensive matrix solve - just element-wise division
+    # -------------------------------------------------------------------------
+    K_times_Ktilde_inv_b = K_b / eigvals_b.unsqueeze(0)  # (N, n_b)
+
+    return B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask
+
+
+# ==============================================================================
 # State Initialization and Reprojection
 # ==============================================================================
 
@@ -84,10 +155,10 @@ def _compute_initial_eigenspace(
     X_tilde: torch.Tensor,
     eigval_tol: float = EIGVAL_TOL
 ) -> DirectVariationalState:
-    """Compute initial kernel matrices with eigenspace projection.
+    """Compute initial eigenspace state for model initialization.
 
-    Creates the DirectVariationalState with all quantities needed for training.
-    Initializes m_b = 0 and V_b = K_tilde_b (prior).
+    Creates DirectVariationalState with all quantities needed for training.
+    Initializes variational parameters at the prior: m_b = 0, V_b = K_tilde_b.
 
     Args:
         kernel: ArcCosineKernel instance
@@ -98,31 +169,14 @@ def _compute_initial_eigenspace(
     Returns:
         DirectVariationalState with initialized quantities
     """
-    # Compute kernel matrices using GPyTorch kernel
-    with torch.no_grad():
-        K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
-        K = kernel(X_train, X_tilde).evaluate()  # (N, M)
-        Kvec = kernel(X_train, diag=True)  # (N,)
-
-    # Get mask if kernel uses masking
-    mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
-
-    # Eigenspace projection
-    B, eigvals_b, _ = compute_eigenspace(K_tilde, eigval_tol)
-    n_b = len(eigvals_b)
-
-    # Project K to eigenspace
-    _, _, K_b = project_to_eigenspace(B, K=K)
-
-    # K_tilde_b is diagonal in eigenspace
-    K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
-
-    # Efficient K @ K_tilde_inv computation
-    KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)
+    # Compute all eigenspace quantities (shared with _recompute_eigenspace)
+    B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask = \
+        _compute_eigenspace_quantities(kernel, X_train, X_tilde, eigval_tol)
 
     # Initialize variational parameters at prior
-    m_b = torch.zeros(n_b, dtype=X_train.dtype, device=X_train.device)
-    V_b = K_tilde_b.clone()  # Prior: V = K_tilde
+    n_b = len(eigvals_b)
+    m_b = torch.zeros(n_b, dtype=X_train.dtype, device=X_train.device)  # Prior mean = 0
+    V_b = K_tilde_b.clone()  # Prior covariance = K_tilde
 
     return DirectVariationalState(
         m_b=m_b,
@@ -131,7 +185,7 @@ def _compute_initial_eigenspace(
         eigvals_b=eigvals_b,
         K_tilde_b=K_tilde_b,
         K_b=K_b,
-        KKtilde_inv_b=KKtilde_inv_b,
+        KKtilde_inv_b=K_times_Ktilde_inv_b,
         Kvec=Kvec,
         mask=mask,
     )
@@ -147,8 +201,9 @@ def _recompute_eigenspace(
     """Recompute eigenspace after kernel hyperparameters change.
 
     When M-step modifies kernel hyperparameters, K_tilde changes, so the
-    eigenspace changes. Recomputes all kernel quantities and reprojects
-    m_b, V_b to the new eigenspace.
+    eigenspace (B, eigvals_b) changes. This function:
+    1. Recomputes all eigenspace quantities with new kernel params
+    2. Reprojects m_b, V_b from old eigenspace to new eigenspace
 
     Args:
         kernel: ArcCosineKernel instance (with updated hyperparameters)
@@ -160,31 +215,18 @@ def _recompute_eigenspace(
     Returns:
         New DirectVariationalState with reprojected quantities
     """
+    # Save old eigenspace quantities for reprojection
     B_old = state.B
     m_b_old = state.m_b
     V_b_old = state.V_b
 
-    # Recompute kernel matrices with current hyperparameters
-    with torch.no_grad():
-        K_tilde = kernel(X_tilde, X_tilde).evaluate()
-        K = kernel(X_train, X_tilde).evaluate()
-        Kvec = kernel(X_train, diag=True)
+    # Compute all eigenspace quantities with NEW kernel params
+    B_new, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask = \
+        _compute_eigenspace_quantities(kernel, X_train, X_tilde, eigval_tol)
 
-    mask = kernel._cached_mask if hasattr(kernel, '_cached_mask') else None
-
-    # New eigenspace
-    B_new, eigvals_b, _ = compute_eigenspace(K_tilde, eigval_tol)
-
-    # Project K to new eigenspace
-    _, _, K_b = project_to_eigenspace(B_new, K=K)
-
-    # K_tilde_b diagonal in new eigenspace
-    K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
-
-    # Efficient K @ K_tilde_inv
-    KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)
-
-    # Reproject variational parameters to new eigenspace
+    # Reproject variational parameters from old eigenspace to new eigenspace
+    # m_b_new = B_new.T @ B_old @ m_b_old
+    # V_b_new = B_new.T @ (B_old @ V_b_old @ B_old.T) @ B_new
     m_b_new, V_b_new = reproject_variational_params(B_old, B_new, m_b_old, V_b_old)
 
     return DirectVariationalState(
@@ -194,7 +236,7 @@ def _recompute_eigenspace(
         eigvals_b=eigvals_b,
         K_tilde_b=K_tilde_b,
         K_b=K_b,
-        KKtilde_inv_b=KKtilde_inv_b,
+        KKtilde_inv_b=K_times_Ktilde_inv_b,
         Kvec=Kvec,
         mask=mask,
     )
@@ -204,8 +246,11 @@ def _recompute_eigenspace(
 # Posterior Moment Computation
 # ==============================================================================
 
-def lambda_moments_eigenspace(state: DirectVariationalState) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute GP posterior moments using eigenspace quantities.
+def _lambda_moments_eigenspace(state: DirectVariationalState) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute GP posterior moments using eigenspace quantities (internal).
+
+    Used internally by EigenspacePosterior._compute_moments() for training data.
+    External code should use model(X_train) to get posterior moments.
 
     Computes:
         lambda_m = K @ K_tilde_inv @ m = KKtilde_inv_b @ m_b
@@ -289,8 +334,8 @@ class EigenspacePosterior:
         matching predict_eigenspace() exactly.
         """
         if self._is_training_data:
-            # Use lambda_moments_eigenspace for exact equivalence
-            return lambda_moments_eigenspace(self._state)
+            # Use precomputed KKtilde_inv_b for efficiency
+            return _lambda_moments_eigenspace(self._state)
 
         # Test points: compute fresh
         with torch.no_grad():

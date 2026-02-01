@@ -3,7 +3,7 @@
 **Purpose**: Comprehensive guide to the `vargp_direct` training mode - a GPyTorch-based implementation that matches the original `varGP()` algorithm structure.
 
 **Status**: ACTIVE - Performance matches vargp_old; known loss offset remains (see Section 6.8)
-**Last Updated**: February 2025 (API cleanup: X→X_train, recompute_eigenspace())
+**Last Updated**: February 2025 (API cleanup: model(X_train) for posterior, shared _compute_eigenspace_quantities)
 
 ---
 
@@ -82,25 +82,27 @@ The vargp_direct implementation is organized into a **modular structure** with c
 ```
 gpytorch_porting/
 |
-|-- eigenspace_model.py      # STATE & MODEL CLASSES (~480 lines)
+|-- eigenspace_model.py      # STATE & MODEL CLASSES (~500 lines)
 |   |-- DirectVariationalState       # Dataclass for eigenspace state
+|   |-- _compute_eigenspace_quantities()  # Core shared computation (kernel → eigenspace)
+|   |-- _compute_initial_eigenspace()     # Model initialization (m_b=0, V_b=K_tilde_b)
+|   |-- _recompute_eigenspace()           # After M-step (reprojects m_b, V_b)
 |   |-- DirectVGPModel               # Main model class (owns kernel, likelihood, state)
 |   |   |-- .X_train                 # Training data
 |   |   |-- .X_tilde                 # Inducing points
 |   |   |-- .state                   # DirectVariationalState
 |   |   |-- .update_variational_params()  # Update m_b, V_b after E-step
 |   |   +-- .recompute_eigenspace()  # Sync eigenspace after M-step
-|   |-- lambda_moments_eigenspace()  # Compute posterior moments
-|   |-- EigenspacePosterior          # Posterior at query points
+|   |-- EigenspacePosterior          # Posterior at query points (via model(X))
 |   +-- EigenspaceVariationalDistribution  # Variational params interface
 |
-|-- eigenspace.py            # EIGENSPACE UTILITIES (~200 lines)
+|-- eigenspace.py            # EIGENSPACE UTILITIES (~200 lines, mainly for tests)
 |   |-- EIGVAL_TOL = 1e-4            # Eigenvalue threshold
-|   |-- compute_eigenspace()         # Eigendecomposition
+|   |-- eigendecompose_K_tilde()     # Eigendecomposition of inducing kernel
 |   |-- project_to_eigenspace()      # m_b = B.T @ m, etc.
 |   |-- reproject_variational_params()   # After M-step changes B
-|   |-- compute_KKtilde_inv_b()      # K @ K_tilde_inv (element-wise!)
-|   +-- compute_K_tilde_b_diagonal() # diag(eigenvalues)
+|   |-- compute_KKtilde_inv_b()      # K @ K_tilde_inv (for tests)
+|   +-- compute_K_tilde_b_diagonal() # diag(eigenvalues) (for tests)
 |
 |-- train.py                 # TRAINING LOOP (~785 lines total)
 |   |-- train_eigenspace()           # Main training loop for vargp_direct
@@ -170,7 +172,8 @@ def train_eigenspace(model, r, ...):
 
         # E-STEP: Newton updates for m_b, V_b
         for _ in range(n_estep):
-            lambda_m, lambda_var = lambda_moments_eigenspace(state)
+            posterior = model(model.X_train)  # GPyTorch-like: call model to get posterior
+            lambda_m, lambda_var = posterior.mean, posterior.variance
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
             m_b, V_b = estep_eigenspace(state, r, A, f_mean)
 
@@ -216,7 +219,7 @@ K = kernel(X_train, X_tilde).evaluate()        # (N, M)
 Kvec = kernel(X_train, diag=True)              # (N,)
 
 # Eigendecomposition
-B, eigvals_b, _ = compute_eigenspace(K_tilde)  # B: (M, n_b)
+B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde)  # B: (M, n_b)
 # n_b is typically 10-50, much smaller than M
 
 # Project to eigenspace
@@ -355,7 +358,8 @@ class DirectVariationalState:
 
 ### 5.3 Posterior Moments (lambda_m, lambda_var)
 
-Implemented in `eigenspace_model.py:lambda_moments_eigenspace()`:
+Access via GPyTorch-like pattern: `posterior = model(model.X_train)`, then `posterior.mean`, `posterior.variance`.
+Internally implemented in `eigenspace_model.py:_lambda_moments_eigenspace()` (private):
 
 ```python
 # In eigenspace:

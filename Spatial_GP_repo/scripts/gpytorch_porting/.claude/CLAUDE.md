@@ -131,14 +131,15 @@ Use `--gradient-mode MODE` in CLI:
 |------|---------|
 | `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes |
 | `likelihoods.py` | PoissonLikelihood with A, lambda0 |
-| `model.py` | VariationalGPModel (whitened/unwhitened) |
+| `model.py` | VariationalGPModel (whitened/unwhitened) for vargp_style |
+| `eigenspace_model.py` | DirectVGPModel for vargp_direct (eigenspace projection) |
+| `eigenspace.py` | Low-level eigenspace utilities (mainly for tests) |
 | `train.py` | Training loops + evaluation utilities |
-| `estep.py` | E-step with kernel caching (8.8x faster) |
+| `estep.py` | E-step with kernel caching |
 | `fstep.py` | F-step: LBFGS for A, analytical lambda0 |
-| `mstep.py` | M-step: Adam for kernel hyperparameters |
+| `mstep.py` | M-step: Adam/LBFGS for kernel hyperparameters |
 | `whitening.py` | Natural <-> whitened param conversions |
-| `eigenspace.py` | Eigenspace projection utilities |
-| `direct_vargp.py` | vargp_direct mode implementation |
+| `direct_vargp.py` | Analytical gradient functions for eigenspace M-step |
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
@@ -149,7 +150,7 @@ Use `--gradient-mode MODE` in CLI:
 **Test files** (in `tests/`):
 - `test_kernel_cache.py`, `test_m_whitening.py`, `test_mask_validation.py`
 - `test_reference_comparison.py`, `test_analytical_gradients.py`
-- `test_vargp_direct_match.py`, `test_mstep_analytical.py`
+- `test_vargp_direct_match.py`, `test_mstep_analytical.py`, `test_direct_vgp_model.py`
 
 ---
 
@@ -265,5 +266,5 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 ---
 
-*Last updated: January 2025*
-*Reorganized from 913 lines to ~400 lines, moved historical content to reference docs*
+*Last updated: February 2025*
+*API cleanup: GPyTorch-like model(X) pattern, eigenspace_model.py reorganization*

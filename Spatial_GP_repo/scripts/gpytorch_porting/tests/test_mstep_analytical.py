@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
-from eigenspace import compute_eigenspace, compute_K_tilde_b_diagonal, compute_KKtilde_inv_b
+from eigenspace import eigendecompose_K_tilde, compute_K_tilde_b_diagonal, compute_KKtilde_inv_b
 
 # Will be implemented in direct_vargp.py:
 # from direct_vargp import (
@@ -372,7 +372,7 @@ def test_dlambda_moments(verbose=False):
     )
 
     # Eigenspace projection
-    B, eigvals_b, _ = compute_eigenspace(K_tilde)
+    B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde)
     K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
     K_b = K @ B
     KKtilde_inv_b = compute_KKtilde_inv_b(K_b, eigvals_b)

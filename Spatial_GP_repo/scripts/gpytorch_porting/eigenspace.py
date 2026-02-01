@@ -19,15 +19,15 @@ from typing import Tuple, Optional
 EIGVAL_TOL = 1e-4
 
 
-def compute_eigenspace(
+def eigendecompose_K_tilde(
     K_tilde: torch.Tensor,
     eigval_tol: float = EIGVAL_TOL
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute eigenspace projection for K_tilde.
+    """Eigendecompose inducing kernel matrix K_tilde.
 
     Performs eigendecomposition of K_tilde and keeps only eigenvectors
     corresponding to eigenvalues above threshold. This reduces dimensionality
-    from M (number of inducing points) to n_b 
+    from M (number of inducing points) to n_b.
 
     In eigenspace, K_tilde_b = diag(eigvals_b) is DIAGONAL, making
     inverse trivial: K_tilde_inv_b = diag(1/eigvals_b).
@@ -35,7 +35,7 @@ def compute_eigenspace(
     Args:
         K_tilde: Inducing point kernel matrix, shape (M, M)
         eigval_tol: Eigenvalue threshold. Eigenvalues <= max(max_eigval * tol, tol)
-                   are discarded. Default: 1e-10.
+                   are discarded. Default: 1e-4.
 
     Returns:
         B: Eigenvector matrix for kept eigenvalues, shape (M, n_b)

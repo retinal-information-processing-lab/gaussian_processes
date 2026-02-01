@@ -33,7 +33,7 @@ from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
 from eigenspace import (
     EIGVAL_TOL,
-    compute_eigenspace,
+    eigendecompose_K_tilde,
     compute_K_tilde_b_diagonal,
     compute_KKtilde_inv_b,
 )
@@ -218,7 +218,7 @@ def test_eigenspace_projection_gradients(verbose=False):
     with torch.no_grad():
         K_tilde_init = kernel(X_tilde, X_tilde).evaluate()
         K_tilde_init = (K_tilde_init + K_tilde_init.T) / 2
-        B, eigvals_b, _ = compute_eigenspace(K_tilde_init)
+        B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde_init)
         B = B.clone()  # Detach from any computation graph
 
     # Get mask
@@ -337,7 +337,7 @@ def test_ktilde_inv_methods(verbose=False):
     K_tilde_init = (K_tilde_init + K_tilde_init.T) / 2
 
     # Eigenspace projection
-    B, eigvals_b, _ = compute_eigenspace(K_tilde_init)
+    B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde_init)
     n_b = len(eigvals_b)
 
     # K_tilde_b should be diagonal at initialization
@@ -461,7 +461,7 @@ def test_gradient_magnitude_sanity(verbose=False):
 
     K_tilde = (K_tilde + K_tilde.T) / 2
 
-    B, eigvals_b, _ = compute_eigenspace(K_tilde)
+    B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde)
     K_tilde_b = compute_K_tilde_b_diagonal(eigvals_b)
     K_b = K @ B
     n_b = len(eigvals_b)

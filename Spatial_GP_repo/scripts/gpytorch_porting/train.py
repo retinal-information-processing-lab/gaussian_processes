@@ -539,7 +539,6 @@ def train_eigenspace(
             'time_mstep_total': Total M-step time
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
-    from eigenspace_model import lambda_moments_eigenspace
     from estep import estep_eigenspace, STABILITY_THRESHOLD
     from fstep import fstep_eigenspace, compute_f_mean
     from mstep import mstep_eigenspace_autograd, mstep_eigenspace_analytical
@@ -557,8 +556,9 @@ def train_eigenspace(
     losses = []
     checkpoints = [] if capture_checkpoints else None
 
-    # Initial moments
-    lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
+    # Initial moments (GPyTorch-like: call model to get posterior)
+    posterior = model(model.X_train)
+    lambda_m, lambda_var = posterior.mean, posterior.variance
     A = model.likelihood.A.squeeze()
     lambda0 = model.likelihood.lambda0.squeeze()
     f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
@@ -568,7 +568,8 @@ def train_eigenspace(
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
             model.recompute_eigenspace()
-            lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
+            posterior = model(model.X_train)
+            lambda_m, lambda_var = posterior.mean, posterior.variance
             A = model.likelihood.A.squeeze()
             lambda0 = model.likelihood.lambda0.squeeze()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
@@ -585,7 +586,8 @@ def train_eigenspace(
         for i_estep in range(n_estep):
             estep_eigenspace(model, r, f_mean)
 
-            lambda_m, lambda_var = lambda_moments_eigenspace(model.state)
+            posterior = model(model.X_train)
+            lambda_m, lambda_var = posterior.mean, posterior.variance
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
             if capture_checkpoints:
