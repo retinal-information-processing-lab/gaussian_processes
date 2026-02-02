@@ -22,7 +22,7 @@ from likelihoods import PoissonLikelihood
 from model import VariationalGPModel
 from tests.test_utils import set_reproducible_seed
 from fstep import lambda0_given_A
-from utils_gpy import compute_rf_center_from_sta
+from utils import compute_rf_center_from_sta
 
 
 def load_pnas_data(data_path, dtype=torch.float64):

@@ -23,7 +23,7 @@ from likelihoods import PoissonLikelihood
 from train import predict_eigenspace
 from fstep import compute_f_mean
 from eigenspace_model import DirectVGPModel
-from eigenspace import EIGVAL_TOL
+from eigenspace_utils import EIGVAL_TOL
 
 
 def load_test_data(n_train=100, n_tilde=25, cellid=8, seed=42, dtype=torch.float32, device='cuda'):

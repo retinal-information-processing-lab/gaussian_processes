@@ -33,10 +33,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
-from eigenspace import eigendecompose_K_tilde, compute_K_tilde_b_diagonal, compute_KKtilde_inv_b
+from eigenspace_utils import eigendecompose_K_tilde, compute_K_tilde_b_diagonal, compute_KKtilde_inv_b
 
 # Will be implemented in direct_vargp.py:
-# from direct_vargp import (
+# from eigenspace_gradients import (
 #     compute_C_and_gradients,
 #     compute_kernel_and_gradients,
 #     compute_lambda_moments_and_gradients,
@@ -107,7 +107,7 @@ def test_dC_gradients(verbose=False):
     kernel = create_test_kernel(device)
 
     try:
-        from direct_vargp import compute_C_and_gradients
+        from eigenspace_gradients import compute_C_and_gradients
     except ImportError:
         print("SKIP: compute_C_and_gradients not implemented yet")
         return None
@@ -177,7 +177,7 @@ def test_dK_gradients(verbose=False):
     kernel = create_test_kernel(device)
 
     try:
-        from direct_vargp import compute_C_and_gradients, compute_kernel_and_gradients
+        from eigenspace_gradients import compute_C_and_gradients, compute_kernel_and_gradients
     except ImportError:
         print("SKIP: Functions not implemented yet")
         return None
@@ -261,7 +261,7 @@ def test_dKvec_gradients(verbose=False):
     kernel = create_test_kernel(device)
 
     try:
-        from direct_vargp import compute_C_and_gradients, compute_kernel_and_gradients
+        from eigenspace_gradients import compute_C_and_gradients, compute_kernel_and_gradients
     except ImportError:
         print("SKIP: Functions not implemented yet")
         return None
@@ -343,7 +343,7 @@ def test_dlambda_moments(verbose=False):
     kernel = create_test_kernel(device)
 
     try:
-        from direct_vargp import (
+        from eigenspace_gradients import (
             compute_C_and_gradients,
             compute_kernel_and_gradients,
             compute_lambda_moments_and_gradients
@@ -436,7 +436,7 @@ def test_loss_gradients(verbose=False):
     likelihood = likelihood.double().to(device)
 
     try:
-        from direct_vargp import compute_loss_gradients
+        from eigenspace_gradients import compute_loss_gradients
         from eigenspace_model import DirectVariationalState
     except ImportError:
         print("SKIP: Functions not implemented yet")

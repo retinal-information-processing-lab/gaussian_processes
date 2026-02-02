@@ -54,6 +54,7 @@ from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from gpy_model import VariationalGPModel
 from gpy_training import train_gpy_default, predict
+from train import train_varGP_style  # Deprecated vargp_style mode
 from metrics import compute_pearson_correlation, compute_explained_variance
 from eigenspace_training import train_eigenspace, predict_eigenspace
 from eigenspace_model import DirectVGPModel
@@ -177,9 +178,9 @@ def main():
                         choices=['adam', 'lbfgs'],
                         help=f'Optimizer for default_gpy mode (default: {defaults["training"].get("optimizer", "lbfgs")})')
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
-    parser.add_argument('--mode', type=str, default='vargp_direct',
-                        choices=['vargp_old', 'default_gpy', 'vargp_direct'],
-                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_direct (eigenspace projection). Note: vargp_style is deprecated, use vargp_direct instead.')
+    parser.add_argument('--mode', type=str, default='vargp_style',
+                        choices=['vargp_old', 'default_gpy', 'vargp_style', 'vargp_direct'],
+                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_style (custom EM), vargp_direct (eigenspace projection)')
 
     # Kernel parameters - use defaults from JSON, all overridable via CLI
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
@@ -246,7 +247,24 @@ def main():
 
     args = parser.parse_args()
 
-    # vargp_style mode has been deprecated and removed
+    # Validation for vargp_style mode: explicit_unwhitening must be explicitly specified
+    if args.mode == 'vargp_style':
+        if args.explicit_unwhitening is None:
+            parser.error(
+                "vargp_style mode requires explicit choice: "
+                "use --explicit-unwhitening or --no-explicit-unwhitening"
+            )
+        # Validate consistency between strategy and unwhitening choice
+        if args.unwhitened_variational_dist and args.explicit_unwhitening:
+            parser.error(
+                "--unwhitened-variational-dist with --explicit-unwhitening is invalid.\n"
+                "UnwhitenedVariationalStrategy stores natural params directly and doesn't need conversions."
+            )
+        if not args.unwhitened_variational_dist and not args.explicit_unwhitening:
+            parser.error(
+                "Standard variational distribution with --no-explicit-unwhitening is invalid.\n"
+                "Standard distribution requires L_K conversions in E-step."
+            )
 
     # Warning for analytical M-step without float32
     if args.mstep_analytical and not args.float32:
@@ -618,9 +636,37 @@ def main():
                 losses = result['losses']
                 stopped_early = result.get('stopped_early', False)
                 final_iteration = result.get('final_iteration', len(losses))
+            else:  # vargp_style
+                # Use defaults for lr_f and lr_m (both set to same lr value)
+                lr = defaults['training']['lr']
+                print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
+                print(f"  lr_f={lr}, lr_m={lr} (from defaults)")
+                print(f"  kernel_cache: {'enabled' if args.use_cache else 'DISABLED (fallback path)'}")
+                print(f"  explicit_unwhitening: {args.explicit_unwhitening}")
+                result = train_varGP_style(
+                    model, likelihood, X_train, r_train,
+                    n_iterations=args.n_iterations,
+                    n_estep=args.n_estep,
+                    n_fstep=args.n_fstep,
+                    n_mstep=args.n_mstep,
+                    lr_f=lr,
+                    lr_m=lr,
+                    print_every=print_every,
+                    device=device,
+                    use_cache=args.use_cache,
+                    explicit_unwhitening=args.explicit_unwhitening,
+                )
+                losses = result['losses']
+                time_estep_total = result['time_estep_total']
+                time_mstep_total = result['time_mstep_total']
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
+
+        # Print E-step/M-step timing breakdown for vargp_style
+        if args.mode == 'vargp_style':
+            print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
+            print(f"  M-step:            {time_mstep_total:.1f}s")
 
         # Print early stopping info for default_gpy
         if args.mode == 'default_gpy' and stopped_early:
@@ -725,8 +771,8 @@ def main():
         final_rho = kernel.rho.item()
         final_eps_0x = kernel.eps_0x.item()
         final_eps_0y = kernel.eps_0y.item()
-        # Timing breakdown available for vargp_direct
-        if args.mode == 'vargp_direct':
+        # Timing breakdown available for vargp_style and vargp_direct
+        if args.mode in ('vargp_style', 'vargp_direct'):
             time_estep = time_estep_total
             time_mstep = time_mstep_total
         else:

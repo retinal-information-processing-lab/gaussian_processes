@@ -1,27 +1,21 @@
-# LEGACY FILE - DEPRECATED - See mstep functions in new modular files
 """
-M-Step Function for GPyTorch Variational GP
+M-Step for Eigenspace Variational GP
 
 Handles optimization of kernel hyperparameters while holding variational
-parameters (m, V) and firing rate parameters (A, λ₀) fixed.
+parameters (m_b, V_b) and firing rate parameters (A, λ₀) fixed.
 
-Key functions:
-- m_step(): Adam-based optimization of kernel hyperparameters (for GPyTorch mode)
-- mstep_eigenspace_autograd(): LBFGS with PyTorch autograd (eigenspace mode)
-- mstep_eigenspace_analytical(): LBFGS with analytical gradients (eigenspace mode)
+Two implementations:
+- mstep_eigenspace_autograd: LBFGS with PyTorch autograd
+- mstep_eigenspace_analytical: LBFGS with analytical gradients (matches vargp_old)
 
-DEPRECATED FUNCTIONS (deleted):
-- m_step_lbfgs(): Did not support hyperparameter clamping
-- m_step_lbfgs_grouped(): Did not support hyperparameter clamping
+Extracted from mstep.py during codebase reorganization (2025-02).
 """
 
 import warnings
 import torch
-import gpytorch
 
-# Eigenspace mode imports
-from estep import STABILITY_THRESHOLD
-# Analytical gradient functions
+from eigenspace_estep import STABILITY_THRESHOLD
+# Analytical gradient functions for M-step
 from eigenspace_gradients import (
     compute_C_and_gradients,
     compute_kernel_and_gradients,
@@ -29,54 +23,6 @@ from eigenspace_gradients import (
     compute_loss_gradients,
 )
 
-
-def m_step(
-    model: gpytorch.models.ApproximateGP,
-    likelihood,
-    X: torch.Tensor,
-    r: torch.Tensor,
-    n_mstep: int,
-    lr: float,  # Required - no default to prevent silent bugs
-    verbose: bool = False
-):
-    """M-step: Optimize kernel hyperparameters with Adam.
-
-    Structural change from baseline: Only kernel hyperparameters are optimized here,
-    not A or lambda0 (those are handled in F-step).
-
-    Args:
-        model: VariationalGPModel instance
-        likelihood: PoissonLikelihood instance
-        X: Training inputs, shape (N, n_features)
-        r: Training spike counts, shape (N,)
-        n_mstep: Number of Adam iterations
-        lr: Learning rate for Adam
-        verbose: Print debug info
-    """
-    if n_mstep == 0:
-        return
-
-    optimizer = torch.optim.Adam(model.covar_module.parameters(), lr=lr)
-
-    for _ in range(n_mstep):
-        optimizer.zero_grad()
-        output = model(X)
-        loss = -likelihood.expected_log_prob(r, output) + \
-               model.variational_strategy.kl_divergence()
-        loss.backward()
-        optimizer.step()
-
-        # Clamp hyperparameters to valid bounds (projected gradient descent)
-        # Since kernel is now ArcCosineKernel directly (not ScaleKernel wrapper),
-        # clamp_hyperparameters is called on model.covar_module directly
-        kernel = model.covar_module
-        if hasattr(kernel, 'clamp_hyperparameters'):
-            kernel.clamp_hyperparameters()
-
-
-# =============================================================================
-# Eigenspace M-Step Functions
-# =============================================================================
 
 def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
@@ -158,7 +104,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
         n_b = len(state.eigvals_b)
 
         # KL trace term: tr(K_tilde_inv @ V) using full matrix
-        # K_tilde_b_inv was already computed via solve() at line 139-143
+        # K_tilde_b_inv was already computed via solve()
         # This is correct even when K_tilde_b is non-diagonal (after hyperparam changes)
         trace_term = torch.trace(K_tilde_b_inv @ state.V_b)
         quad_term = (state.m_b @ K_tilde_b_inv @ state.m_b)

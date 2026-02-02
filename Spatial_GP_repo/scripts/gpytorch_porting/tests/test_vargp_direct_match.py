@@ -31,13 +31,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from kernels import ArcCosineKernel
 from likelihoods import PoissonLikelihood
-from eigenspace import (
+from eigenspace_utils import (
     EIGVAL_TOL,
     eigendecompose_K_tilde,
     compute_K_tilde_b_diagonal,
     compute_KKtilde_inv_b,
 )
-from direct_vargp import (
+from eigenspace_gradients import (
     compute_C_and_gradients,
     compute_kernel_and_gradients,
     compute_lambda_moments_and_gradients,

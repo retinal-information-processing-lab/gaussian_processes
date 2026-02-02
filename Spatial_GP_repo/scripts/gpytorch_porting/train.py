@@ -1,17 +1,18 @@
 """
-Training Utilities for GPyTorch Variational GP
+LEGACY FILE - DEPRECATED
 
-This module provides functions for training and evaluating the variational GP model.
+This file contains deprecated code for the vargp_style mode.
+It is kept for backward compatibility with deprecated/ imports.
 
-Training loops:
-- train_gpy_default: Standard GPyTorch variational inference (no custom E-step)
-- train_varGP_style: Custom EM-style training (Newton E-step with moment recomputation)
-- train_eigenspace: Eigenspace-based training (vargp_direct mode)
+**DO NOT IMPORT FROM THIS FILE IN NEW CODE**
 
-Evaluation:
-- predict: Make predictions with trained model (GPyTorch modes)
-- predict_eigenspace: Make predictions (eigenspace mode)
-- compute_r_squared, compute_pearson_correlation, compute_explained_variance
+Use instead:
+- gpy_training.py for default_gpy mode functions
+- eigenspace_training.py for eigenspace mode functions
+- metrics.py for evaluation functions
+
+This file will be removed in a future cleanup.
+Reorganized: 2025-02-02
 """
 
 import time

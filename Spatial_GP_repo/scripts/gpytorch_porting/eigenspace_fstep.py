@@ -1,0 +1,103 @@
+"""
+F-Step for Eigenspace Variational GP
+
+Handles optimization of firing rate parameter A while holding variational
+parameters (m_b, V_b) and kernel hyperparameters fixed. lambda0 is computed
+analytically given A.
+
+Key functions:
+- fstep_eigenspace: LBFGS optimization of A with analytical lambda0
+
+Extracted from fstep.py during codebase reorganization (2025-02).
+"""
+
+import torch
+
+# Import shared utilities
+from utils import lambda0_given_A
+from eigenspace_estep import STABILITY_THRESHOLD
+
+
+def fstep_eigenspace(
+    model,
+    r: torch.Tensor,
+    lambda_m: torch.Tensor,
+    lambda_var: torch.Tensor,
+    n_fstep: int,
+    lr: float
+):
+    """F-step for eigenspace mode: Optimize A with LBFGS, lambda0 computed analytically.
+
+    This is a simplified version that directly uses LBFGS on raw_A.
+
+    Args:
+        model: DirectVGPModel instance
+        r: Spike counts, shape (N,)
+        lambda_m: Posterior mean (held fixed), shape (N,)
+        lambda_var: Posterior variance (held fixed), shape (N,)
+        n_fstep: Number of LBFGS iterations
+        lr: Learning rate for LBFGS
+    """
+    likelihood = model.likelihood
+
+    if n_fstep == 0:
+        # Still update lambda0 analytically
+        A = likelihood.A.squeeze()
+        with torch.no_grad():
+            new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+        return
+
+    # Initial lambda0 update
+    A = likelihood.A.squeeze()
+    with torch.no_grad():
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+
+    optimizer = torch.optim.LBFGS(
+        [likelihood.raw_A],
+        lr=lr,
+        max_iter=n_fstep,
+        tolerance_change=1e-9,
+        tolerance_grad=1e-7,
+        history_size=n_fstep,
+        line_search_fn='strong_wolfe'
+    )
+
+    def closure():
+        optimizer.zero_grad()
+
+        A = likelihood.A.squeeze()
+
+        # Update lambda0 analytically
+        with torch.no_grad():
+            lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
+
+        # Compute f_mean
+        f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
+
+        # Stability check
+        if f_mean.mean().item() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+            return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
+
+        # Log-likelihood (negative for minimization)
+        log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
+
+        # Compute gradient analytically for efficiency
+        # dL/dA = r @ lambda_m - (lambda_m + A * lambda_var) @ f_mean
+        # dL/d(logA) = A * dL_dA
+        dL_dA = r @ lambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
+        dL_dlogA = A * dL_dA
+
+        likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
+
+        return -log_lik
+
+    optimizer.step(closure)
+
+    # Final lambda0 update
+    with torch.no_grad():
+        A = likelihood.A.squeeze()
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))

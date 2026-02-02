@@ -1,3 +1,4 @@
+# LEGACY FILE - DEPRECATED - See estep functions in new modular files
 """
 Custom E-Step Implementation for GPyTorch Variational GP
 

@@ -1,3 +1,4 @@
+# LEGACY FILE - DEPRECATED - See fstep functions in new modular files
 """
 F-Step Functions for GPyTorch Variational GP
 

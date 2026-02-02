@@ -1,4 +1,3 @@
-# LEGACY FILE - DEPRECATED - See model functions in new modular files
 """
 Variational GP Model for GPyTorch
 

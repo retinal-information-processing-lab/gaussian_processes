@@ -31,7 +31,7 @@ from typing import Tuple, Optional
 
 import torch
 
-from eigenspace import (
+from eigenspace_utils import (
     EIGVAL_TOL,
     eigendecompose_K_tilde,
     reproject_variational_params,
