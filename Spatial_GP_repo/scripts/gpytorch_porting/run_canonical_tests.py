@@ -126,9 +126,9 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='Print commands without running')
     parser.add_argument('--modes', type=str, nargs='+',
-                        default=['vargp_old', 'vargp_style', 'vargp_direct', 'default_gpy'],
-                        choices=['vargp_old', 'vargp_style', 'vargp_direct', 'default_gpy'],
-                        help='Modes to test (default: all)')
+                        default=['vargp_old', 'vargp_direct', 'default_gpy'],
+                        choices=['vargp_old', 'vargp_direct', 'default_gpy'],
+                        help='Modes to test (default: all active modes)')
     args = parser.parse_args()
 
     output_path = Path(__file__).parent / args.output

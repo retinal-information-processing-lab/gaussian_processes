@@ -5,6 +5,32 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-02: Final Cleanup - Legacy Files Removed (COMPLETE)
+
+**Accomplished:**
+- Made deprecated/ folder self-contained (~1,100 lines of vargp_style code)
+  - Extracted vargp_style functions from legacy files into deprecated/
+  - deprecated/vargp_style_estep.py (807 lines): E-step functions
+  - deprecated/vargp_style_fstep.py (228 lines): F-step functions
+  - deprecated/vargp_style_mstep.py (75 lines): M-step function
+- Deleted legacy files (2,672 lines removed):
+  - train.py, estep.py, fstep.py, mstep.py, model.py
+- Updated deprecated/vargp_style_run.py to work standalone
+- Updated run_canonical_tests.py: removed vargp_style from choices
+- Updated CLAUDE.md: removed legacy files section
+
+**Testing:**
+- vargp_direct mode: WORKS ✓
+- default_gpy mode: WORKS ✓
+- deprecated/vargp_style_run.py: Imports work standalone ✓
+
+**Result:**
+- Clean main directory with only active code (eigenspace_*, gpy_*, shared)
+- deprecated/ folder is self-contained and documented
+- 2,672 lines removed from main codebase
+
+---
+
 ## 2026-02-02: Codebase Reorganization - Modular Structure (COMPLETE)
 
 **Accomplished:**

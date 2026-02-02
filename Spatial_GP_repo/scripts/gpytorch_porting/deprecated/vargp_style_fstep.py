@@ -1,30 +1,227 @@
 """
 DEPRECATED: F-step functions for vargp_style mode
 
-This mode is no longer maintained. Use eigenspace or default_gpy instead.
+This mode is no longer maintained. Use vargp_direct or default_gpy instead.
 
-This file imports deprecated functions from the parent fstep.py module.
-These functions will be removed from the main codebase in Phase 3.
+F-Step Functions for GPyTorch Variational GP
 
-Last working commit: 23c3856
+Handles optimization of firing rate parameters (A, λ₀) while holding
+variational parameters (m, V) and kernel hyperparameters fixed.
+
+Key functions:
+- f_step(): Adam-based optimization of A with analytical λ₀
+- f_step_lbfgs(): LBFGS-based optimization matching original varGP
+
+Last working commit: 23c3856 (before reorganization)
+Extracted from ../fstep.py: 2026-02-02
 """
 
+import warnings
 import sys
 from pathlib import Path
 
-# Add parent directory to path to import from main fstep.py
+import torch
+import gpytorch
+from typing import Tuple
+
+# Add parent directory to import shared components
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from fstep import (
-    lambda0_given_A,
-    f_step,
-    f_step_lbfgs,
-    compute_f_mean,
-)
+# Import stability threshold from vargp_style_estep (C1 fix: consistency)
+from deprecated.vargp_style_estep import STABILITY_THRESHOLD
+
+# Import shared utility functions from parent
+from utils import lambda0_given_A, compute_f_mean
+
+
+def f_step(
+    model: gpytorch.models.ApproximateGP,
+    likelihood,
+    X: torch.Tensor,
+    r: torch.Tensor,
+    lambda_m: torch.Tensor,
+    lambda_var: torch.Tensor,
+    n_fstep: int,
+    lr: float,  # Required - no default to prevent silent bugs
+    verbose: bool = False
+):
+    """F-step: Optimize A with Adam, lambda0 computed analytically.
+
+    Structural change from baseline: lambda0 is set analytically (not optimized).
+    Only A is optimized via gradient descent.
+
+    Args:
+        model: VariationalGPModel instance
+        likelihood: PoissonLikelihood instance
+        X: Training inputs, shape (N, n_features)
+        r: Training spike counts, shape (N,)
+        lambda_m: GP posterior mean (held fixed), shape (N,)
+        lambda_var: GP posterior variance (held fixed), shape (N,)
+        n_fstep: Number of Adam iterations
+        lr: Learning rate for Adam
+        verbose: Print debug info
+    """
+    # First set analytical lambda0
+    A = likelihood.A.squeeze()
+    new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+    with torch.no_grad():
+        likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
+
+    if n_fstep == 0:
+        return
+
+    optimizer = torch.optim.Adam([likelihood.raw_A], lr=lr)
+
+    for _ in range(n_fstep):
+        optimizer.zero_grad()
+
+        # Update lambda0 analytically for current A
+        A = likelihood.A.squeeze()
+        with torch.no_grad():
+            new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
+
+        # Compute loss
+        output = model(X)
+        loss = -likelihood.expected_log_prob(r, output) + \
+               model.variational_strategy.kl_divergence()
+
+        loss.backward()
+        optimizer.step()
+
+    # Final lambda0 update
+    A = likelihood.A.squeeze()
+    with torch.no_grad():
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.unsqueeze(0))
+
+
+def f_step_lbfgs(
+    model: gpytorch.models.ApproximateGP,
+    likelihood,
+    X: torch.Tensor,
+    r: torch.Tensor,
+    lambda_m: torch.Tensor,
+    lambda_var: torch.Tensor,
+    n_fstep: int,
+    lr: float,  # Required - no default to prevent silent bugs
+    verbose: bool = False
+):
+    """F-step using LBFGS optimizer.
+
+    Uses LBFGS with strong_wolfe line search to optimize A.
+    - Optimizes likelihood.raw_A directly (raw_A = logA, A = exp(raw_A))
+    - lambda0 set analytically inside closure
+    - Stability check: returns inf if f_mean.mean() > STABILITY_THRESHOLD or NaN
+
+    Args:
+        model: VariationalGPModel instance
+        likelihood: PoissonLikelihood instance
+        X: Training inputs, shape (N, n_features)
+        r: Training spike counts, shape (N,)
+        lambda_m: GP posterior mean (held fixed), shape (N,)
+        lambda_var: GP posterior variance (held fixed), shape (N,)
+        n_fstep: Number of LBFGS iterations (max_iter)
+        lr: Learning rate for LBFGS
+        verbose: Print debug info
+    """
+    if n_fstep == 0:
+        return
+
+    # Initial lambda0 update
+    A = likelihood.A.squeeze()
+    with torch.no_grad():
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+
+    # J1 fix: Track A before optimization and instability info
+    A_before = likelihood.A.item()
+    instability_info = [False, 0.0]  # [triggered, f_mean_value]
+
+    # LBFGS optimizer - directly optimizes raw_A (which is logA)
+    optimizer = torch.optim.LBFGS(
+        [likelihood.raw_A],
+        lr=lr,
+        max_iter=n_fstep,
+        tolerance_change=1e-9,
+        tolerance_grad=1e-7,
+        history_size=n_fstep,
+        line_search_fn='strong_wolfe'
+    )
+
+    closure_counter = [0]
+
+    def closure():
+        closure_counter[0] += 1
+        optimizer.zero_grad()
+
+        # Get A from likelihood (applies exp to raw_A)
+        A = likelihood.A.squeeze()
+
+        # Update lambda0 analytically
+        with torch.no_grad():
+            lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+            likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
+
+        # Compute f_mean = exp(A*lambda_m + 0.5*A^2*lambda_var + lambda0)
+        f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
+
+        # Stability check (C1 fix: unified threshold with estep)
+        f_mean_val = f_mean.mean().item()
+        if f_mean_val > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+            # J1 fix: Track instability
+            instability_info[0] = True
+            instability_info[1] = f_mean_val
+            if verbose:
+                print(f"f_mean instability: mean={f_mean_val:.1f} at closure call {closure_counter[0]}, returning inf")
+            return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
+
+        # Compute loglikelihood: L = A*r@lambda_m + lambda0*sum(r) - sum(f_mean)
+        rlambda_m = r @ lambda_m
+        sum_r = r.sum()
+        loglikelihood = A * rlambda_m + lambda0 * sum_r - f_mean.sum()
+
+        # Compute gradient w.r.t. raw_A (= logA)
+        # dL/d(logA) = dL/dA * dA/d(logA) = dL/dA * A
+        # dL/dA = r@lambda_m - (lambda_m + A*lambda_var) @ f_mean
+        dL_dA = rlambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
+        dL_dlogA = A * dL_dA
+
+        # Set gradient (negative because LBFGS minimizes)
+        likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
+
+        return -loglikelihood
+
+    # Run LBFGS
+    optimizer.step(closure)
+
+    # J1 fix: Check if optimization worked - warning only, no error
+    A_after = likelihood.A.item()
+    if instability_info[0]:
+        if abs(A_after - A_before) < 1e-10:
+            warnings.warn(
+                f"F-step: instability detected (f_mean={instability_info[1]:.1f}). "
+                f"A unchanged: {A_after:.4f}.",
+                RuntimeWarning
+            )
+        else:
+            warnings.warn(
+                f"F-step: instability detected (f_mean={instability_info[1]:.1f}). "
+                f"A changed: {A_before:.4f} -> {A_after:.4f}.",
+                RuntimeWarning
+            )
+
+    # Final lambda0 update
+    with torch.no_grad():
+        A = likelihood.A.squeeze()
+        new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
+        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+
+    if verbose:
+        print(f"F-step LBFGS: {closure_counter[0]} closure calls, A: {likelihood.A.item():.4f}")
+
 
 __all__ = [
-    'lambda0_given_A',
     'f_step',
     'f_step_lbfgs',
-    'compute_f_mean',
 ]

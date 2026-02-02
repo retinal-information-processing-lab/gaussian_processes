@@ -41,6 +41,8 @@ from pathlib import Path
 # Add paths for imports
 sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject')
 sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/torchlambertw')
+# Add parent directory to import from gpytorch_porting
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 import gpytorch
@@ -54,7 +56,7 @@ from kernels import ArcCosineKernel, GRADIENT_MODES
 from likelihoods import PoissonLikelihood
 from gpy_model import VariationalGPModel
 from gpy_training import train_gpy_default, predict
-from train import train_varGP_style  # Deprecated vargp_style mode
+from deprecated.vargp_style_training import train_varGP_style  # Deprecated vargp_style mode
 from metrics import compute_pearson_correlation, compute_explained_variance
 from eigenspace_training import train_eigenspace, predict_eigenspace
 from eigenspace_model import DirectVGPModel
@@ -161,7 +163,7 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
 
 def main():
     # Load default parameters
-    defaults_path = Path(__file__).parent / 'default_params.json'
+    defaults_path = Path(__file__).parent.parent / 'default_params.json'
     with open(defaults_path, 'r') as f:
         defaults = json.load(f)
 

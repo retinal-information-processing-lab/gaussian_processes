@@ -609,6 +609,9 @@ def main():
                 losses = result['losses']
                 stopped_early = result.get('stopped_early', False)
                 final_iteration = result.get('final_iteration', len(losses))
+            else:
+                raise ValueError(f"Unknown mode: {args.mode}")
+
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
@@ -792,4 +795,37 @@ def main():
 
 
 if __name__ == '__main__':
-    main()     
+    # DEBUG: Uncomment this block to test with hardcoded parameters
+    import sys
+    sys.argv = [
+        'run_single_mode.py',
+        # '--mode', 'default_gpy',
+        '--mode', 'vargp_direct',
+        '--ntilde', '50',
+        '--n-train', '250',
+        '--n-iterations', '3',
+        # '--n-estep', '10',
+        # '--n-fstep', '10',
+        # '--n-mstep', '10',
+        '--sigma-0', '2.0',
+        '--Amp', '0.5',
+        '--beta', '0.2',
+        '--rho', '0.15',
+        '--eps-0x', '0.1',
+        '--eps-0y', '-0.1',
+        '--seed', '123',
+        # '--float32',
+        # '--cell', '8',
+        '--save-plot', 'none',
+        # '--plot',  # Uncomment to show plot
+        # '--json-append', 'results/benchmark_results.jsonl',  # Uncomment to save results
+    ]
+    # print("=" * 70)
+    # print("DEBUG MODE: Testing default_gpy with hardcoded parameters")
+    # print("=" * 70)
+
+    main()
+
+                                                                                        
+
+                                                                                              
