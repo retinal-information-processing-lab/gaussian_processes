@@ -31,13 +31,41 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.float64
 torch.set_default_dtype(DTYPE)
 
-X_MIN, X_MAX = -2.0, 2.0  # Input domain bounds
+# X_MIN, X_MAX = -2.0, 2.0  # Input domain bounds
+
+X_MIN, X_MAX = -15.0, 15.0  # Input domain bounds
+
+
 N_INDUCING = 20          # Number of inducing points for variational GP
 MAX_R = 500              # Max spike count for utility computation
 
 # Default p(x) distribution parameters for distribution-aware utility
-DEFAULT_P_X_MEAN = 0.0
-DEFAULT_P_X_STD = 0.2
+DEFAULT_P_X_MEAN = 3.0
+DEFAULT_P_X_STD = 1.5
+
+# -----------------------------------------------------------------------------
+# Default parameters for diagnostic scripts (diagnose_1d_utility_w_fixed_ntrain.py, etc.)
+# These are NOT used in this script - they are exported for import by other scripts
+# that analyze conditioning behavior (before/after observing lambda at a point).
+# -----------------------------------------------------------------------------
+# X_SAMPLE: The x-location where we imagine observing a new response.
+#           Diagnostic scripts show how conditioning on lambda(X_SAMPLE) updates the GP.
+#           Not used here
+X_SAMPLE = DEFAULT_P_X_MEAN
+
+# LAMBDA_SEED: Random seed for sampling lambda_obs from GP posterior at X_SAMPLE.
+#              Ensures reproducibility across runs.
+LAMBDA_SEED = 12
+
+# N_LAMBDA_SAMPLES: Number of MC samples for averaging conditional entropy.
+#                   Higher = more accurate utility estimate, but slower.
+N_LAMBDA_SAMPLES = 1000
+
+# SAMPLE_X: Controls how x is chosen in the MC loop for utility computation.
+#           True  = sample x ~ p(x) (Gaussian) - "distribution-aware" utility
+#           False = use fixed x = X_SAMPLE - utility at a single point
+# SAMPLE_X = True
+SAMPLE_X = False
 
 # -----------------------------------------------------------------------------
 # Ground Truth Function
@@ -347,14 +375,21 @@ def compute_H(mu, sigma2, r_max=MAX_R, a=1.0, lambda0=0.0):
 
     Args:
         mu: (n_points,) latent GP means
-        sigma2: (n_points,) latent GP variances
+        sigma2: (n_points,) latent GP variances (must be non-negative)
         r_max: Maximum spike count for Laplace approximation
         a: Firing rate scaling (f = exp(a*lambda + lambda0))
         lambda0: Firing rate offset
 
     Returns:
         H: (n_points,) tensor of entropies
+
+    Raises:
+        ValueError: If sigma2 contains any negative values
     """
+    # Validate variance is non-negative
+    if torch.any(sigma2 < 0):
+        raise ValueError(f"sigma2 must be non-negative. Found min value: {sigma2.min().item()}")
+
     from utility import laplace_approximations_new
 
     device = mu.device

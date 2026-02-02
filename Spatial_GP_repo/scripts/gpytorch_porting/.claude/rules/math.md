@@ -1,3 +1,16 @@
+---
+paths:
+  - "kernels.py"
+  - "eigenspace*.py"
+  - "estep.py"
+  - "fstep.py"
+  - "model.py"
+  - "likelihoods.py"
+  - "whitening.py"
+  - "direct_vargp.py"
+  - "*gradient*.py"
+---
+
 # Mathematical Reference - GPyTorch Porting Project
 
 This document contains the mathematical foundations for the variational GP implementation.
@@ -241,6 +254,23 @@ m_b = m_b + Λ(Λ + G_b)⁻¹(g_b - m_b)
 
 ---
 
+## Authoritative Sources (Full Derivations)
+
+For complete mathematical derivations, see LaTeX files in:
+`~/IDV_code/Papers/latex_summaries/`
+
+| Topic | LaTeX File |
+|-------|------------|
+| Kernel definition + gradients | `acosker_kernel_def_and_gradients.tex` |
+| Kernel gradient w.r.t. input | `Acosker_gradient_dx.tex` |
+| E-step derivation | `Estep_corrected.tex` |
+| E-step m formula derivation | `Estep_corrected_mderivation.tex` |
+| Whitening explanation | `whitened_parameterization_explanation.tex` |
+| GP theory foundations | `Gaussian_process_theory.tex` |
+
+---
+
 ## Related Documentation
 
-- `ANALYTICAL_GRADIENTS_REFERENCE.md` - Kernel gradient formulas and VJP implementation
+- `.claude/rules/gradients.md` - Kernel gradient formulas (auto-loads for gradient files)
+- `.claude/ANALYTICAL_GRADIENTS_REFERENCE.md` - Full gradient reference

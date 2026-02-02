@@ -1,3 +1,8 @@
+---
+paths:
+  - "*gradient*.py"
+---
+
 # Analytical Gradients Reference
 
 **Authoritative source for**: Kernel gradient formulas, VJP implementation, M-step integration

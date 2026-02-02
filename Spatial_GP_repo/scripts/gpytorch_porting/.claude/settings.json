@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"$CONDA_DEFAULT_ENV\" != 'pytorch_gpytorch' ]; then echo 'CONDA_ENV_WRONG: Current=$CONDA_DEFAULT_ENV, Required=pytorch_gpytorch'; exit 1; fi",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

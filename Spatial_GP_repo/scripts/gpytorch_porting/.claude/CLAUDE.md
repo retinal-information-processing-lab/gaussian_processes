@@ -4,20 +4,18 @@
 
 ---
 
-## ⚠️ REQUIRED READING - DO THIS FIRST ⚠️
+## Working Guidelines (Auto-Loaded)
 
-**BLOCKING REQUIREMENT**: Before doing ANYTHING on this project, you MUST read:
+**`.claude/rules/working_guidelines.md`** should be loaded automatically as an always-on rule.
 
-**`.claude/WORKING_GUIDELINES.md`**
-
-This file defines:
+It defines:
 - Core philosophy (scientist-developer balance, simplicity first)
 - Communication rules (push back, ask questions)
 - Development process (staged implementation, validation layers)
 - Code style and documentation requirements
 - Git hygiene for new users
 
-**DO NOT skip this.** It contains critical process rules that apply to EVERY task on this project. Read it at the start of EVERY session before proceeding with any work.
+**BLOCKING CHECK**: Before any work, verify `working_guidelines.md` appears in your context. If NOT loaded, **immediately alert the user** - this indicates a rules configuration problem that must be fixed before proceeding.
 
 ---
 
@@ -27,8 +25,8 @@ This file defines:
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this |
 | **Run canonical test** | `python run_canonical_tests.py --seed 123` |
-| **Run single mode** | `python run_single_mode.py --mode vargp_style --explicit-unwhitening` |
-| **Query results** | `python query_benchmark.py --mode vargp_style --M 100` |
+| **Run single mode** | `python run_single_mode.py --mode vargp_direct --float32` |
+| **Query results** | `python query_benchmark.py --mode vargp_direct --M 100` |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. |
 
 **Current Status**:
@@ -60,95 +58,27 @@ This file defines:
 
 ---
 
-## Known Limitations
+## Known Issues & Debugging
 
-### torch.pi Workaround (HACKY)
-`tests/test_utils.py:set_reproducible_seed()` contains:
-```python
-torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
-```
-This replicates a side effect from `GP_utils.py` line 49. We don't understand why it works.
+See `.claude/rules/debugging.md` (auto-loads for test files) or use `/debug` skill.
 
-### Jitter Consistency
-All jitter values MUST match `model.jitter`. The fix: all `estep.py` functions now default to `model.jitter`.
-
-### set_reproducible_seed Device Parameter
-`set_reproducible_seed(seed, device=device)` produces DIFFERENT random sequences than `set_reproducible_seed(seed)`. Root cause unknown.
-
-### Whitening Seed Sensitivity
-Whitened mode can be sensitive to random seed in some configurations.
-
-### RF Center Initialization (STA-based)
-RF center (eps_0x, eps_0y) is now automatically computed from spike-triggered average (STA) in `run_single_mode.py`. This provides a data-driven initialization based on which image regions drive neural responses.
-
-Implementation: `utils_gpy.py:compute_rf_center_from_sta()`
-- Uses center-of-mass of |STA| (robust to noise)
-- Z-score normalizes images before computing (recommended for natural images)
-- Returns coordinates in normalized [-1, 1] range
-
-CLI override: `--eps-0x` and `--eps-0y` flags override STA values if specified.
-
-### default_gpy Mode Now Uses LBFGS
-Previously used Adam which failed on some cells due to inability to navigate the curved ELBO landscape.
-**Fixed:** LBFGS is now the default optimizer (`--optimizer lbfgs`).
-Use `--optimizer adam` to revert to old behavior if needed.
-
-### Performance Degradation with Large ntrain+M
-Both vargp_direct and vargp_old show performance loss when ntrain=2000 and M≥100 on some cells (Cell 8: -10% loss). Cell-dependent issue under investigation. See `investigations/performance_loss_ntrain_M/`.
-
-### Overfitting with Extended Training
-vargp_direct overfits when trained too long. Test performance peaks early then declines while training loss continues to improve. Use early stopping. See `investigations/overfitting_analysis/`.
-
-### Early Stopping (Window-Based)
-Early stopping uses window-based relative improvement instead of patience-based.
-
-**Parameters** (CLI flags):
-- `--stop-window 20` - Look back N iterations
-- `--stop-thresh 0.005` - Stop if improvement < 0.5% over window
-- `--min-iterations 10` - Minimum before checking
-- `--no-early-stop` - Disable early stopping
-
-**Why not patience-based?** Loss improves in bursts after M-step, causing premature stopping with patience-based approach.
+Key issues: torch.pi workaround, jitter consistency, seed sensitivity, whitening modes, RF init, performance degradation, early stopping.
 
 ---
 
 ## Parameter Matching Table (PREVENTS BUGS)
 
-| Parameter | varGP | vargp_style | default_gpy |
-|-----------|-------|-------------|-------------|
-| A_init | 0.01 | 0.01 | 0.01 |
+| Parameter | varGP | vargp_direct | default_gpy |
+|-----------|-------|--------------|-------------|
+| A_init | 0.01 | 0.01 |  0.01 |
 | lambda0_init | 1.0 | 1.0 | 1.0 |
-| lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) | 0.1 (LBFGS) |
+| lr_f (F-step) | 0.1 (LBFGS) | 0.1 (LBFGS) |  0.1 (LBFGS) |
 | lr_m (M-step) | 0.1 | 0.1 | 0.1 |
-| F-step optimizer | LBFGS | LBFGS | LBFGS |
-| M-step optimizer | LBFGS | **Adam** | LBFGS |
+| F-step optimizer | LBFGS | LBFGS |  LBFGS |
+| M-step optimizer | LBFGS | LBFGS |  LBFGS |
+| **Dtype** | float32 |float32 |  float32 |
 
 All modes load defaults from `default_params.json`.
-
----
-
-## Variational Strategy and Whitening
-
-**Two distinct concepts**:
-
-1. **standard_variational_distribution** (model.py):
-   - `True` (default): Use `VariationalStrategy` (whitened params)
-   - `False`: Use `UnwhitenedVariationalStrategy` (natural params)
-   - CLI: `--unwhitened-variational-dist`
-
-2. **explicit_unwhitening** (train.py/estep.py):
-   - Controls L_K whitening conversions in E-step
-   - **REQUIRED** for `vargp_style` with standard distribution
-   - CLI: `--explicit-unwhitening` or `--no-explicit-unwhitening`
-
-**CLI examples**:
-```bash
-# Standard distribution with explicit unwhitening (most common)
-python run_single_mode.py --mode vargp_style --explicit-unwhitening
-
-# Unwhitened strategy
-python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
-```
 
 ---
 
@@ -166,9 +96,9 @@ Use `--gradient-mode MODE` in CLI:
 | Mode | Description |
 |------|-------------|
 | `vargp_old` | Original varGP implementation (reference baseline) |
-| `default_gpy` | Standard GPyTorch variational inference with LBFGS |
-| `vargp_style` | Matches original varGP structure (LBFGS F-step, analytical lambda0) |
-| `vargp_direct` | Eigenspace projection matching varGP (use --float32) |
+| `vargp_direct` | Eigenspace projection, exact match to varGP (use --float32) |
+| `default_gpy` | Standard GPyTorch variational inference with LBFGS (use --float32)|
+| `vargp_style` | GPyTorch with whitening strategy | DEPRECATED
 
 ---
 
@@ -208,11 +138,9 @@ Use `--gradient-mode MODE` in CLI:
 `utility.py` functions are NOT part of this porting effort:
 - `nd_utility_new()`, `distribution_aware_utility_gpytorch()`, `conditioned_utility_clean()`
 
-### Custom E-step - DEFERRED
-vargp_style is stable. See `results/BENCHMARK_LOG.md` for performance comparison.
 
 ### Multi-Cell Validation - DEFERRED
-Cell 8 validation sufficient for initial implementation.
+Cell 8 and 10 validation sufficient for initial implementation.
 
 ---
 
@@ -268,12 +196,12 @@ Spatial_GP_repo/
 | If you need... | The authoritative doc is... |
 |----------------|----------------------------|
 | Status, rules, parameter tables | THIS FILE (CLAUDE.md) |
-| Math formulas | MATH_REFERENCE.md |
+| Math formulas | `.claude/rules/math.md` (auto-loads, or `/math` skill) |
 | "Why was X designed this way?" | DECISION_LOG.md |
 | Performance numbers | results/BENCHMARK_LOG.md |
-| How to work on this project | WORKING_GUIDELINES.md |
+| How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
 | vargp_direct implementation | VARGP_DIRECT_REFERENCE.md |
-| Analytical gradients | ANALYTICAL_GRADIENTS_REFERENCE.md |
+| Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
 | GPyTorch code patterns | PATTERNS_REFERENCE.md |
 | Data format/preprocessing | DATA_REFERENCE.md |
 
@@ -285,10 +213,10 @@ Spatial_GP_repo/
 
 | If you're working on... | READ THIS FIRST |
 |-------------------------|-----------------|
-| Math formulas, E-step derivations | MATH_REFERENCE.md |
+| Math formulas, E-step derivations | `.claude/rules/math.md` |
 | Design rationale (Q1-Q25) | DECISION_LOG.md |
 | vargp_direct mode | VARGP_DIRECT_REFERENCE.md |
-| Analytical kernel gradients | ANALYTICAL_GRADIENTS_REFERENCE.md |
+| Analytical kernel gradients | `.claude/rules/gradients.md` |
 | GPyTorch patterns | PATTERNS_REFERENCE.md |
 | Data loading/preprocessing | DATA_REFERENCE.md |
 

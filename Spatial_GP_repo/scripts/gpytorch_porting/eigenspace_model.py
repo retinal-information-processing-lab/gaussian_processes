@@ -129,7 +129,7 @@ def _compute_eigenspace_quantities(
     K_b = K @ B
 
     # -------------------------------------------------------------------------
-    # Step 4: K_tilde in eigenspace is DIAGONAL (this is the key insight!)
+    # Step 4: K_tilde in eigenspace is DIAGONAL 
     # K_tilde_b = B.T @ K_tilde @ B = diag(eigvals_b)
     # -------------------------------------------------------------------------
     K_tilde_b = torch.diag(eigvals_b)
@@ -137,7 +137,7 @@ def _compute_eigenspace_quantities(
     # -------------------------------------------------------------------------
     # Step 5: Compute K @ K_tilde_inv in eigenspace
     # Since K_tilde_b is diagonal, K_tilde_inv_b = diag(1/eigvals_b)
-    # So K @ K_tilde_inv = K_b @ diag(1/eigvals_b) = K_b / eigvals_b (element-wise!)
+    # So K @ K_tilde_inv = K_b @ diag(1/eigvals_b) = K_b / eigvals_b (element-wise)
     # This avoids expensive matrix solve - just element-wise division
     # -------------------------------------------------------------------------
     K_times_Ktilde_inv_b = K_b / eigvals_b.unsqueeze(0)  # (N, n_b)

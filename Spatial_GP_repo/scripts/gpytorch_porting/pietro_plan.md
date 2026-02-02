@@ -62,4 +62,18 @@ Things to remember having claude check:
 
 [ ] in eigenspace projection vargp loop we should make sure the quircks of the old vargp are implemented still.
 
-[ ] eigenval tol 1.e-4
+[ ] eigenval tol 1.e-4 -> STILL A HARDCODED VALUE IN THE EIGENSPACE.PY SCRIPT.
+
+[ ] Move to yaml
+
+[ ] When a major cleanup is going to be done, one of the things to have claude notice is where it referenced:
+-  Backward compatibility (for what, you sure the old code is not just superseeded?)
+
+
+## Understanding of Rules, Skills, Hooks and subagents
+
+
+Rules:
+- Cannot be loaded on prompt semantics
+- They load either with file globs ( name match ) or always on or skill that says "read it"
+

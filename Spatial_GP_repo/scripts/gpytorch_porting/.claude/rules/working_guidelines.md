@@ -1,6 +1,6 @@
 # Working Guidelines for Claude Code Sessions
 
-**Purpose**: This document defines HOW Claude should work on this project. Read this BEFORE reading CLAUDE.md. These are meta-rules about process and philosophy, not project-specific technical details.
+**Purpose**: This document defines HOW Claude should work on this project. Read this BEFORE reading CLAUDE.md. These are meta-rules about process and philosophy. Extremely important
 
 ---
 
@@ -284,11 +284,36 @@ Sessions dedicated to codebase exploration or bug investigation require TIDYNESS
 
 **Rationale**: Future sessions must be able to verify documented claims. Results without reproduction steps are technical debt that compounds across sessions.
 
-### 5.6 Tests are run from srcipts
+### 5.6 Tests are run from scripts
 
-When uses says to run the test they mean using one of the dedicated scripts.
+When user says to run the test they mean using one of the dedicated scripts.
 
 Full cell fits using inline python scripts are reserved for debugging.
+
+### 5.7 Conda Environment Pattern
+
+**The conda environment `pytorch_gpytorch` is already active.** Do NOT try to activate it.
+
+**Correct pattern** (just use python directly):
+```bash
+python run_single_mode.py --mode vargp_direct --float32 --seed 123
+```
+
+**Patterns that FAIL** (don't use these):
+```bash
+# FAILS - conda activate requires shell initialization
+source ~/.bashrc && conda activate pytorch_gpytorch && python script.py
+
+# FAILS - same issue
+conda activate pytorch_gpytorch && python script.py
+
+# FAILS - wrong path (anaconda3, not miniconda3)
+/home/idv-eqs8-pza/miniconda3/envs/pytorch_gpytorch/bin/python script.py
+```
+
+**Why**: The terminal session starts with `pytorch_gpytorch` already activated (visible as `*` in `conda env list`). Attempting to re-activate causes errors because bash isn't initialized for conda hooks in non-interactive mode.
+
+**If you need to verify**: Run `which python` - should show `/home/idv-eqs8-pza/anaconda3/envs/pytorch_gpytorch/bin/python`.
 
 ---
 
@@ -306,7 +331,7 @@ Full cell fits using inline python scripts are reserved for debugging.
 
 When starting a new session on this project:
 
-1. Read this file (WORKING_GUIDELINES.md) first
+1. This file (working_guidelines.md) is auto-loaded as an always-on rule
 2. Read CLAUDE.md to understand project state
 3. Check the "Implementation Stages" section for what's done/pending
 4. Check the "Decision Log" for past design choices
@@ -356,3 +381,4 @@ When user says "wrap up", "done for now", or "session end":
 ---
 
 *Created: January 2025 (extracted from successful Stage 1-2 implementation)*
+*Moved to .claude/rules/: February 2025, 557d9f4 - always-on rule (no path restrictions)*

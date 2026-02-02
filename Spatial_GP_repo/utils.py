@@ -5646,6 +5646,7 @@ def varGP(x, r, **kwargs):
                     if nEstep > 0:
                         # print(f'Estep in iteration {iteration}')
 
+                        # NOTE THAT THIS LOOP IS FAKE. ITS A HARD CODED 1
                         for i_estep in range(1):
                             # print(f'   Estep n {i_estep}')
 
