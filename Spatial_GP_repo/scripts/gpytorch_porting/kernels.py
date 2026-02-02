@@ -1,8 +1,9 @@
 """
-Arc-Cosine Kernel for GPyTorch
+Arc-Cosine Kernel for GPyTorch with Receptive Field Structure
 
 This module implements the arc-cosine kernel as a GPyTorch kernel class.
 The arc-cosine kernel is derived from infinite-width 2-layer ReLU neural networks.
+The C matrix is computed from receptive field parameters (β, ρ, ξ₀).
 
 Mathematical definition:
     K(x, x') = (1/π) · M · J(θ)
@@ -14,8 +15,9 @@ Mathematical definition:
         cos(θ)  = (xᵀCx' + σ₀²) / M
         J(θ)    = sin(θ) + (π - θ)cos(θ)
 
-Stage 1 (C=I): Uses identity matrix, v_x = ‖x‖² + σ₀²
-Stage 2 (RF structure): Computes C from receptive field parameters (β, ρ, ξ₀)
+The C matrix is computed from RF parameters:
+    C = Amp · α · C_smooth · αᵀ
+    where α is the locality mask and C_smooth captures spatial correlations.
 
 Gradient Modes:
     - 'autograd': PyTorch autograd (default) - automatic differentiation

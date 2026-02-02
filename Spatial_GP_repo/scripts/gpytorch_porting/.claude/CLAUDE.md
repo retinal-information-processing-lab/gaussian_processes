@@ -32,11 +32,11 @@ It defines:
 **Current Status**:
 | Component | Status |
 |-----------|--------|
-| Stage 1 (C=I kernel) | COMPLETE |
-| Stage 2 (RF structure) | COMPLETE |
-| Stage 3 (Custom E-step) | DEFERRED |
-| Stage 4 (Analytical gradients) | COMPLETE |
+| ArcCosine kernel with RF structure | COMPLETE |
+| Custom E-step (eigenspace projection) | COMPLETE (vargp_direct) |
+| Analytical gradients (VJP & Jacobian) | COMPLETE |
 | vargp_direct mode | COMPLETE |
+| default_gpy mode | COMPLETE |
 | Pixel masking | COMPLETE |
 | Utility functions | OUT OF SCOPE |
 
@@ -140,11 +140,10 @@ Use `--gradient-mode MODE` in CLI:
 | `run_canonical_tests.py` | 12-config benchmark matrix |
 | `query_benchmark.py` | Query benchmark results |
 
-### Legacy Files (deprecated, will be removed)
-| File | Purpose |
-|------|---------|
-| `train.py`, `estep.py`, `fstep.py`, `mstep.py`, `model.py` | Old mixed code, deprecated |
-| `deprecated/` | Archived vargp_style mode (unmaintained) |
+### Deprecated Code (archived, self-contained)
+| Folder | Purpose |
+|---------|---------|
+| `deprecated/` | Archived vargp_style mode with full implementation (self-contained, unmaintained) |
 
 **Test files** (in `tests/`):
 - `test_kernel_cache.py`, `test_m_whitening.py`, `test_mask_validation.py`

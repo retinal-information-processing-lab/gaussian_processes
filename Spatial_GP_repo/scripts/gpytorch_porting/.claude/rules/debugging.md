@@ -38,7 +38,7 @@ Raise to user if unavailable.
 ### 2.1 Verify Basic Case First
 - Before debugging complex configs, test the simplest version
 - Use equivalence tests (e.g., new code matches reference with simple params)
-- Example: C=I test before adding RF structure
+- Example: Test with minimal RF parameters (small beta, centered RF)
 
 ### 2.2 Multiple Validation Layers
 Don't just test "does it run":

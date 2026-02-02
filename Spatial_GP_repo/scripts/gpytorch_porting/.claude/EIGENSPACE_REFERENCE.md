@@ -593,7 +593,13 @@ from likelihoods import PoissonLikelihood
 from train import train_eigenspace, predict_eigenspace
 
 # Create model (owns kernel, likelihood, training data, and state)
-kernel = ArcCosineKernel(...)
+kernel = ArcCosineKernel(
+    n_px_side=108,  # Required: image dimensions
+    sigma_0=1.0, Amp=1.0,
+    beta=0.1, rho=0.1,
+    eps_0x=0.0, eps_0y=0.0,
+    use_mask=True
+)
 likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0)
 model = DirectVGPModel(kernel, likelihood, X_train, X_tilde)
 
