@@ -5,6 +5,33 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-02: Codebase Reorganization - Modular Structure (COMPLETE)
+
+**Accomplished:**
+- **Phase 1**: Created new modular file structure
+  - Eigenspace modules: `eigenspace_*.py` (7 files) - model, utils, gradients, training, estep, fstep, mstep
+  - GPyTorch modules: `gpy_*.py` (2 files) - model, training
+  - Shared modules: `metrics.py`, `utils.py` (extracted from old files)
+- **Phase 2**: Archived deprecated vargp_style code
+  - Created `deprecated/` folder with README and archived files
+  - Moved `whitening.py` → `deprecated/vargp_style_whitening.py`
+- **Phase 3**: Cleaned up imports and deprecated mode handling
+  - Removed vargp_style from `run_single_mode.py`
+  - Marked legacy files (train.py, estep.py, fstep.py, mstep.py, model.py) as deprecated
+- **Phase 4**: Updated documentation
+  - Updated CLAUDE.md with new file map
+  - Renamed VARGP_DIRECT_REFERENCE.md → EIGENSPACE_REFERENCE.md
+  - Updated all file references
+
+**New File Organization:**
+- **Naming convention**: `eigenspace_*` prefix for eigenspace mode, `gpy_*` prefix for GPyTorch mode
+- **Key renamings**: eigenspace.py → eigenspace_utils.py, direct_vargp.py → eigenspace_gradients.py, utils_gpy.py → utils.py
+- **Status**: Both `vargp_direct` and `default_gpy` modes fully tested and working
+
+**Commit**: 23c3856 (checkpoint before reorganization)
+
+---
+
 ## 2026-01-31: vargp_direct Bug Fix & Canonical Test Update (COMPLETE)
 
 **Accomplished:**

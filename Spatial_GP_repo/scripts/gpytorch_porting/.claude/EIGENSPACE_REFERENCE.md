@@ -96,7 +96,7 @@ gpytorch_porting/
 |   |-- EigenspacePosterior          # Posterior at query points (via model(X))
 |   +-- EigenspaceVariationalDistribution  # Variational params interface
 |
-|-- eigenspace.py            # EIGENSPACE UTILITIES (~200 lines, mainly for tests)
+|-- eigenspace_utils.py            # EIGENSPACE UTILITIES (~200 lines, mainly for tests)
 |   |-- EIGVAL_TOL = 1e-4            # Eigenvalue threshold
 |   |-- eigendecompose_K_tilde()     # Eigendecomposition of inducing kernel
 |   |-- project_to_eigenspace()      # m_b = B.T @ m, etc.
@@ -120,7 +120,7 @@ gpytorch_porting/
 |   |-- mstep_eigenspace_autograd()  # LBFGS with PyTorch autograd
 |   +-- mstep_eigenspace_analytical()# LBFGS with explicit gradients
 |
-|-- direct_vargp.py          # GRADIENT FUNCTIONS ONLY (~440 lines)
+|-- eigenspace_gradients.py          # GRADIENT FUNCTIONS ONLY (~440 lines)
 |   |-- compute_C_and_gradients()    # C matrix and dC/dtheta
 |   |-- compute_kernel_and_gradients()   # K matrix and dK/dtheta
 |   |-- compute_lambda_moments_and_gradients()  # Posterior moments + gradients
@@ -139,7 +139,7 @@ gpytorch_porting/
 
 1. **eigenspace_model.py** is the central module - it contains both the state management (`DirectVariationalState`) and the GPyTorch wrapper classes (`DirectVGPModel`)
 
-2. **direct_vargp.py** now ONLY contains gradient functions for the analytical M-step. All other code has been moved to appropriate modules.
+2. **eigenspace_gradients.py** now ONLY contains gradient functions for the analytical M-step. All other code has been moved to appropriate modules.
 
 3. **Naming convention**: Functions use `_eigenspace` suffix (e.g., `estep_eigenspace`, `fstep_eigenspace`) to distinguish from other training modes
 
@@ -711,7 +711,7 @@ m_new = m + K_tilde @ solve(K_tilde + G, g - m)
 
 There are TWO gradient systems in the codebase:
 1. **Kernel-level gradients** (`analytical_gradients.py`, `analytical_gradients_vjp.py`) - for `--gradient-mode`
-2. **M-step gradients** (`direct_vargp.py`) - for `mstep_eigenspace_analytical()`
+2. **M-step gradients** (`eigenspace_gradients.py`) - for `mstep_eigenspace_analytical()`
 
 These have different APIs but some shared formulas. Consolidation is deferred to avoid breaking anything.
 

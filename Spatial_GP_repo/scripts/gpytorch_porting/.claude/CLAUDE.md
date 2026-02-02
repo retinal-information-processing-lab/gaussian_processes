@@ -98,32 +98,53 @@ Use `--gradient-mode MODE` in CLI:
 | `vargp_old` | Original varGP implementation (reference baseline) |
 | `vargp_direct` | Eigenspace projection, exact match to varGP (use --float32) |
 | `default_gpy` | Standard GPyTorch variational inference with LBFGS (use --float32)|
-| `vargp_style` | GPyTorch with whitening strategy | DEPRECATED
+
+**Note**: `vargp_style` mode has been deprecated and moved to `deprecated/` folder. Use `vargp_direct` or `default_gpy` instead.
 
 ---
 
 ## File Map
 
+### Shared Components (used by both implementations)
 | File | Purpose |
 |------|---------|
 | `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes |
 | `likelihoods.py` | PoissonLikelihood with A, lambda0 |
-| `model.py` | VariationalGPModel (whitened/unwhitened) for vargp_style |
-| `eigenspace_model.py` | DirectVGPModel for vargp_direct (eigenspace projection) |
-| `eigenspace.py` | Low-level eigenspace utilities (mainly for tests) |
-| `train.py` | Training loops + evaluation utilities |
-| `estep.py` | E-step with kernel caching |
-| `fstep.py` | F-step: LBFGS for A, analytical lambda0 |
-| `mstep.py` | M-step: Adam/LBFGS for kernel hyperparameters |
-| `whitening.py` | Natural <-> whitened param conversions |
-| `direct_vargp.py` | Analytical gradient functions for eigenspace M-step |
+| `metrics.py` | Evaluation functions (r², Pearson r, explained variance) |
+| `utils.py` | Shared utilities (lambda0_given_A, compute_f_mean, STA-based RF center) |
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
-| `utils_gpy.py` | Standalone utilities (STA-based RF center) |
+
+### Eigenspace Implementation (vargp_direct mode)
+| File | Purpose |
+|------|---------|
+| `eigenspace_model.py` | DirectVGPModel, DirectVariationalState, EigenspacePosterior |
+| `eigenspace_utils.py` | Low-level eigenspace projection utilities |
+| `eigenspace_gradients.py` | Analytical gradient functions for eigenspace M-step |
+| `eigenspace_training.py` | train_eigenspace(), predict_eigenspace(), compute_elbo_eigenspace() |
+| `eigenspace_estep.py` | E-step: Newton update in eigenspace |
+| `eigenspace_fstep.py` | F-step: LBFGS for A with analytical lambda0 |
+| `eigenspace_mstep.py` | M-step: LBFGS for kernel (autograd & analytical) |
+
+### GPyTorch Implementation (default_gpy mode)
+| File | Purpose |
+|------|---------|
+| `gpy_model.py` | VariationalGPModel (standard GPyTorch) |
+| `gpy_training.py` | train_gpy_default(), predict() |
+
+### Entry Points & Utilities
+| File | Purpose |
+|------|---------|
 | `run_single_mode.py` | Main test script |
 | `run_canonical_tests.py` | 12-config benchmark matrix |
 | `query_benchmark.py` | Query benchmark results |
+
+### Legacy Files (deprecated, will be removed)
+| File | Purpose |
+|------|---------|
+| `train.py`, `estep.py`, `fstep.py`, `mstep.py`, `model.py` | Old mixed code, deprecated |
+| `deprecated/` | Archived vargp_style mode (unmaintained) |
 
 **Test files** (in `tests/`):
 - `test_kernel_cache.py`, `test_m_whitening.py`, `test_mask_validation.py`

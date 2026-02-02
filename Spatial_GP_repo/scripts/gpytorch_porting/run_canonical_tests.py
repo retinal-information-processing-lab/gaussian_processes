@@ -5,9 +5,11 @@ run_canonical_tests.py - Run the standard benchmark test matrix.
 Runs all canonical configurations for regression testing and performance tracking.
 Results are appended to results/benchmark_results.jsonl.
 
-Test Matrix (16 configurations per seed):
-  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_style, vargp_direct, default_gpy}
-  - ntrain=2000: M=200 × modes={vargp_old, vargp_style, vargp_direct, default_gpy}
+Test Matrix (12 configurations per seed):
+  - ntrain=500:  M=50, 100, 200 × modes={vargp_old, vargp_direct, default_gpy}
+  - ntrain=2000: M=200 × modes={vargp_old, vargp_direct, default_gpy}
+
+Note: vargp_style mode has been deprecated (2025-02-02)
 
 Constraints (not configurable):
   - float32 precision (for fair comparison - vargp_old uses float32 internally)
@@ -34,23 +36,20 @@ from datetime import datetime
 
 # Test matrix definition
 # Each entry: (mode, M, ntrain)
+# vargp_style removed (deprecated 2025-02-02)
 TEST_MATRIX = [
     # ntrain=500: M=50, 100, 200
     ('vargp_old', 50, 500),
-    ('vargp_style', 50, 500),
     ('vargp_direct', 50, 500),
     ('default_gpy', 50, 500),
     ('vargp_old', 100, 500),
-    ('vargp_style', 100, 500),
     ('vargp_direct', 100, 500),
     ('default_gpy', 100, 500),
     ('vargp_old', 200, 500),
-    ('vargp_style', 200, 500),
     ('vargp_direct', 200, 500),
     ('default_gpy', 200, 500),
     # ntrain=2000: M=200 only
     ('vargp_old', 200, 2000),
-    ('vargp_style', 200, 2000),
     ('vargp_direct', 200, 2000),
     ('default_gpy', 200, 2000),
 ]
@@ -69,9 +68,7 @@ def run_single_test(mode, M, ntrain, seed, output_file, dry_run=False):
         '--float32',  # Use float32 for fair comparison (vargp_old uses float32 internally)
     ]
 
-    # Mode-specific flags
-    if mode == 'vargp_style':
-        cmd.append('--explicit-unwhitening')
+    # Mode-specific flags (none currently needed)
 
     desc = f"{mode:12} M={M:3} ntrain={ntrain:4}"
 
