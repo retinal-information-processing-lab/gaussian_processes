@@ -5,6 +5,7 @@ This module implements the sparse variational GP model using GPyTorch's
 ApproximateGP framework with the arc-cosine kernel.
 """
 
+import numpy as np
 import torch
 import gpytorch
 from gpytorch.models import ApproximateGP
@@ -139,8 +140,12 @@ def test_model():
     inducing_points = X[indices]
 
     # Create kernel and model
-    kernel = ArcCosineKernel(sigma_0=1.0)
-    model = VariationalGPModel(inducing_points, kernel)
+    # Assume square image
+    n_px_side = int(np.sqrt(n_features))  # 10x10 image
+    kernel = ArcCosineKernel(n_px_side=n_px_side, sigma_0=1.0,
+                             beta=0.1, rho=0.1, eps_0x=0.0, eps_0y=0.0)
+    model = VariationalGPModel(inducing_points, kernel,
+                               jitter=1e-4, standard_variational_distribution=True)
 
     # Test forward pass
     model.eval()

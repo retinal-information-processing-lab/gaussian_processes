@@ -60,13 +60,17 @@ def _get_vjp_implementation():
 
 
 class ArcCosineKernel(Kernel):
-    """Arc-cosine kernel for GPyTorch.
+    """Arc-cosine kernel for GPyTorch with receptive field structure.
 
     This kernel is non-stationary (depends on actual input values, not just distances).
     It's derived from infinite-width 2-layer neural networks with ReLU activations.
+    The kernel computes covariance matrices from receptive field parameters.
 
     Parameters
     ----------
+    n_px_side : int
+        Image dimension (e.g., 108 for PNAS data). Required - specifies the
+        spatial structure for computing the C matrix from RF parameters.
     sigma_0 : float, optional
         Bias variance parameter (default: 1.0). Controls the kernel value
         when inputs are zero.
@@ -76,12 +80,6 @@ class ArcCosineKernel(Kernel):
         through the sqrt and arccos operations (matching legacy varGP).
         Different from ScaleKernel which scales output linearly.
         Clamped at max 1000.0 by clamp_hyperparameters().
-    C : Tensor, optional
-        Structured covariance matrix (n_features, n_features).
-        If None and n_px_side is None, uses identity matrix (Stage 1).
-    n_px_side : int, optional
-        Image dimension (e.g., 108 for PNAS data). If provided, C is computed
-        from RF parameters (Stage 2). Mutually exclusive with C parameter.
     eps_0x : float, optional
         RF center x-coordinate on [-1, 1] grid (default: 0.0 = center)
     eps_0y : float, optional
@@ -91,7 +89,7 @@ class ArcCosineKernel(Kernel):
     rho : float, optional
         Smoothness parameter (default: 0.1). Controls spatial correlation.
     use_mask : bool, optional
-        If True and n_px_side is set, apply pixel masking based on RF parameters.
+        If True, apply pixel masking based on RF parameters.
         Pixels with locality weight α >= 0.001 are included. This reduces C from
         (n_px, n_px) to (n_masked, n_masked), typically ~100x smaller.
         Default: True.
@@ -100,7 +98,6 @@ class ArcCosineKernel(Kernel):
         - 'autograd': PyTorch autograd (default) - automatic differentiation
         - 'vjp': VJP analytical gradients - same speed as autograd, explicit formulas
         - 'jacobian': Jacobian materialization - slow but matches original varGP exactly
-        WARNING: Only 'vjp' and 'jacobian' are valid when n_px_side is set.
         Note: use_analytical_grads parameter was removed (Jan 2025). Use gradient_mode instead.
 
     Attributes
@@ -142,7 +139,7 @@ class ArcCosineKernel(Kernel):
     EPS_MIN = -1.0
     EPS_MAX = 1.0
 
-    def __init__(self, sigma_0=1.0, Amp=1.0, C=None, n_px_side=None,
+    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
                  eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
                  use_mask=True, gradient_mode='autograd', **kwargs):
         super().__init__(**kwargs)
@@ -168,42 +165,38 @@ class ArcCosineKernel(Kernel):
         self.register_constraint('raw_Amp', Positive())
         self.Amp = Amp
 
-        # Store C matrix (None = identity for Stage 1)
-        self.C = C
+        # RF parameters (required)
+        if n_px_side is None:
+            raise ValueError("n_px_side is required - must specify image dimensions")
 
-        # Stage 2: RF parameters
         self.n_px_side = n_px_side
 
-        if n_px_side is not None:
-            if C is not None:
-                raise ValueError("Cannot specify both C and n_px_side")
+        # RF center (unconstrained, range [-1, 1])
+        self.register_parameter('eps_0x',
+            torch.nn.Parameter(torch.tensor([eps_0x], dtype=torch.float64)))
+        self.register_parameter('eps_0y',
+            torch.nn.Parameter(torch.tensor([eps_0y], dtype=torch.float64)))
 
-            # RF center (unconstrained, range [-1, 1])
-            self.register_parameter('eps_0x',
-                torch.nn.Parameter(torch.tensor([eps_0x], dtype=torch.float64)))
-            self.register_parameter('eps_0y',
-                torch.nn.Parameter(torch.tensor([eps_0y], dtype=torch.float64)))
+        # Log-space parameters for numerical stability
+        # beta = 0.1 → raw_m2log2beta = -2 * log(2 * 0.1) ≈ 3.22
+        # rho = 0.1 → raw_mlog2rho2 = -log(2 * 0.1^2) ≈ 3.91
+        raw_m2log2beta = -2 * np.log(2 * beta)
+        raw_mlog2rho2 = -np.log(2 * rho**2)
+        self.register_parameter('raw_m2log2beta',
+            torch.nn.Parameter(torch.tensor([raw_m2log2beta], dtype=torch.float64)))
+        self.register_parameter('raw_mlog2rho2',
+            torch.nn.Parameter(torch.tensor([raw_mlog2rho2], dtype=torch.float64)))
 
-            # Log-space parameters for numerical stability
-            # beta = 0.1 → raw_m2log2beta = -2 * log(2 * 0.1) ≈ 3.22
-            # rho = 0.1 → raw_mlog2rho2 = -log(2 * 0.1^2) ≈ 3.91
-            raw_m2log2beta = -2 * np.log(2 * beta)
-            raw_mlog2rho2 = -np.log(2 * rho**2)
-            self.register_parameter('raw_m2log2beta',
-                torch.nn.Parameter(torch.tensor([raw_m2log2beta], dtype=torch.float64)))
-            self.register_parameter('raw_mlog2rho2',
-                torch.nn.Parameter(torch.tensor([raw_mlog2rho2], dtype=torch.float64)))
+        # Setup pixel coordinate grid
+        self._setup_pixel_coords()
 
-            # Setup pixel coordinate grid
-            self._setup_pixel_coords()
-
-        # Masking mode (only valid with n_px_side)
-        self.use_mask = use_mask and (n_px_side is not None)
+        # Masking mode
+        self.use_mask = use_mask
         # Cache for mask (computed on first forward pass)
         self._cached_mask = None
 
         # Warn if masking is disabled (uses full 11664x11664 C matrix)
-        if n_px_side is not None and not use_mask:
+        if not use_mask:
             warnings.warn(
                 f"use_mask=False: Using full {n_px_side**2}x{n_px_side**2} C matrix. "
                 "This is memory-intensive (~1GB for 108x108 images). "
@@ -214,8 +207,6 @@ class ArcCosineKernel(Kernel):
         # Validate gradient mode
         if gradient_mode not in GRADIENT_MODES:
             raise ValueError(f"gradient_mode must be one of {GRADIENT_MODES}, got '{gradient_mode}'")
-        if gradient_mode in ('vjp', 'jacobian') and n_px_side is None:
-            raise ValueError(f"gradient_mode='{gradient_mode}' requires n_px_side to be set")
         self.gradient_mode = gradient_mode
 
     @property
@@ -446,36 +437,21 @@ class ArcCosineKernel(Kernel):
 
         sigma_0_sq = self.sigma_0 ** 2
 
-        # Determine C matrix source and handle masking
-        mask = None
-        if self.n_px_side is not None:
-            # Stage 2: Compute C from RF parameters
-            C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
-            # Cache mask for external access
-            if mask is not None:
-                self._cached_mask = mask
-        elif self.C is not None:
-            # Provided C matrix
-            C = self.C.to(x1.device, x1.dtype)
-        else:
-            C = None  # Stage 1: C=I (identity)
+        # Compute C from RF parameters
+        C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
+        # Cache mask for external access
+        if mask is not None:
+            self._cached_mask = mask
 
         # Apply mask to inputs if using masking
         if mask is not None:
             x1 = x1[..., mask]
             x2 = x2[..., mask]
 
-        # Handle C matrix (identity for Stage 1)
-        if C is None:
-            # C = I: quadratic form xᵀCx = xᵀx = ‖x‖²
-            # V = ‖x‖² + σ₀²
-            V1 = (x1 * x1).sum(dim=-1) + sigma_0_sq  # (..., n1)
-            CX1 = x1  # When C=I, CX = X
-        else:
-            # General C: quadratic form xᵀCx
-            C = C.to(x1.device, x1.dtype)
-            CX1 = x1 @ C  # (..., n1, n_features)
-            V1 = (CX1 * x1).sum(dim=-1) + sigma_0_sq  # (..., n1)
+        # Compute quadratic form xᵀCx
+        C = C.to(x1.device, x1.dtype)
+        CX1 = x1 @ C  # (..., n1, n_features)
+        V1 = (CX1 * x1).sum(dim=-1) + sigma_0_sq  # (..., n1)
 
         if diag:
             # Diagonal case: K(x_i, x_i)
@@ -484,19 +460,12 @@ class ArcCosineKernel(Kernel):
             return V1
 
         # Full matrix case
-        if C is None:
-            V2 = (x2 * x2).sum(dim=-1) + sigma_0_sq  # (..., n2)
-            CX2 = x2
-        else:
-            CX2 = x2 @ C  # (..., n2, n_features)
-            V2 = (CX2 * x2).sum(dim=-1) + sigma_0_sq  # (..., n2)
+        CX2 = x2 @ C  # (..., n2, n_features)
+        V2 = (CX2 * x2).sum(dim=-1) + sigma_0_sq  # (..., n2)
 
-        # Cross-term: xᵀCx' (when C=I: xᵀx')
+        # Cross-term: xᵀCx'
         # Shape: (..., n1, n2)
-        if C is None:
-            C12 = torch.matmul(x1, x2.transpose(-2, -1)) + sigma_0_sq
-        else:
-            C12 = torch.matmul(CX1, x2.transpose(-2, -1)) + sigma_0_sq
+        C12 = torch.matmul(CX1, x2.transpose(-2, -1)) + sigma_0_sq
 
         # Magnitude: M = √(v_x · v_x')
         # Broadcast V1 (..., n1) and V2 (..., n2) to (..., n1, n2)
@@ -536,12 +505,17 @@ def test_kernel_matches_reference():
     X2 = torch.randn(n2, nx)
     sigma_0 = 1.5
 
+    # Assume square image
+    n_features = nx
+    n_px_side = int(np.sqrt(n_features))  # 10x10 image
+
     # Reference implementation
     theta = {'sigma_0': torch.tensor(sigma_0)}
     K_ref = acosker_clean(theta, X1, X2, C=None, diag=False)
 
-    # GPyTorch implementation
-    kernel = ArcCosineKernel(sigma_0=sigma_0)
+    # GPyTorch implementation (with minimal RF parameters)
+    kernel = ArcCosineKernel(n_px_side=n_px_side, sigma_0=sigma_0,
+                             beta=0.1, rho=0.1, eps_0x=0.0, eps_0y=0.0)
     K_new = kernel(X1, X2).evaluate()
 
     # Compare
