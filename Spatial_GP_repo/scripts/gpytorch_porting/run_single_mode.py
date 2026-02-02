@@ -3,27 +3,27 @@
 run_single_mode.py - Run a single training mode on PNAS neural data.
 
 For experimentation and development. Run ONE training mode with full CLI control.
-For canonical benchmarks comparing all modes, use run_benchmark.py instead.
+For canonical benchmarks comparing all modes, use run_canonical_tests.py instead.
 
 Training modes:
   - vargp_old: Original varGP implementation (reference)
-  - default_gpy: Standard GPyTorch variational inference (no custom E-step)
-  - vargp_style: GPyTorch matching original varGP training structure
+  - vargp_direct: Eigenspace-based custom implementation (default)
+  - default_gpy: Standard GPyTorch variational inference
 
 Usage:
-    python run_single_mode.py --ntilde 50 --mode vargp_old       # Reference implementation
-    python run_single_mode.py --ntilde 50 --mode default_gpy
-    python run_single_mode.py --ntilde 50 --mode vargp_style
-    python run_single_mode.py  # Uses defaults: M=50, mode=vargp_style
+    python run_single_mode.py --ntilde 50 --mode vargp_old       # Reference
+    python run_single_mode.py --ntilde 50 --mode vargp_direct    # Eigenspace (default)
+    python run_single_mode.py --ntilde 50 --mode default_gpy     # Standard GPyTorch
+    python run_single_mode.py  # Uses defaults: M=50, mode=vargp_direct
 
-Gradient modes (for GPyTorch modes only):
+Gradient modes (for GPyTorch modes):
     --gradient-mode autograd   # PyTorch autograd (default)
     --gradient-mode vjp        # VJP analytical - same speed as autograd
-    --gradient-mode jacobian   # Old Jacobian materialization - slow but matches varGP
+    --gradient-mode jacobian   # Slow but matches varGP exactly
 
 Default Parameters:
-    All parameters are loaded from default_params.json to ensure consistency
-    across all modes (vargp_old, default_gpy, vargp_style):
+    All parameters loaded from default_params.json for consistency
+    across vargp_old, vargp_direct, and default_gpy modes:
     - Kernel: sigma_0=1.0, Amp=1.0, beta=0.1, rho=0.1
     - Link function: A_init=0.01, lambda0_init=1.0
     - Training: n_iterations=50, n_estep=10, n_fstep=10, n_mstep=10, lr=0.1
@@ -179,7 +179,7 @@ def main():
     parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
     parser.add_argument('--mode', type=str, default='vargp_direct',
                         choices=['vargp_old', 'default_gpy', 'vargp_direct'],
-                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_direct (eigenspace projection). Note: vargp_style is deprecated, use vargp_direct instead.')
+                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_direct (eigenspace projection, default)')
 
     # Kernel parameters - use defaults from JSON, all overridable via CLI
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
@@ -209,13 +209,6 @@ def main():
                         help='Disable kernel caching (for testing fallback path)')
     parser.add_argument('--jitter', type=float, default=defaults['model']['jitter'],
                         help=f'Jitter for numerical stability (default: {defaults["model"]["jitter"]})')
-    # explicit_unwhitening: NO DEFAULT for vargp_style - must be explicitly chosen
-    explicit_group = parser.add_mutually_exclusive_group()
-    explicit_group.add_argument('--explicit-unwhitening', action='store_true', dest='explicit_unwhitening',
-                                help='Enable explicit whitening conversions in E-step')
-    explicit_group.add_argument('--no-explicit-unwhitening', action='store_false', dest='explicit_unwhitening',
-                                help='Disable explicit whitening conversions')
-    parser.set_defaults(explicit_unwhitening=None)  # None means not specified
 
     parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
@@ -245,8 +238,6 @@ def main():
                         help='Minimum iterations before early stopping can trigger (default: 10)')
 
     args = parser.parse_args()
-
-    # vargp_style mode has been deprecated and removed
 
     # Warning for analytical M-step without float32
     if args.mstep_analytical and not args.float32:
@@ -550,7 +541,7 @@ def main():
         pred_max = f_pred.max().item()
 
     # =========================================================================
-    # GPYTORCH MODES: default_gpy, vargp_style
+    # GPYTORCH MODE: default_gpy
     # =========================================================================
     else:
         # Create kernel with RF structure using args (defaults from JSON, overridable via CLI)
@@ -801,39 +792,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
-
-
-# if __name__ == '__main__':                                                                                       
-#         # Hardcoded parameters for debugging                                                                     
-#     import argparse                                                                                          
-#     import sys                                                                                               
-                                                                                                                   
-#     # Override sys.argv to simulate command-line args                                                        
-#     sys.argv = [                                                                                             
-#               'run_single_mode.py',                                                                                
-#             #   '--mode', 'vargp_style',                                                                             
-#             #   '--mode', 'vargp_old',     
-#                 '--mode', 'default_gpy',
-
-#               '--explicit-unwhitening',          
-
-
-#               '--ntilde', '50',                                                                                    
-#               '--n-train', '500',                                                                                  
-#               '--n-iterations', '500',                                                                              
-#               '--n-estep', '10',                                                                                   
-#               '--n-fstep', '10',                                                                                   
-#               '--n-mstep', '10',                                                                                   
-#               '--seed', '123',                                                                                     
-#               '--device', 'cuda',                                                                                  
-#               '--cell', '8',                                                                                       
-#               # '--json-append', 'results/benchmark_results.jsonl',  # Uncomment to save results                   
-#               # '--plot',  # Uncomment to show plot                                                                
-#           ]                                                                                                        
-                                                                                                                   
-#     print("="*70)                                                                                            
-#     print("DEBUG MODE: Using hardcoded parameters")                                                          
-#     print("="*70)                                                                                            
-
-#     main()     
+    main()     
