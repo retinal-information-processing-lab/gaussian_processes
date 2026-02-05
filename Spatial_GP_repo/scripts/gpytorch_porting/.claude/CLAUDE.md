@@ -162,6 +162,9 @@ Use `--gradient-mode MODE` in CLI:
 ### Multi-Cell Validation - DEFERRED
 Cell 8 and 10 validation sufficient for initial implementation.
 
+### LBFGS Tolerance Investigation - DEFERRED
+The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Since all code runs with `--float32` (per guidelines), this tolerance may be meaningless. Future investigation: consider whether to expose/adjust tolerance or validate that float32 precision is sufficient.
+
 ---
 
 ## vargp_direct Mode
