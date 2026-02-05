@@ -1,0 +1,8 @@
+name: validation_test
+full_name: 2026-02-05_validation_test
+description: 'Quick exploratory run: validation_test'
+created: '2026-02-05T15:04:14'
+git_commit: 0e75dcb
+git_dirty: true
+source_config: configs/quick.yaml
+type: exploratory

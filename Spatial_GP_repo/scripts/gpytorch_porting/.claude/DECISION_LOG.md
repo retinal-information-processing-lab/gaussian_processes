@@ -339,3 +339,10 @@ For project status and quick reference, see `CLAUDE.md`.
 > - Further investigation needed to confirm hypothesis
 >
 > **Documentation**: `.claude/archive/ARCHIVE_2026-01-20_unwhitened_investigation.md`
+
+---
+
+## YAML Experiment System (February 2025)
+
+**Q26: Bug fix — vargp_direct ignored `--lr` CLI flag**
+> The old `run_single_mode.py` line 481 used `defaults['training']['lr']` directly instead of `args.lr` for vargp_direct mode. This meant `--lr` CLI overrides were silently ignored. Fixed during the `run_single_config()` refactor — `lr` now comes from the config dict in all modes.

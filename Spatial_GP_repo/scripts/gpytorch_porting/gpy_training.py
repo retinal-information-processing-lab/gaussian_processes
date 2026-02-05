@@ -16,7 +16,8 @@ import torch
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
                        print_every=100, device=None,
-                       early_stop=True, stop_window=20, stop_thresh=1e-3, min_iterations=10):
+                       early_stop=True, stop_window=20, stop_thresh=1e-3, min_iterations=10,
+                       lbfgs_max_iter=20):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -35,6 +36,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         stop_window: Number of iterations to look back for improvement (default: 20)
         stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
+        lbfgs_max_iter: Max inner iterations for LBFGS per outer step (default: 20)
 
     Returns:
         dict: {'losses': list, 'stopped_early': bool, 'final_iteration': int}
@@ -65,7 +67,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         optimizer = torch.optim.LBFGS(
             all_params,
             lr=lr,
-            max_iter=20,
+            max_iter=lbfgs_max_iter,
             line_search_fn='strong_wolfe'
         )
     elif optimizer_name == 'adam':

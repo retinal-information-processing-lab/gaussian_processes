@@ -3,7 +3,7 @@
 run_single_mode.py - Run a single training mode on PNAS neural data.
 
 For experimentation and development. Run ONE training mode with full CLI control.
-For canonical benchmarks comparing all modes, use run_canonical_tests.py instead.
+For structured experiments, use run_experiment.py instead.
 
 Training modes:
   - vargp_old: Original varGP implementation (reference)
@@ -14,7 +14,7 @@ Usage:
     python run_single_mode.py --ntilde 50 --mode vargp_old       # Reference
     python run_single_mode.py --ntilde 50 --mode vargp_direct    # Eigenspace (default)
     python run_single_mode.py --ntilde 50 --mode default_gpy     # Standard GPyTorch
-    python run_single_mode.py  # Uses defaults: M=50, mode=vargp_direct
+    python run_single_mode.py  # Uses defaults: M=100, mode=vargp_direct
 
 Gradient modes (for GPyTorch modes):
     --gradient-mode autograd   # PyTorch autograd (default)
@@ -158,6 +158,615 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
     return fig
 
 
+# =========================================================================
+# YAML config utilities
+# =========================================================================
+
+def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
+    """Convert nested YAML config + single matrix point to flat config dict.
+
+    This is the bridge between the YAML experiment system and run_single_config().
+    The YAML config has nested sections (kernel, training, etc.) and an experiment
+    matrix. This function takes one point from the matrix and produces a flat dict.
+
+    Args:
+        yaml_config: Parsed YAML config (dict with nested sections)
+        mode: Training mode for this run
+        M: Number of inducing points for this run
+        n_train: Number of training samples for this run
+        seed: Random seed for this run
+        cell: Cell ID for this run
+
+    Returns:
+        Flat config dict suitable for run_single_config()
+    """
+    exp = yaml_config['experiment']
+    ker = yaml_config['kernel']
+    lik = yaml_config['likelihood']
+    trn = yaml_config['training']
+    opt = yaml_config.get('optimizer', {})
+    es = yaml_config.get('early_stopping', {})
+    num = yaml_config.get('numerical', {})
+    dat = yaml_config.get('data', {})
+
+    return {
+        # Run point
+        'mode': mode,
+        'M': M,
+        'n_train': n_train,
+        'seed': seed,
+        'cell': cell,
+        'n_iterations': exp['n_iterations'],
+
+        # Device/dtype
+        'device': 'cuda',
+        'dtype': num.get('dtype', 'float32'),
+
+        # Kernel
+        'sigma_0': ker['sigma_0'],
+        'Amp': ker['Amp'],
+        'beta': ker['beta'],
+        'rho': ker['rho'],
+        'eps_0x': ker.get('eps_0x'),  # None = compute from STA
+        'eps_0y': ker.get('eps_0y'),
+        'gradient_mode': ker.get('gradient_mode', 'autograd'),
+        'use_mask': ker.get('use_mask', True),
+
+        # Likelihood
+        'A_init': lik['A_init'],
+        'lambda0_init': lik['lambda0_init'],
+
+        # Training
+        'n_estep': trn['n_estep'],
+        'n_fstep': trn['n_fstep'],
+        'n_mstep': trn['n_mstep'],
+        'lr': trn['lr'],
+        'optimizer': trn.get('optimizer', 'lbfgs'),
+
+        # Early stopping
+        'early_stop': es.get('enabled', True),
+        'stop_window': es.get('window', 20),
+        'stop_thresh': es.get('threshold', 5e-3),
+        'min_iterations': es.get('min_iterations', 10),
+
+        # Optimizer details
+        'gpy_lbfgs_max_iter': opt.get('gpy_lbfgs_max_iter', 20),
+
+        # Numerical
+        'jitter': num.get('jitter', 1e-4),
+        'eigval_tol': num.get('eigval_tol', 1e-4),
+
+        # Data
+        'n_px_side': dat.get('n_px_side', 108),
+        'use_cache': dat.get('use_cache', True),
+
+        # Runtime options (not in YAML, defaults for experiment runs)
+        'mstep_analytical': False,
+        'unwhitened_variational_dist': False,
+        'save_plot': 'none',
+        'plot': False,
+    }
+
+
+# =========================================================================
+# Core training function
+# =========================================================================
+
+def run_single_config(config):
+    """Run one training configuration and return results.
+
+    This is the core function that does data loading, model setup, training,
+    and evaluation. Called by both the CLI (main) and run_experiment.py.
+
+    Args:
+        config: Flat dict with all parameters for ONE run. Required keys:
+            mode, M, n_train, seed, cell, n_iterations,
+            device, dtype,
+            sigma_0, Amp, beta, rho, eps_0x, eps_0y, gradient_mode, use_mask,
+            A_init, lambda0_init,
+            n_estep, n_fstep, n_mstep, lr, optimizer,
+            early_stop, stop_window, stop_thresh, min_iterations,
+            jitter, eigval_tol,
+            n_px_side, use_cache,
+            mstep_analytical, unwhitened_variational_dist
+
+    Returns:
+        dict with metrics, timing, and final parameters. None if training failed.
+    """
+    mode = config['mode']
+    M = config['M']
+    n_train_requested = config['n_train']
+    seed = config['seed']
+    cell = config['cell']
+    n_iterations = config['n_iterations']
+    n_px_side = config['n_px_side']
+
+    device = torch.device(config.get('device', 'cuda'))
+    dtype_str = config.get('dtype', 'float32')
+    use_float32 = dtype_str == 'float32'
+    dtype = torch.float32 if use_float32 else torch.float64
+
+    print(f"Device: {device}")
+    print(f"Mode: {mode}")
+    print(f"M={M} inducing points")
+    if config.get('gradient_mode', 'autograd') != 'autograd':
+        print(f"Gradient mode: {config['gradient_mode']}")
+    if config.get('unwhitened_variational_dist', False):
+        print("Using UnwhitenedVariationalStrategy")
+
+    # Warning for analytical M-step without float32
+    if config.get('mstep_analytical', False) and not use_float32:
+        import warnings
+        warnings.warn(
+            "\n" + "="*70 + "\n"
+            "WARNING: --mstep-analytical with float64 is extremely slow (~50s vs ~5s).\n"
+            "The analytical gradient implementation has not been optimized for float64.\n"
+            "Consider using --float32 for comparable performance to vargp_old.\n"
+            + "="*70,
+            UserWarning
+        )
+
+    # Set seed with explicit CUDA init for reproducibility
+    set_reproducible_seed(seed, device=device)
+    print(f"Seed: {seed}")
+
+    # Load data
+    data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
+    print(f"Loading data from: {data_path}")
+    data = load_pnas_data(data_path, dtype=dtype)
+    if use_float32:
+        print("WARNING: Using float32 - may cause numerical instability")
+
+    # Combine train + val, flatten
+    X = torch.cat([data['X_train'], data['X_val']], dim=0)
+    R = torch.cat([data['R_train'], data['R_val']], dim=0)
+    X = X.reshape(X.shape[0], -1).to(device)  # (N, 11664)
+    R = R.to(device)
+
+    X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
+    R_test = data['R_test'].to(device)
+
+    # Select cell
+    r = R[:, cell]
+    r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
+
+    # Select training subset
+    n_train = min(n_train_requested, X.shape[0])
+    indices_train = torch.randperm(X.shape[0], device=device)[:n_train]
+    X_train = X[indices_train]
+    r_train = r[indices_train]
+
+    # Select inducing points
+    ntilde = min(M, n_train)
+    indices_inducing = indices_train[:ntilde]
+    inducing_points = X[indices_inducing].clone()
+
+    print(f"\nData shapes:")
+    print(f"  X_train: {X_train.shape}")
+    print(f"  r_train: {r_train.shape}")
+    print(f"  inducing_points: {inducing_points.shape}")
+    print(f"  X_test: {X_test.shape}")
+
+    # Compute RF center from spike-triggered average (STA)
+    from utils import compute_rf_center_from_sta
+
+    eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
+        X_train, r_train, n_px_side, zscore=True
+    )
+
+    # Use STA-computed center if config has None (null in YAML)
+    eps_0x = config['eps_0x'] if config['eps_0x'] is not None else eps_0x_sta
+    eps_0y = config['eps_0y'] if config['eps_0y'] is not None else eps_0y_sta
+
+    print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+    if eps_0x == eps_0x_sta and eps_0y == eps_0y_sta:
+        print(f"  (computed from STA)")
+    else:
+        print(f"  (from config, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+
+    # Training params from config
+    lr = config['lr']
+    n_estep = config['n_estep']
+    n_fstep = config['n_fstep']
+    n_mstep = config['n_mstep']
+    early_stop = config.get('early_stop', True)
+    stop_window = config.get('stop_window', 20)
+    stop_thresh = config.get('stop_thresh', 5e-3)
+    min_iterations = config.get('min_iterations', 10)
+    jitter = config.get('jitter', 1e-4)
+    eigval_tol = config.get('eigval_tol', EIGVAL_TOL)
+    A_init = config['A_init']
+    lambda0_init = config['lambda0_init']
+
+    # =========================================================================
+    # VARGP_OLD MODE: Use original varGP implementation
+    # =========================================================================
+    if mode == 'vargp_old':
+        # Lazy import to avoid side effects (utils.py disables gradients at module level)
+        from gaussian_processes.Spatial_GP_repo import utils as GP_utils
+
+        print(f"\nRunning original varGP (reference implementation)")
+        print(f"  maxiter={n_iterations}, nEstep={n_estep}, nMstep={n_mstep}, nFparamstep={n_fstep}")
+        if jitter != 1e-4:
+            print(f"  NOTE: jitter={jitter} ignored (vargp_old does not use jitter)")
+
+        # Initialize hyperparameters
+        beta_t = torch.tensor(config['beta'], device=device)
+        rho_t = torch.tensor(config['rho'], device=device)
+
+        theta = {
+            'sigma_0': torch.tensor(config['sigma_0'], device=device).requires_grad_(),
+            'Amp': torch.tensor(config['Amp'], device=device).requires_grad_(),
+            'eps_0x': torch.tensor(eps_0x, device=device).requires_grad_(),
+            'eps_0y': torch.tensor(eps_0y, device=device).requires_grad_(),
+            '-2log2beta': (-2 * torch.log(2 * beta_t)).requires_grad_(),
+            '-log2rho2': (-torch.log(2 * rho_t * rho_t)).requires_grad_(),
+        }
+
+        X_train_f32 = X_train.float()
+        r_train_f32 = r_train.float()
+
+        hyperparams_tuple = GP_utils.generate_theta(
+            x=X_train_f32, r=r_train_f32, n_px_side=n_px_side, display_hyper=False, **theta
+        )
+
+        A = torch.tensor(A_init, device=device)
+        f_params = {
+            'logA': torch.log(A).requires_grad_(),
+            'lambda0': torch.tensor(lambda0_init, device=device),
+        }
+
+        fit_parameters = {
+            'ntilde': ntilde,
+            'maxiter': n_iterations,
+            'nMstep': n_mstep,
+            'nEstep': n_estep,
+            'nFparamstep': n_fstep,
+            'kernfun': GP_utils.acosker,
+            'cellid': cell,
+            'n_px_side': n_px_side,
+        }
+
+        vargp_old_args = {
+            'fit_parameters': fit_parameters,
+            'xtilde': inducing_points.float(),
+            'hyperparams_tuple': hyperparams_tuple,
+            'f_params': f_params,
+            'm': torch.zeros(ntilde, device=device),
+        }
+
+        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
+
+        start_time = time.time()
+        fit_model, err_dict = GP_utils.varGP(X_train_f32, r_train_f32, **vargp_old_args)
+        train_time = time.time() - start_time
+
+        if err_dict['is_error']:
+            print(f"  ERROR: {err_dict['error']}")
+            return None
+
+        _, f_pred, r2, sigma_r2 = GP_utils.test(
+            X_test.reshape(-1, n_px_side, n_px_side, 1).float(),
+            r_test.float(),
+            X_train=X.float(),
+            at_iteration=None,
+            **fit_model
+        )
+
+        if not isinstance(f_pred, torch.Tensor):
+            f_pred = torch.tensor(f_pred, device=device)
+        else:
+            f_pred = f_pred.to(device)
+
+        r_test_mean = r_test.mean(dim=0)
+        test_corr = compute_pearson_correlation(r_test_mean.float(), f_pred.float())
+        explained_var, reliability = compute_explained_variance(r_test.float(), f_pred.float())
+        train_corr = float('nan')
+
+        final_loss = fit_model.get('loss', 0.0)
+        pred_std = f_pred.std().item()
+        pred_mean = f_pred.mean().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
+
+        predictions = {'f_pred': f_pred}
+        losses = [final_loss]
+        stopped_early = False
+        final_iteration = n_iterations
+
+        # Extract final hyperparameters
+        theta_final = fit_model['hyperparams_tuple'][0]
+        f_p = fit_model['f_params']
+        raw_beta = theta_final['-2log2beta'].item() if hasattr(theta_final['-2log2beta'], 'item') else float(theta_final['-2log2beta'])
+        raw_rho = theta_final['-log2rho2'].item() if hasattr(theta_final['-log2rho2'], 'item') else float(theta_final['-log2rho2'])
+        final_beta = np.exp(-raw_beta / 2) / 2
+        final_rho = np.sqrt(np.exp(-raw_rho) / 2)
+        logA_val = f_p['logA'].item() if hasattr(f_p['logA'], 'item') else float(f_p['logA'])
+        final_A = np.exp(logA_val)
+        final_lambda0 = f_p['lambda0'].item() if hasattr(f_p['lambda0'], 'item') else float(f_p['lambda0'])
+        final_sigma_0 = theta_final['sigma_0'].item() if hasattr(theta_final['sigma_0'], 'item') else float(theta_final['sigma_0'])
+        final_Amp = theta_final['Amp'].item() if hasattr(theta_final['Amp'], 'item') else float(theta_final['Amp'])
+        final_eps_0x = theta_final['eps_0x'].item() if hasattr(theta_final['eps_0x'], 'item') else float(theta_final['eps_0x'])
+        final_eps_0y = theta_final['eps_0y'].item() if hasattr(theta_final['eps_0y'], 'item') else float(theta_final['eps_0y'])
+        time_estep = None
+        time_mstep = None
+
+    # =========================================================================
+    # VARGP_DIRECT MODE: Eigenspace projection, LBFGS M-step
+    # =========================================================================
+    elif mode == 'vargp_direct':
+        kernel = ArcCosineKernel(
+            sigma_0=config['sigma_0'],
+            Amp=config['Amp'],
+            n_px_side=n_px_side,
+            eps_0x=eps_0x,
+            eps_0y=eps_0y,
+            beta=config['beta'],
+            rho=config['rho'],
+            use_mask=config.get('use_mask', True),
+            gradient_mode=config.get('gradient_mode', 'autograd')
+        )
+        if use_float32:
+            kernel = kernel.float().to(device)
+        else:
+            kernel = kernel.double().to(device)
+
+        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
+        if use_float32:
+            likelihood = likelihood.float().to(device)
+        else:
+            likelihood = likelihood.double().to(device)
+
+        model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, eigval_tol)
+
+        print(f"\nInitial parameters:")
+        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
+        print(f"  A: {model.likelihood.A.item():.4f}")
+        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
+        print(f"  Amp: {model.kernel.Amp.item():.6f}")
+
+        mstep_mode = 'analytical' if config.get('mstep_analytical', False) else 'autograd'
+        print(f"\nTraining with mode='vargp_direct' (eigenspace projection):")
+        print(f"  n_iterations={n_iterations}, n_estep={n_estep}, n_fstep={n_fstep}, n_mstep={n_mstep}")
+        print(f"  lr_f={lr}, lr_m={lr}, mstep_mode={mstep_mode}")
+
+        print_every = max(1, n_iterations // 5)
+        start_time = time.time()
+
+        with torch.enable_grad():
+            result = train_eigenspace(
+                model, r_train,
+                n_iterations=n_iterations,
+                n_estep=n_estep,
+                n_fstep=n_fstep,
+                n_mstep=n_mstep,
+                lr_f=lr,
+                lr_m=lr,
+                print_every=print_every,
+                use_analytical_mstep=config.get('mstep_analytical', False),
+                early_stop=early_stop,
+                stop_window=stop_window,
+                stop_thresh=stop_thresh,
+                min_iterations=min_iterations,
+            )
+
+        train_time = time.time() - start_time
+        losses = result['losses']
+        time_estep_total = result['time_estep_total']
+        time_mstep_total = result['time_mstep_total']
+        stopped_early = result.get('stopped_early', False)
+        final_iteration = result.get('final_iteration', len(losses))
+
+        print(f"\nTraining time: {train_time:.1f}s")
+        print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
+        print(f"  M-step:            {time_mstep_total:.1f}s")
+        print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
+        if stopped_early:
+            print(f"  Stopped early at iteration {final_iteration}")
+
+        print(f"\nFinal parameters:")
+        print(f"  A: {model.likelihood.A.item():.4f}")
+        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
+
+        print("\nEvaluating on test data...")
+        predictions = predict_eigenspace(model, X_test)
+        f_pred = predictions['f_pred']
+
+        r_test_mean = r_test.mean(dim=0)
+        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
+        explained_var, reliability = compute_explained_variance(r_test, f_pred)
+
+        train_preds = predict_eigenspace(model, X_train)
+        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+
+        pred_mean = f_pred.mean().item()
+        pred_std = f_pred.std().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
+
+        # Final hyperparameters
+        final_A = likelihood.A.item()
+        final_lambda0 = likelihood.lambda0.item()
+        final_sigma_0 = kernel.sigma_0.item()
+        final_Amp = kernel.Amp.item()
+        final_beta = kernel.beta.item()
+        final_rho = kernel.rho.item()
+        final_eps_0x = kernel.eps_0x.item()
+        final_eps_0y = kernel.eps_0y.item()
+        time_estep = time_estep_total
+        time_mstep = time_mstep_total
+
+    # =========================================================================
+    # GPYTORCH MODE: default_gpy
+    # =========================================================================
+    elif mode == 'default_gpy':
+        base_kernel = ArcCosineKernel(
+            sigma_0=config['sigma_0'],
+            n_px_side=n_px_side,
+            eps_0x=eps_0x,
+            eps_0y=eps_0y,
+            beta=config['beta'],
+            rho=config['rho'],
+            use_mask=config.get('use_mask', True),
+            gradient_mode=config.get('gradient_mode', 'autograd')
+        )
+        kernel = base_kernel
+        kernel.Amp = config['Amp']
+
+        model = VariationalGPModel(
+            inducing_points, kernel, jitter=jitter,
+            standard_variational_distribution=not config.get('unwhitened_variational_dist', False)
+        )
+        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
+
+        if use_float32:
+            model = model.float().to(device)
+            likelihood = likelihood.float().to(device)
+        else:
+            model = model.double().to(device)
+            likelihood = likelihood.double().to(device)
+
+        print(f"\nInitial parameters:")
+        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+        print(f"  Amp: {kernel.Amp.item():.6f}")
+        print(f"  jitter: {jitter}")
+
+        print(f"\nTraining with mode='default_gpy':")
+        print_every = max(1, n_iterations // 5)
+        start_time = time.time()
+
+        with torch.enable_grad():
+            print(f"  optimizer='{config['optimizer']}', n_iterations={n_iterations}, lr={lr}")
+            result = train_gpy_default(
+                model, likelihood, X_train, r_train,
+                optimizer_name=config['optimizer'],
+                lr=lr,
+                n_iterations=n_iterations,
+                print_every=print_every,
+                device=device,
+                early_stop=early_stop,
+                stop_window=stop_window,
+                stop_thresh=stop_thresh,
+                min_iterations=min_iterations,
+                lbfgs_max_iter=config.get('gpy_lbfgs_max_iter', 20),
+            )
+            losses = result['losses']
+            stopped_early = result.get('stopped_early', False)
+            final_iteration = result.get('final_iteration', len(losses))
+
+        train_time = time.time() - start_time
+        print(f"\nTraining time: {train_time:.1f}s")
+        if stopped_early:
+            print(f"  Stopped early at iteration {final_iteration}")
+
+        print(f"\nFinal parameters:")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+
+        print("\nEvaluating on test data...")
+        predictions = predict(model, likelihood, X_test, device=device)
+        f_pred = predictions['f_pred']
+
+        r_test_mean = r_test.mean(dim=0)
+        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
+        explained_var, reliability = compute_explained_variance(r_test, f_pred)
+
+        train_preds = predict(model, likelihood, X_train, device=device)
+        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+
+        pred_mean = f_pred.mean().item()
+        pred_std = f_pred.std().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
+
+        # Final hyperparameters
+        final_A = likelihood.A.item()
+        final_lambda0 = likelihood.lambda0.item()
+        final_sigma_0 = kernel.sigma_0.item()
+        final_Amp = kernel.Amp.item()
+        final_beta = kernel.beta.item()
+        final_rho = kernel.rho.item()
+        final_eps_0x = kernel.eps_0x.item()
+        final_eps_0y = kernel.eps_0y.item()
+        time_estep = None
+        time_mstep = None
+
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+    # =========================================================================
+    # Results summary
+    # =========================================================================
+    print(f"\n" + "="*50)
+    print(f"RESULTS: mode={mode}, M={M}")
+    print(f"="*50)
+    print(f"  Training time:   {train_time:.1f}s")
+    print(f"  Train Pearson r: {train_corr:.4f}")
+    print(f"  Test Pearson r:  {test_corr:.4f}")
+    print(f"  Reliability:     {reliability:.4f}")
+    print(f"  Explained var:   {explained_var:.4f}")
+    print(f"  Final loss:      {losses[-1]:.2f}")
+    print(f"  Prediction stats: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
+
+    # Print kernel call stats if analytical gradients were used
+    gradient_mode = config.get('gradient_mode', 'autograd')
+    if gradient_mode != 'autograd':
+        if gradient_mode == 'vjp':
+            from analytical_gradients_vjp import ArcCosineVJPGradients as GradImpl
+        else:
+            from analytical_gradients import ArcCosineJacobianGradients as GradImpl
+        if hasattr(GradImpl, '_call_count'):
+            cc = GradImpl._call_count
+            total = cc['grad'] + cc['no_grad']
+            print(f"  Kernel calls:     {total} total ({cc['grad']} with grads, {cc['no_grad']} without)")
+            GradImpl._call_count = {'grad': 0, 'no_grad': 0}
+
+    if pred_std < 0.1:
+        print(f"  WARNING: Predictions appear collapsed (std={pred_std:.4f})")
+
+    # Build result dict
+    result = {
+        'mode': mode,
+        'M': M,
+        'n_train': n_train,
+        'seed': seed,
+        'cell': cell,
+        'status': 'success',
+        'train_time': train_time,
+        'train_r': float(train_corr) if not np.isnan(train_corr) else None,
+        'test_r': float(test_corr) if not np.isnan(test_corr) else None,
+        'explained_var': float(explained_var) if not np.isnan(explained_var) else None,
+        'reliability': float(reliability) if not np.isnan(reliability) else None,
+        'final_loss': float(losses[-1]) if not np.isnan(losses[-1]) else None,
+        'pred_std': pred_std,
+        'time_estep_s': time_estep,
+        'time_mstep_s': time_mstep,
+        'final_A': final_A,
+        'final_lambda0': final_lambda0,
+        'final_Amp': final_Amp,
+        'final_beta': final_beta,
+        'final_rho': final_rho,
+        'final_eps_0x': final_eps_0x,
+        'final_eps_0y': final_eps_0y,
+        'final_sigma_0': final_sigma_0,
+        'gradient_mode': gradient_mode if mode != 'vargp_old' else None,
+        'n_iterations_run': final_iteration,
+        'stopped_early': stopped_early,
+        'timestamp': datetime.now().isoformat(timespec='seconds'),
+        # Keep references for plotting (not serialized to JSON)
+        '_predictions': predictions,
+        '_r_test_mean': r_test_mean,
+    }
+
+    return result
+
+
+# =========================================================================
+# CLI entry point
+# =========================================================================
+
 def main():
     # Load default parameters
     defaults_path = Path(__file__).parent / 'default_params.json'
@@ -181,7 +790,7 @@ def main():
                         choices=['vargp_old', 'default_gpy', 'vargp_direct'],
                         help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_direct (eigenspace projection, default)')
 
-    # Kernel parameters - use defaults from JSON, all overridable via CLI
+    # Kernel parameters
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
     parser.add_argument('--Amp', type=float, default=defaults['kernel']['Amp'], help=f'Kernel amplitude (default: {defaults["kernel"]["Amp"]})')
     parser.add_argument('--beta', type=float, default=defaults['kernel']['beta'], help=f'RF size (default: {defaults["kernel"]["beta"]})')
@@ -189,7 +798,7 @@ def main():
     parser.add_argument('--eps-0x', type=float, default=defaults['kernel']['eps_0x'], help=f'RF center x (default: {defaults["kernel"]["eps_0x"]})')
     parser.add_argument('--eps-0y', type=float, default=defaults['kernel']['eps_0y'], help=f'RF center y (default: {defaults["kernel"]["eps_0y"]})')
 
-    # Link function parameters - use defaults from JSON
+    # Link function parameters
     parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
     parser.add_argument('--lambda0-init', type=float, default=defaults['link_function']['lambda0_init'], help=f'Initial bias lambda0 (default: {defaults["link_function"]["lambda0_init"]})')
     parser.add_argument('--use-mask', action='store_true', default=defaults['kernel']['use_mask'],
@@ -227,455 +836,70 @@ def main():
     parser.add_argument('--json-append', type=str, default=None,
                         help='Append results as JSON line to specified file (for benchmark tracking)')
 
-    # Early stopping options (ON by default, window-based)
+    # Early stopping options (defaults from default_params.json)
+    es_defaults = defaults.get('early_stopping', {})
     parser.add_argument('--no-early-stop', action='store_true',
                         help='Disable early stopping (early stopping is ON by default)')
-    parser.add_argument('--stop-window', type=int, default=20,
-                        help='Number of iterations to look back for improvement (default: 20)')
-    parser.add_argument('--stop-thresh', type=float, default=5e-3,
-                        help='Minimum relative improvement over window to continue (default: 0.005 = 0.5%%)')
-    parser.add_argument('--min-iterations', type=int, default=10,
-                        help='Minimum iterations before early stopping can trigger (default: 10)')
+    parser.add_argument('--stop-window', type=int, default=es_defaults.get('window', 20),
+                        help=f'Number of iterations to look back for improvement (default: {es_defaults.get("window", 20)})')
+    parser.add_argument('--stop-thresh', type=float, default=es_defaults.get('threshold', 5e-3),
+                        help=f'Minimum relative improvement over window to continue (default: {es_defaults.get("threshold", 5e-3)})')
+    parser.add_argument('--min-iterations', type=int, default=es_defaults.get('min_iterations', 10),
+                        help=f'Minimum iterations before early stopping can trigger (default: {es_defaults.get("min_iterations", 10)})')
 
     args = parser.parse_args()
 
-    # Warning for analytical M-step without float32
-    if args.mstep_analytical and not args.float32:
-        import warnings
-        warnings.warn(
-            "\n" + "="*70 + "\n"
-            "WARNING: --mstep-analytical with float64 is extremely slow (~50s vs ~5s).\n"
-            "The analytical gradient implementation has not been optimized for float64.\n"
-            "Consider using --float32 for comparable performance to vargp_old.\n"
-            "See CLAUDE.md section 6.5 for details.\n"
-            + "="*70,
-            UserWarning
-        )
-
-    device = torch.device(args.device)
-    print(f"Device: {device}")
-    print(f"Mode: {args.mode}")
-    print(f"M={args.ntilde} inducing points")
-    if args.gradient_mode != 'autograd':
-        print(f"Gradient mode: {args.gradient_mode}")
-    if args.unwhitened_variational_dist:
-        print("Using UnwhitenedVariationalStrategy")
-
-    # Set seed with explicit CUDA init for reproducibility
-    # See tests/test_utils.py and HANDOFF_2026-01-18.md Section 20 for details
-    set_reproducible_seed(args.seed, device=device)
-    print(f"Seed: {args.seed}")
-
-    # Load data
-    data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
-    print(f"Loading data from: {data_path}")
-    dtype = torch.float32 if args.float32 else torch.float64
-    data = load_pnas_data(data_path, dtype=dtype)
-    if args.float32:
-        print("WARNING: Using float32 - may cause numerical instability")
-
-    # Combine train + val, flatten
-    X = torch.cat([data['X_train'], data['X_val']], dim=0)
-    R = torch.cat([data['R_train'], data['R_val']], dim=0)
-    X = X.reshape(X.shape[0], -1).to(device)  # (N, 11664)
-    R = R.to(device)
-
-    X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
-    R_test = data['R_test'].to(device)
-
-    # Select cell
-    r = R[:, args.cell]
-    r_test = R_test[:, :, args.cell]  # (30 repeats, 30 images)
-
-    # Select training subset
-    n_train = min(args.n_train, X.shape[0])
-    indices_train = torch.randperm(X.shape[0], device=device)[:n_train]
-    X_train = X[indices_train]
-    r_train = r[indices_train]
-
-    # Select inducing points
-    ntilde = min(args.ntilde, n_train)
-    indices_inducing = indices_train[:ntilde]  # Use first ntilde training points
-    inducing_points = X[indices_inducing].clone()
-
-    print(f"\nData shapes:")
-    print(f"  X_train: {X_train.shape}")
-    print(f"  r_train: {r_train.shape}")
-    print(f"  inducing_points: {inducing_points.shape}")
-    print(f"  X_test: {X_test.shape}")
-
-    n_px_side = 108
-
-    # =========================================================================
-    # Compute RF center from spike-triggered average (STA)
-    # This provides a data-driven initialization for eps_0x, eps_0y
-    # =========================================================================
-    from utils import compute_rf_center_from_sta
-
-    eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
-        X_train, r_train, n_px_side, zscore=True
-    )
-
-    # Use STA-computed center unless CLI explicitly overrides
-    if args.eps_0x == defaults['kernel']['eps_0x']:  # Still at default (0.0)
-        args.eps_0x = eps_0x_sta
-    if args.eps_0y == defaults['kernel']['eps_0y']:  # Still at default (0.0)
-        args.eps_0y = eps_0y_sta
-
-    print(f"\nRF center: ({args.eps_0x:.4f}, {args.eps_0y:.4f})")
-    if args.eps_0x == eps_0x_sta and args.eps_0y == eps_0y_sta:
-        print(f"  (computed from STA)")
-    else:
-        print(f"  (from CLI override, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
-
-    # =========================================================================
-    # VARGP MODE: Use original varGP implementation
-    # =========================================================================
-    if args.mode == 'vargp_old':
-        # Lazy import to avoid side effects (utils.py disables gradients at module level)
-        from gaussian_processes.Spatial_GP_repo import utils as GP_utils
-
-        print(f"\nRunning original varGP (reference implementation)")
-        print(f"  maxiter={args.n_iterations}, nEstep={args.n_estep}, nMstep={args.n_mstep}, nFparamstep={args.n_fstep}")
-        if args.jitter != defaults['model']['jitter']:
-            print(f"  NOTE: --jitter={args.jitter} ignored (vargp_old does not use jitter)")
-
-        # Initialize hyperparameters using defaults
-        beta = torch.tensor(args.beta, device=device)
-        rho = torch.tensor(args.rho, device=device)
-
-        theta = {
-            'sigma_0': torch.tensor(args.sigma_0, device=device).requires_grad_(),
-            'Amp': torch.tensor(args.Amp, device=device).requires_grad_(),
-            'eps_0x': torch.tensor(args.eps_0x, device=device).requires_grad_(),
-            'eps_0y': torch.tensor(args.eps_0y, device=device).requires_grad_(),
-            '-2log2beta': (-2 * torch.log(2 * beta)).requires_grad_(),
-            '-log2rho2': (-torch.log(2 * rho * rho)).requires_grad_(),
-        }
-
-        # Need float32 for varGP
-        X_train_f32 = X_train.float()
-        r_train_f32 = r_train.float()
-
-        hyperparams_tuple = GP_utils.generate_theta(
-            x=X_train_f32, r=r_train_f32, n_px_side=n_px_side, display_hyper=False, **theta
-        )
-
-        # Link function parameters (from args, defaults from JSON)
-        A_init = args.A_init
-        lambda0_init = args.lambda0_init
-        A = torch.tensor(A_init, device=device)
-        f_params = {
-            'logA': torch.log(A).requires_grad_(),
-            'lambda0': torch.tensor(lambda0_init, device=device),
-        }
-
-        fit_parameters = {
-            'ntilde': ntilde,
-            'maxiter': args.n_iterations,
-            'nMstep': args.n_mstep,
-            'nEstep': args.n_estep,
-            'nFparamstep': args.n_fstep,
-            'kernfun': GP_utils.acosker,
-            'cellid': args.cell,
-            'n_px_side': n_px_side,
-        }
-
-        vargp_old_args = {
-            'fit_parameters': fit_parameters,
-            'xtilde': inducing_points.float(),
-            'hyperparams_tuple': hyperparams_tuple,
-            'f_params': f_params,
-            'm': torch.zeros(ntilde, device=device),
-        }
-
-        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
-
-        # Run varGP
-        start_time = time.time()
-        fit_model, err_dict = GP_utils.varGP(X_train_f32, r_train_f32, **vargp_old_args)
-        train_time = time.time() - start_time
-
-        if err_dict['is_error']:
-            print(f"  ERROR: {err_dict['error']}")
-            return None
-
-        # Evaluate using GP_utils.test
-        # test() returns (R_test_cell, R_pred_cell, expl_var, sigma_expl_var)
-        # R_pred_cell is already the predicted firing rate (not lambda)
-        _, f_pred, r2, sigma_r2 = GP_utils.test(
-            X_test.reshape(-1, n_px_side, n_px_side, 1).float(),
-            r_test.float(),
-            X_train=X.float(),
-            at_iteration=None,
-            **fit_model
-        )
-
-        # Ensure f_pred is a tensor on the correct device
-        if not isinstance(f_pred, torch.Tensor):
-            f_pred = torch.tensor(f_pred, device=device)
-        else:
-            f_pred = f_pred.to(device)
-
-        # Compute metrics consistently with GPyTorch modes
-        r_test_mean = r_test.mean(dim=0)
-        test_corr = compute_pearson_correlation(r_test_mean.float(), f_pred.float())
-        explained_var, reliability = compute_explained_variance(r_test.float(), f_pred.float())
-
-        # Train correlation not available for vargp_old (would need extra prediction pass)
-        train_corr = float('nan')
-
-        final_loss = fit_model.get('loss', 0.0)
-        pred_std = f_pred.std().item()
-        pred_mean = f_pred.mean().item()
-        pred_min = f_pred.min().item()
-        pred_max = f_pred.max().item()
-
-        # Create predictions dict to match GPyTorch branch structure
-        predictions = {'f_pred': f_pred}
-        losses = [final_loss]
-
-    # =========================================================================
-    # VARGP_DIRECT MODE: Eigenspace projection, LBFGS M-step
-    # Uses DirectVGPModel which owns kernel, likelihood, and state
-    # =========================================================================
-    elif args.mode == 'vargp_direct':
-        # Create kernel with RF structure
-        kernel = ArcCosineKernel(
-            sigma_0=args.sigma_0,
-            Amp=args.Amp,
-            n_px_side=n_px_side,
-            eps_0x=args.eps_0x,
-            eps_0y=args.eps_0y,
-            beta=args.beta,
-            rho=args.rho,
-            use_mask=args.use_mask,
-            gradient_mode=args.gradient_mode
-        )
-        if args.float32:
-            kernel = kernel.float().to(device)
-        else:
-            kernel = kernel.double().to(device)
-
-        # Create likelihood
-        A_init = args.A_init
-        lambda0_init = args.lambda0_init
-        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
-        if args.float32:
-            likelihood = likelihood.float().to(device)
-        else:
-            likelihood = likelihood.double().to(device)
-
-        # Create model (owns kernel, likelihood, and state)
-        model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, EIGVAL_TOL)
-
-        print(f"\nInitial parameters:")
-        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
-        print(f"  A: {model.likelihood.A.item():.4f}")
-        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
-        print(f"  Amp: {model.kernel.Amp.item():.6f}")
-
-        # Train with eigenspace projection
-        mstep_mode = 'analytical' if args.mstep_analytical else 'autograd'
-        print(f"\nTraining with mode='vargp_direct' (eigenspace projection):")
-        lr = defaults['training']['lr']
-        print(f"  n_iterations={args.n_iterations}, n_estep={args.n_estep}, n_fstep={args.n_fstep}, n_mstep={args.n_mstep}")
-        print(f"  lr_f={lr}, lr_m={lr}, mstep_mode={mstep_mode}")
-
-        print_every = max(1, args.n_iterations // 5)
-        start_time = time.time()
-
-        early_stop = not args.no_early_stop
-        with torch.enable_grad():
-            result = train_eigenspace(
-                model, r_train,
-                n_iterations=args.n_iterations,
-                n_estep=args.n_estep,
-                n_fstep=args.n_fstep,
-                n_mstep=args.n_mstep,
-                lr_f=lr,
-                lr_m=lr,
-                print_every=print_every,
-                use_analytical_mstep=args.mstep_analytical,
-                early_stop=early_stop,
-                stop_window=args.stop_window,
-                stop_thresh=args.stop_thresh,
-                min_iterations=args.min_iterations,
-            )
-
-        train_time = time.time() - start_time
-        losses = result['losses']
-        time_estep_total = result['time_estep_total']
-        time_mstep_total = result['time_mstep_total']
-        stopped_early = result.get('stopped_early', False)
-        final_iteration = result.get('final_iteration', len(losses))
-
-        print(f"\nTraining time: {train_time:.1f}s")
-        print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
-        print(f"  M-step:            {time_mstep_total:.1f}s")
-        print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
-        if stopped_early:
-            print(f"  Stopped early at iteration {final_iteration}")
-
-        print(f"\nFinal parameters:")
-        print(f"  A: {model.likelihood.A.item():.4f}")
-        print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
-
-        # Evaluate on test data
-        print("\nEvaluating on test data...")
-        predictions = predict_eigenspace(model, X_test)
-        f_pred = predictions['f_pred']
-
-        r_test_mean = r_test.mean(dim=0)
-        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
-        explained_var, reliability = compute_explained_variance(r_test, f_pred)
-
-        # Also check train correlation
-        train_preds = predict_eigenspace(model, X_train)
-        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
-
-        # Check prediction statistics
-        pred_mean = f_pred.mean().item()
-        pred_std = f_pred.std().item()
-        pred_min = f_pred.min().item()
-        pred_max = f_pred.max().item()
-
-    # =========================================================================
-    # GPYTORCH MODE: default_gpy
-    # =========================================================================
-    else:
-        # Create kernel with RF structure using args (defaults from JSON, overridable via CLI)
-        base_kernel = ArcCosineKernel(
-            sigma_0=args.sigma_0,
-            n_px_side=n_px_side,
-            eps_0x=args.eps_0x,
-            eps_0y=args.eps_0y,
-            beta=args.beta,
-            rho=args.rho,
-            use_mask=args.use_mask,
-            gradient_mode=args.gradient_mode
-        )
-        # Use base_kernel directly with internal Amp parameter
-        # Amp is multiplied into C (non-linear effect through sqrt/arccos)
-        # This is different from ScaleKernel which scales output linearly
-        kernel = base_kernel
-        kernel.Amp = args.Amp
-
-        # Create model and likelihood using args (defaults from JSON)
-        A_init = args.A_init
-        lambda0_init = args.lambda0_init
-
-        model = VariationalGPModel(inducing_points, kernel, jitter=args.jitter,
-                                    standard_variational_distribution=not args.unwhitened_variational_dist)
-        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
-
-        if args.float32:
-            model = model.float().to(device)
-            likelihood = likelihood.float().to(device)
-        else:
-            model = model.double().to(device)
-            likelihood = likelihood.double().to(device)
-
-        print(f"\nInitial parameters:")
-        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
-        print(f"  A: {likelihood.A.item():.4f}")
-        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
-        print(f"  Amp: {kernel.Amp.item():.6f}")
-        print(f"  jitter: {args.jitter}")
-
-        # Train with selected mode
-        # Note: GP_utils import disables gradients globally (utils.py line 2).
-        # Must use torch.enable_grad() to re-enable for training.
-        print(f"\nTraining with mode='{args.mode}':")
-        print_every = max(1, args.n_iterations // 5)
-        start_time = time.time()
-
-        early_stop = not args.no_early_stop
-        with torch.enable_grad():
-            if args.mode == 'default_gpy':
-                print(f"  optimizer='{args.optimizer}', n_iterations={args.n_iterations}, lr={args.lr}")
-                result = train_gpy_default(
-                    model, likelihood, X_train, r_train,
-                    optimizer_name=args.optimizer,
-                    lr=args.lr,
-                    n_iterations=args.n_iterations,
-                    print_every=print_every,
-                    device=device,
-                    early_stop=early_stop,
-                    stop_window=args.stop_window,
-                    stop_thresh=args.stop_thresh,
-                    min_iterations=args.min_iterations,
-                )
-                losses = result['losses']
-                stopped_early = result.get('stopped_early', False)
-                final_iteration = result.get('final_iteration', len(losses))
-            else:
-                raise ValueError(f"Unknown mode: {args.mode}")
-
-
-        train_time = time.time() - start_time
-        print(f"\nTraining time: {train_time:.1f}s")
-
-        # Print early stopping info for default_gpy
-        if args.mode == 'default_gpy' and stopped_early:
-            print(f"  Stopped early at iteration {final_iteration}")
-
-        print(f"\nFinal parameters:")
-        print(f"  A: {likelihood.A.item():.4f}")
-        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
-
-        # Evaluate on test data
-        print("\nEvaluating on test data...")
-        predictions = predict(model, likelihood, X_test, device=device)
-        f_pred = predictions['f_pred']
-
-        r_test_mean = r_test.mean(dim=0)
-        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
-        explained_var, reliability = compute_explained_variance(r_test, f_pred)
-
-        # Also check train correlation
-        train_preds = predict(model, likelihood, X_train, device=device)
-        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
-
-        # Check prediction statistics
-        pred_mean = f_pred.mean().item()
-        pred_std = f_pred.std().item()
-        pred_min = f_pred.min().item()
-        pred_max = f_pred.max().item()
-
-    print(f"\n" + "="*50)
-    print(f"RESULTS: mode={args.mode}, M={args.ntilde}")
-    print(f"="*50)
-    print(f"  Training time:   {train_time:.1f}s")
-    print(f"  Train Pearson r: {train_corr:.4f}")
-    print(f"  Test Pearson r:  {test_corr:.4f}")
-    print(f"  Reliability:     {reliability:.4f}")
-    print(f"  Explained var:   {explained_var:.4f}")
-    print(f"  Final loss:      {losses[-1]:.2f}")
-    print(f"  Prediction stats: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
-
-    # Print kernel call stats if analytical gradients were used
-    if args.gradient_mode != 'autograd':
-        # Check which implementation was used
-        if args.gradient_mode == 'vjp':
-            from analytical_gradients_vjp import ArcCosineVJPGradients as GradImpl
-        else:
-            from analytical_gradients import ArcCosineJacobianGradients as GradImpl
-        if hasattr(GradImpl, '_call_count'):
-            cc = GradImpl._call_count
-            total = cc['grad'] + cc['no_grad']
-            print(f"  Kernel calls:     {total} total ({cc['grad']} with grads, {cc['no_grad']} without)")
-            # Reset for next run
-            GradImpl._call_count = {'grad': 0, 'no_grad': 0}
-
-    # Check for collapsed predictions
-    if pred_std < 0.1:
-        print(f"  WARNING: Predictions appear collapsed (std={pred_std:.4f})")
+    # Handle eps_0x/eps_0y: if still at default (0.0), set to None so STA is used
+    eps_0x = args.eps_0x if args.eps_0x != defaults['kernel']['eps_0x'] else None
+    eps_0y = args.eps_0y if args.eps_0y != defaults['kernel']['eps_0y'] else None
+
+    # Build config dict from CLI args
+    config = {
+        'mode': args.mode,
+        'M': args.ntilde,
+        'n_train': args.n_train,
+        'seed': args.seed,
+        'cell': args.cell,
+        'n_iterations': args.n_iterations,
+        'device': args.device,
+        'dtype': 'float32' if args.float32 else 'float64',
+        'sigma_0': args.sigma_0,
+        'Amp': args.Amp,
+        'beta': args.beta,
+        'rho': args.rho,
+        'eps_0x': eps_0x,
+        'eps_0y': eps_0y,
+        'gradient_mode': args.gradient_mode,
+        'use_mask': args.use_mask,
+        'A_init': args.A_init,
+        'lambda0_init': args.lambda0_init,
+        'n_estep': args.n_estep,
+        'n_fstep': args.n_fstep,
+        'n_mstep': args.n_mstep,
+        'lr': args.lr,
+        'optimizer': args.optimizer,
+        'early_stop': not args.no_early_stop,
+        'stop_window': args.stop_window,
+        'stop_thresh': args.stop_thresh,
+        'min_iterations': args.min_iterations,
+        'jitter': args.jitter,
+        'eigval_tol': EIGVAL_TOL,
+        'n_px_side': 108,
+        'use_cache': args.use_cache,
+        'mstep_analytical': args.mstep_analytical,
+        'unwhitened_variational_dist': args.unwhitened_variational_dist,
+        'save_plot': args.save_plot,
+        'plot': args.plot,
+    }
+
+    # Run
+    result = run_single_config(config)
+    if result is None:
+        return None
 
     # Plot handling
     save_path = None
     if args.save_plot == 'auto':
-        # Auto-generate path: imgs/{mode}_M{ntilde}.png
         imgs_dir = Path(__file__).parent / 'imgs'
         imgs_dir.mkdir(exist_ok=True)
         save_path = imgs_dir / f"{args.mode}_M{args.ntilde}.png"
@@ -684,106 +908,41 @@ def main():
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.plot or save_path:
-        plot_fit(r_test_mean, predictions['f_pred'], args.cell, args.ntilde,
-                 test_corr, explained_var, reliability,
+        plot_fit(result['_r_test_mean'], result['_predictions']['f_pred'],
+                 args.cell, args.ntilde,
+                 result['test_r'], result['explained_var'], result['reliability'],
                  output_path=save_path)
-
-    # Extract final hyperparameters based on mode
-    if args.mode == 'vargp_old':
-        # Extract from fit_model
-        theta = fit_model['hyperparams_tuple'][0]
-        f_p = fit_model['f_params']
-        # Convert from stored representation
-        raw_beta = theta['-2log2beta'].item() if hasattr(theta['-2log2beta'], 'item') else float(theta['-2log2beta'])
-        raw_rho = theta['-log2rho2'].item() if hasattr(theta['-log2rho2'], 'item') else float(theta['-log2rho2'])
-        final_beta = np.exp(-raw_beta / 2) / 2
-        final_rho = np.sqrt(np.exp(-raw_rho) / 2)
-        logA_val = f_p['logA'].item() if hasattr(f_p['logA'], 'item') else float(f_p['logA'])
-        final_A = np.exp(logA_val)
-        final_lambda0 = f_p['lambda0'].item() if hasattr(f_p['lambda0'], 'item') else float(f_p['lambda0'])
-        final_sigma_0 = theta['sigma_0'].item() if hasattr(theta['sigma_0'], 'item') else float(theta['sigma_0'])
-        final_Amp = theta['Amp'].item() if hasattr(theta['Amp'], 'item') else float(theta['Amp'])
-        final_eps_0x = theta['eps_0x'].item() if hasattr(theta['eps_0x'], 'item') else float(theta['eps_0x'])
-        final_eps_0y = theta['eps_0y'].item() if hasattr(theta['eps_0y'], 'item') else float(theta['eps_0y'])
-        # vargp_old doesn't expose E-step/M-step timing in returned dict
-        time_estep = None
-        time_mstep = None
-    else:
-        # GPyTorch modes: extract from model/likelihood
-        # kernel is now directly ArcCosineKernel (not wrapped in ScaleKernel)
-        final_A = likelihood.A.item()
-        final_lambda0 = likelihood.lambda0.item()
-        final_sigma_0 = kernel.sigma_0.item()
-        final_Amp = kernel.Amp.item()
-        final_beta = kernel.beta.item()
-        final_rho = kernel.rho.item()
-        final_eps_0x = kernel.eps_0x.item()
-        final_eps_0y = kernel.eps_0y.item()
-        # Timing breakdown available for vargp_direct
-        if args.mode == 'vargp_direct':
-            time_estep = time_estep_total
-            time_mstep = time_mstep_total
-        else:
-            time_estep = None
-            time_mstep = None
-
-    # Build result dict
-    result = {
-        'mode': args.mode,
-        'M': args.ntilde,
-        'train_time': train_time,
-        'train_r': float(train_corr) if not np.isnan(train_corr) else None,
-        'test_r': float(test_corr) if not np.isnan(test_corr) else None,
-        'explained_var': float(explained_var) if not np.isnan(explained_var) else None,
-        'reliability': float(reliability) if not np.isnan(reliability) else None,
-        'final_loss': float(losses[-1]) if not np.isnan(losses[-1]) else None,
-        'pred_std': pred_std,
-        'time_estep_s': time_estep,
-        'time_mstep_s': time_mstep,
-        'final_A': final_A,
-        'final_lambda0': final_lambda0,
-        'final_Amp': final_Amp,
-        'final_beta': final_beta,
-        'final_rho': final_rho,
-        'final_eps_0x': final_eps_0x,
-        'final_eps_0y': final_eps_0y,
-        'final_sigma_0': final_sigma_0,
-    }
 
     # Write JSON if requested
     if args.json_append:
         json_record = {
-            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'timestamp': result['timestamp'],
             'commit': get_git_commit(),
             'seed': args.seed,
             'mode': args.mode,
             'M': args.ntilde,
-            'ntrain': n_train,
+            'ntrain': result['n_train'],
             'niter': args.n_iterations,
             'nestep': args.n_estep,
             'nmstep': args.n_mstep,
             'nfstep': args.n_fstep,
             'cell_id': args.cell,
-            'gradient_mode': args.gradient_mode if args.mode != 'vargp_old' else None,
-            'test_r': result['test_r'],
-            'explained_var': result['explained_var'],
-            'final_loss': result['final_loss'],
-            'time_total_s': round(train_time, 2),
-            'time_estep_s': round(time_estep, 2) if time_estep is not None else None,
-            'time_mstep_s': round(time_mstep, 2) if time_mstep is not None else None,
-            'final_A': round(final_A, 6),
-            'final_lambda0': round(final_lambda0, 6),
-            'final_Amp': round(final_Amp, 6),
-            'final_beta': round(final_beta, 6),
-            'final_rho': round(final_rho, 6),
-            'final_eps_0x': round(final_eps_0x, 6),
-            'final_eps_0y': round(final_eps_0y, 6),
-            'final_sigma_0': round(final_sigma_0, 6),
+            'gradient_mode': result['gradient_mode'],
+            'test_r': round(result['test_r'], 4) if result['test_r'] is not None else None,
+            'explained_var': round(result['explained_var'], 4) if result['explained_var'] is not None else None,
+            'final_loss': round(result['final_loss'], 4) if result['final_loss'] is not None else None,
+            'time_total_s': round(result['train_time'], 2),
+            'time_estep_s': round(result['time_estep_s'], 2) if result['time_estep_s'] is not None else None,
+            'time_mstep_s': round(result['time_mstep_s'], 2) if result['time_mstep_s'] is not None else None,
+            'final_A': round(result['final_A'], 6),
+            'final_lambda0': round(result['final_lambda0'], 6),
+            'final_Amp': round(result['final_Amp'], 6),
+            'final_beta': round(result['final_beta'], 6),
+            'final_rho': round(result['final_rho'], 6),
+            'final_eps_0x': round(result['final_eps_0x'], 6),
+            'final_eps_0y': round(result['final_eps_0y'], 6),
+            'final_sigma_0': round(result['final_sigma_0'], 6),
         }
-        # Round floats for cleaner output
-        for key in ['test_r', 'explained_var', 'final_loss']:
-            if json_record[key] is not None:
-                json_record[key] = round(json_record[key], 4)
 
         json_path = Path(args.json_append)
         json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -795,37 +954,4 @@ def main():
 
 
 if __name__ == '__main__':
-    # DEBUG: Uncomment this block to test with hardcoded parameters
-    import sys
-    sys.argv = [
-        'run_single_mode.py',
-        # '--mode', 'default_gpy',
-        '--mode', 'vargp_direct',
-        '--ntilde', '50',
-        '--n-train', '250',
-        '--n-iterations', '3',
-        # '--n-estep', '10',
-        # '--n-fstep', '10',
-        # '--n-mstep', '10',
-        '--sigma-0', '2.0',
-        '--Amp', '0.5',
-        '--beta', '0.2',
-        '--rho', '0.15',
-        '--eps-0x', '0.1',
-        '--eps-0y', '-0.1',
-        '--seed', '123',
-        # '--float32',
-        # '--cell', '8',
-        '--save-plot', 'none',
-        # '--plot',  # Uncomment to show plot
-        # '--json-append', 'results/benchmark_results.jsonl',  # Uncomment to save results
-    ]
-    # print("=" * 70)
-    # print("DEBUG MODE: Testing default_gpy with hardcoded parameters")
-    # print("=" * 70)
-
     main()
-
-                                                                                        
-
-                                                                                              

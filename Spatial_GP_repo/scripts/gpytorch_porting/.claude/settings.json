@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$CONDA_DEFAULT_ENV\" != 'pytorch_gpytorch' ]; then echo 'CONDA_ENV_WRONG: Current=$CONDA_DEFAULT_ENV, Required=pytorch_gpytorch'; exit 1; fi",
+            "command": "PYTHON_PATH=$(which python) && if [[ \"$PYTHON_PATH\" != *pytorch_gpytorch* ]]; then echo \"CONDA_ENV_WRONG: Python is at $PYTHON_PATH, expected pytorch_gpytorch environment\"; exit 1; fi",
             "timeout": 5
           }
         ]

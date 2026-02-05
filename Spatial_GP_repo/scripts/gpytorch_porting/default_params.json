@@ -26,6 +26,13 @@
     "optimizer": "lbfgs"
   },
 
+  "early_stopping": {
+    "enabled": true,
+    "window": 20,
+    "threshold": 0.005,
+    "min_iterations": 10
+  },
+
   "model": {
     "use_cache": true,
     "jitter": 0.0001

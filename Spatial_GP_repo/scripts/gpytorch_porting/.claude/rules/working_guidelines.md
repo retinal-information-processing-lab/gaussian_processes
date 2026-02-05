@@ -130,56 +130,50 @@ When exploring math-related code, also read `MATH_REFERENCE.md` for context.
 
 See CLAUDE.md "When to Read Other Docs" table for the full mapping.
 
-### 3.11 Benchmark System (JSONL-based)
+### 3.11 Experiment System (YAML-based)
 
-**Primary output**: `results/benchmark_results.jsonl` (machine-readable, append-only)
-**Legacy (frozen)**: `results/BENCHMARK_LOG.md` (historical, do not update)
+**Two workflows**:
+- **Canonical experiments**: `create_experiment.py` + `run_experiment.py --exp` — full test matrix, frozen config, git metadata
+- **Exploratory experiments**: `run_experiment.py --quick` — single-point, auto-created, tracked in `experiments/exploratory/`
 
 **Recording results**:
 ```bash
-# Single test with JSON output
-python run_single_mode.py --mode vargp_style --ntilde 50 --seed 123 --json-append results/benchmark_results.jsonl
+# Canonical: create + run + analyze
+python create_experiment.py --name baseline --desc "Post-cleanup baseline"
+python run_experiment.py --exp baseline
+python analyze_experiment.py --exp baseline
 
-# Run canonical test matrix (12 configs)
-python run_canonical_tests.py --seed 123
+# Exploratory: one step
+python run_experiment.py --quick test_lr --mode vargp_direct --M 50 --seed 123
 
-# Query results
-python query_benchmark.py --mode vargp_style --M 50
-python query_benchmark.py --compare-seeds 123 456
+# List all experiments
+python analyze_experiment.py --list
 ```
+
+**Config sources**:
+- `configs/canonical.yaml`: Full matrix template (modes x M x seeds x cells), all 35 params
+- `configs/quick.yaml`: Single-point defaults for exploratory runs
+- `default_params.json`: Defaults for `run_single_mode.py` CLI (quick dev tests only)
 
 **Before recording**:
 - Check working tree is clean (`git status`)
-- If uncommitted changes exist, **remind user to commit first** - results must be reproducible
-- Commit hash is recorded automatically in JSON
-
-**What to log vs skip:**
-| Log it | Don't log it |
-|--------|--------------|
-| Intentional benchmark runs | Quick debug tests |
-| Comparing implementations | Checking if code runs |
-| Results that inform decisions | Exploratory iterations |
+- If uncommitted changes exist, **remind user to commit first** - git commit is recorded in metadata
+- Config is frozen at experiment creation time
 
 ### 3.12 Canonical Test Matrix
 
-Standard configurations for regression testing (12 per seed):
+Default matrix in `configs/canonical.yaml`:
 
 | ntrain | M values | Modes |
 |--------|----------|-------|
-| 500 | 50, 100, 200 | vargp_old, vargp_style, adam |
-| 2000 | 200 | vargp_old, vargp_style, adam |
+| 500 | 50, 100, 200 | vargp_direct, default_gpy |
 
 **When to run**:
 - After completing a feature (regression check)
 - After merge (verify no breakage)
 - When comparing implementations
 
-**What is NOT canonical** (don't log to main JSONL):
-- Quick debug tests during development
-- Exploratory parameter sweeps
-- Checking if code runs
-
-For exploratory work, use `--json-append results/exploratory.jsonl` instead.
+**Exploratory runs** (`--quick`) go to `experiments/exploratory/` and don't clutter canonical results.
 
 ### 3.13 Bug Investigation Cleanup
 

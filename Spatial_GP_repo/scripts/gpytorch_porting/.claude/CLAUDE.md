@@ -24,10 +24,14 @@ It defines:
 | Item | Value |
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this |
-| **Run canonical test** | `python run_canonical_tests.py --seed 123` |
-| **Run single mode** | `python run_single_mode.py --mode vargp_direct --float32` |
-| **Query results** | `python query_benchmark.py --mode vargp_direct --M 100` |
+| **Run canonical experiment** | `python create_experiment.py --name baseline --desc "..."` then `python run_experiment.py --exp baseline` |
+| **Run quick exploratory** | `python run_experiment.py --quick test_lr --mode vargp_direct --M 50 --seed 123` |
+| **Analyze results** | `python analyze_experiment.py --exp baseline` or `--list` |
+| **Quick dev test** | `python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --seed 123` |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. |
+
+Experiments (`run_experiment.py`) use YAML configs (`configs/canonical.yaml`, `configs/quick.yaml`) — all params tracked.
+Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faster iteration, less reproducibility tracking.
 
 **Current Status**:
 | Component | Status |
@@ -38,6 +42,7 @@ It defines:
 | vargp_direct mode | COMPLETE |
 | default_gpy mode | COMPLETE |
 | Pixel masking | COMPLETE |
+| YAML experiment system | COMPLETE |
 | Utility functions | OUT OF SCOPE |
 
 ---
@@ -78,7 +83,7 @@ Key issues: torch.pi workaround, jitter consistency, seed sensitivity, whitening
 | M-step optimizer | LBFGS | LBFGS |  LBFGS |
 | **Dtype** | float32 |float32 |  float32 |
 
-All modes load defaults from `default_params.json`.
+All modes load defaults from `default_params.json` (CLI) or YAML configs (experiments).
 
 ---
 
@@ -133,12 +138,29 @@ Use `--gradient-mode MODE` in CLI:
 | `gpy_model.py` | VariationalGPModel (standard GPyTorch) |
 | `gpy_training.py` | train_gpy_default(), predict() |
 
-### Entry Points & Utilities
+### Experiment System (YAML-based)
 | File | Purpose |
 |------|---------|
-| `run_single_mode.py` | Main test script |
-| `run_canonical_tests.py` | 12-config benchmark matrix |
-| `query_benchmark.py` | Query benchmark results |
+| `configs/canonical.yaml` | Full test matrix template — all 35 params, HARDCODED/WIRED annotated |
+| `configs/quick.yaml` | Single-point defaults for exploratory runs |
+| `create_experiment.py` | Create canonical experiment folder (freezes config + metadata) |
+| `run_experiment.py` | Run canonical (`--exp`) or exploratory (`--quick`) experiments |
+| `analyze_experiment.py` | Summarize (`--exp`), compare (`--compare`), list (`--list`) experiments |
+| `experiments/` | Canonical experiment folders (date-prefixed) |
+| `experiments/exploratory/` | Quick exploratory experiment folders |
+
+### Entry Points
+| File | Purpose |
+|------|---------|
+| `run_single_mode.py` | Quick dev test (reads `default_params.json`, full CLI control, no experiment tracking). Exports `run_single_config(config: dict) -> dict` (core training function) and `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell) -> dict` (YAML→flat config bridge). |
+| `run_experiment.py` | Structured experiments (reads YAML configs, frozen config, full tracking) |
+
+### Superseded (kept for reference, not deleted)
+| File | Purpose |
+|------|---------|
+| `run_canonical_tests.py` | Old 12-config benchmark matrix (superseded by `run_experiment.py --exp`) |
+| `query_benchmark.py` | Old JSONL query tool (superseded by `analyze_experiment.py`) |
+| `old_results/` | Archived flat JSONL results from development phase (220 records) |
 
 ### Deprecated Code (archived, self-contained)
 | Folder | Purpose |
@@ -164,6 +186,11 @@ Cell 8 and 10 validation sufficient for initial implementation.
 
 ### LBFGS Tolerance Investigation - DEFERRED
 The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Since all code runs with `--float32` (per guidelines), this tolerance may be meaningless. Future investigation: consider whether to expose/adjust tolerance or validate that float32 precision is sufficient.
+
+### YAML Experiment System - Open Items
+- **Remaining hardcoded params**: kernel_bounds, lbfgs_tolerance/history_size, lambda_var_clamp, stability_threshold are documented in YAML with `HARDCODED` tags and file:line refs but NOT yet wired through code. Changing their YAML values has no effect.
+- **Canonical/quick YAML sync hook**: Non-experiment sections of `canonical.yaml` and `quick.yaml` should stay in sync. A Claude Code hook is planned but not yet implemented.
+- **`run_single_mode.py` early stopping defaults**: Now read from `default_params.json`.
 
 ---
 
@@ -221,7 +248,7 @@ Spatial_GP_repo/
 | Status, rules, parameter tables | THIS FILE (CLAUDE.md) |
 | Math formulas | `.claude/rules/math.md` (auto-loads, or `/math` skill) |
 | "Why was X designed this way?" | DECISION_LOG.md |
-| Performance numbers | results/BENCHMARK_LOG.md |
+| Performance numbers | `analyze_experiment.py --exp <name>` (old: `old_results/BENCHMARK_LOG.md`) |
 | How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
 | vargp_direct implementation | VARGP_DIRECT_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
