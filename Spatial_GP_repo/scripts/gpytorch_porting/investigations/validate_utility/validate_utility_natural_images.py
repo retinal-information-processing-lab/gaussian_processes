@@ -8,7 +8,7 @@ Tests the hypothesis that:
 Usage:
     python investigations/validate_utility/validate_utility_natural_images.py
 
-Uses default_gpy mode. All other params (cell, M, n_train, seed) from default_params.json.
+Uses default_gpy mode, M=50, n_train=200. Other params (cell, seed) from default_params.json.
 """
 
 import sys
@@ -41,9 +41,11 @@ def main():
     print("Step 1: Training default_gpy model")
     print("=" * 70)
 
-    # All parameters read from default_params.json via build_config_from_defaults.
-    # Only 'mode' is specified here; seed, cell, M, n_train come from defaults.
-    config = build_config_from_defaults(mode='default_gpy')
+    # Parameters from default_params.json via build_config_from_defaults.
+    # Override M=50 and n_train=200 to test with less training data
+    # (more GP uncertainty should amplify standard vs dist-aware differences).
+    # Inducing points are selected from training points (first M of n_train).
+    config = build_config_from_defaults(M=50, n_train=200, n_mc_samples=1000)
 
     result = run_single_config(config)
 

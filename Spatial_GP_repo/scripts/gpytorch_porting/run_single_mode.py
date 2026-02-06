@@ -162,7 +162,7 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
 # Config builders
 # =========================================================================
 
-def build_config_from_defaults(mode, **overrides):
+def build_config_from_defaults(**overrides):
     """Build a flat config dict by reading default_params.json.
 
     This is the mandatory way for standalone scripts (investigations,
@@ -170,11 +170,10 @@ def build_config_from_defaults(mode, **overrides):
     values come from default_params.json — the same file the CLI uses —
     so they stay in sync with the project defaults automatically.
 
-    Only 'mode' is required. Everything else (seed, cell, M, n_train, ...)
-    comes from default_params.json unless explicitly overridden via kwargs.
+    Everything (mode, seed, cell, M, n_train, ...) comes from
+    default_params.json unless explicitly overridden via kwargs.
 
     Args:
-        mode: Training mode ('default_gpy', 'vargp_direct', 'vargp_old').
         **overrides: Key-value pairs to override. Any key accepted by
             run_single_config() can be overridden here.
 
@@ -183,10 +182,10 @@ def build_config_from_defaults(mode, **overrides):
 
     Example:
         # All defaults from default_params.json:
-        config = build_config_from_defaults(mode='default_gpy')
+        config = build_config_from_defaults()
 
         # Override M for a quick test (everything else from defaults):
-        config = build_config_from_defaults(mode='default_gpy', M=50)
+        config = build_config_from_defaults(M=50)
     """
     # ------------------------------------------------------------------
     # Read default_params.json — single source of truth for defaults
@@ -195,21 +194,22 @@ def build_config_from_defaults(mode, **overrides):
     with open(defaults_path, 'r') as f:
         defaults = json.load(f)
 
+    run = defaults['run']
     ker = defaults['kernel']
     lik = defaults['link_function']
     trn = defaults['training']
-    es = defaults.get('early_stopping', {})
-    mod = defaults.get('model', {})
+    es = defaults['early_stopping']
+    mod = defaults['model']
     dat = defaults['data']
-    utl = defaults.get('utility', {})
+    utl = defaults['utility']
 
     # ------------------------------------------------------------------
     # Build flat config — every value traces back to default_params.json
     # except where noted
     # ------------------------------------------------------------------
     config = {
-        # --- Run point (from data section) ---
-        'mode': mode,
+        # --- Run point ---
+        'mode': run['mode'],
         'M': dat['ntilde'],              # default_params.json -> data.ntilde
         'n_train': dat['n_train'],        # default_params.json -> data.n_train
         'seed': dat['seed'],              # default_params.json -> data.seed
@@ -217,8 +217,8 @@ def build_config_from_defaults(mode, **overrides):
         'n_iterations': trn['n_iterations'],
 
         # --- Device/dtype ---
-        'device': 'cuda',
-        'dtype': 'float32',              # project standard (rule #3)
+        'device': run['device'],
+        'dtype': run['dtype'],
 
         # --- Kernel (from kernel section) ---
         'sigma_0': ker['sigma_0'],
@@ -227,8 +227,8 @@ def build_config_from_defaults(mode, **overrides):
         'rho': ker['rho'],
         'eps_0x': None,                   # None = compute from STA
         'eps_0y': None,                   # (default_params.json has 0.0 as placeholder)
-        'gradient_mode': ker.get('gradient_mode', 'autograd'),
-        'use_mask': ker.get('use_mask', True),
+        'gradient_mode': ker['gradient_mode'],
+        'use_mask': ker['use_mask'],
 
         # --- Likelihood (from link_function section) ---
         'A_init': lik['A_init'],
@@ -239,26 +239,26 @@ def build_config_from_defaults(mode, **overrides):
         'n_fstep': trn['n_fstep'],
         'n_mstep': trn['n_mstep'],
         'lr': trn['lr'],
-        'optimizer': trn.get('optimizer', 'lbfgs'),
+        'optimizer': trn['optimizer'],
 
         # --- Early stopping (from early_stopping section) ---
-        'early_stop': es.get('enabled', True),
-        'stop_window': es.get('window', 20),
-        'stop_thresh': es.get('threshold', 5e-3),
-        'min_iterations': es.get('min_iterations', 10),
+        'early_stop': es['enabled'],
+        'stop_window': es['window'],
+        'stop_thresh': es['threshold'],
+        'min_iterations': es['min_iterations'],
 
-        # --- Numerical (from model section + hardcoded defaults) ---
-        'jitter': mod.get('jitter', 1e-4),
-        'eigval_tol': 1e-4,              # not in default_params.json; matches YAML
-        'gpy_lbfgs_max_iter': 20,         # not in default_params.json; matches YAML
+        # --- Numerical (from model section) ---
+        'jitter': mod['jitter'],
+        'eigval_tol': mod['eigval_tol'],
+        'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
 
         # --- Data (from data section) ---
-        'n_px_side': dat.get('n_px_side', 108),
-        'use_cache': mod.get('use_cache', True),
+        'n_px_side': dat['n_px_side'],
+        'use_cache': mod['use_cache'],
 
         # --- Utility / acquisition (from utility section) ---
-        'n_mc_samples': utl.get('n_mc_samples', 200),
-        'r_max': utl.get('r_max', 100),
+        'n_mc_samples': utl['n_mc_samples'],
+        'r_max': utl['r_max'],
 
         # --- Runtime flags (not configurable via default_params.json) ---
         'mstep_analytical': False,
@@ -298,10 +298,10 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
     ker = yaml_config['kernel']
     lik = yaml_config['likelihood']
     trn = yaml_config['training']
-    opt = yaml_config.get('optimizer', {})
-    es = yaml_config.get('early_stopping', {})
-    num = yaml_config.get('numerical', {})
-    dat = yaml_config.get('data', {})
+    opt = yaml_config['optimizer']
+    es = yaml_config['early_stopping']
+    num = yaml_config['numerical']
+    dat = yaml_config['data']
 
     return {
         # Run point
@@ -313,18 +313,18 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'n_iterations': exp['n_iterations'],
 
         # Device/dtype
-        'device': 'cuda',
-        'dtype': num.get('dtype', 'float32'),
+        'device': num['device'],
+        'dtype': num['dtype'],
 
         # Kernel
         'sigma_0': ker['sigma_0'],
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'eps_0x': ker.get('eps_0x'),  # None = compute from STA
-        'eps_0y': ker.get('eps_0y'),
-        'gradient_mode': ker.get('gradient_mode', 'autograd'),
-        'use_mask': ker.get('use_mask', True),
+        'eps_0x': ker['eps_0x'],  # null in YAML = None = compute from STA
+        'eps_0y': ker['eps_0y'],
+        'gradient_mode': ker['gradient_mode'],
+        'use_mask': ker['use_mask'],
 
         # Likelihood
         'A_init': lik['A_init'],
@@ -335,24 +335,24 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'n_fstep': trn['n_fstep'],
         'n_mstep': trn['n_mstep'],
         'lr': trn['lr'],
-        'optimizer': trn.get('optimizer', 'lbfgs'),
+        'optimizer': trn['optimizer'],
 
         # Early stopping
-        'early_stop': es.get('enabled', True),
-        'stop_window': es.get('window', 20),
-        'stop_thresh': es.get('threshold', 5e-3),
-        'min_iterations': es.get('min_iterations', 10),
+        'early_stop': es['enabled'],
+        'stop_window': es['window'],
+        'stop_thresh': es['threshold'],
+        'min_iterations': es['min_iterations'],
 
         # Optimizer details
-        'gpy_lbfgs_max_iter': opt.get('gpy_lbfgs_max_iter', 20),
+        'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
 
         # Numerical
-        'jitter': num.get('jitter', 1e-4),
-        'eigval_tol': num.get('eigval_tol', 1e-4),
+        'jitter': num['jitter'],
+        'eigval_tol': num['eigval_tol'],
 
         # Data
-        'n_px_side': dat.get('n_px_side', 108),
-        'use_cache': dat.get('use_cache', True),
+        'n_px_side': dat['n_px_side'],
+        'use_cache': dat['use_cache'],
 
         # Runtime options (not in YAML, defaults for experiment runs)
         'mstep_analytical': False,
@@ -428,27 +428,25 @@ def run_single_config(config):
     n_iterations = config['n_iterations']
     n_px_side = config['n_px_side']
 
-    device = torch.device(config.get('device', 'cuda'))
-    dtype_str = config.get('dtype', 'float32')
-    use_float32 = dtype_str == 'float32'
-    dtype = torch.float32 if use_float32 else torch.float64
+    device = torch.device(config['device'])
+    dtype = torch.float32 if config['dtype'] == 'float32' else torch.float64
 
     print(f"Device: {device}")
     print(f"Mode: {mode}")
     print(f"M={M} inducing points")
-    if config.get('gradient_mode', 'autograd') != 'autograd':
+    if config['gradient_mode'] != 'autograd':
         print(f"Gradient mode: {config['gradient_mode']}")
-    if config.get('unwhitened_variational_dist', False):
+    if config['unwhitened_variational_dist']:
         print("Using UnwhitenedVariationalStrategy")
 
     # Warning for analytical M-step without float32
-    if config.get('mstep_analytical', False) and not use_float32:
+    if config['mstep_analytical'] and dtype != torch.float32:
         import warnings
         warnings.warn(
             "\n" + "="*70 + "\n"
             "WARNING: --mstep-analytical with float64 is extremely slow (~50s vs ~5s).\n"
             "The analytical gradient implementation has not been optimized for float64.\n"
-            "Consider using --float32 for comparable performance to vargp_old.\n"
+            "Consider using --dtype float32 for comparable performance to vargp_old.\n"
             + "="*70,
             UserWarning
         )
@@ -461,7 +459,7 @@ def run_single_config(config):
     data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
     print(f"Loading data from: {data_path}")
     data = load_pnas_data(data_path, dtype=dtype)
-    if use_float32:
+    if dtype == torch.float32:
         print("WARNING: Using float32 - may cause numerical instability")
 
     # Combine train + val, flatten
@@ -516,12 +514,12 @@ def run_single_config(config):
     n_estep = config['n_estep']
     n_fstep = config['n_fstep']
     n_mstep = config['n_mstep']
-    early_stop = config.get('early_stop', True)
-    stop_window = config.get('stop_window', 20)
-    stop_thresh = config.get('stop_thresh', 5e-3)
-    min_iterations = config.get('min_iterations', 10)
-    jitter = config.get('jitter', 1e-4)
-    eigval_tol = config.get('eigval_tol', EIGVAL_TOL)
+    early_stop = config['early_stop']
+    stop_window = config['stop_window']
+    stop_thresh = config['stop_thresh']
+    min_iterations = config['min_iterations']
+    jitter = config['jitter']
+    eigval_tol = config['eigval_tol']
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
 
@@ -650,19 +648,13 @@ def run_single_config(config):
             eps_0y=eps_0y,
             beta=config['beta'],
             rho=config['rho'],
-            use_mask=config.get('use_mask', True),
-            gradient_mode=config.get('gradient_mode', 'autograd')
+            use_mask=config['use_mask'],
+            gradient_mode=config['gradient_mode']
         )
-        if use_float32:
-            kernel = kernel.float().to(device)
-        else:
-            kernel = kernel.double().to(device)
+        kernel = kernel.to(dtype=dtype, device=device)
 
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
-        if use_float32:
-            likelihood = likelihood.float().to(device)
-        else:
-            likelihood = likelihood.double().to(device)
+        likelihood = likelihood.to(dtype=dtype, device=device)
 
         model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, eigval_tol)
 
@@ -672,7 +664,7 @@ def run_single_config(config):
         print(f"  lambda0: {model.likelihood.lambda0.item():.4f}")
         print(f"  Amp: {model.kernel.Amp.item():.6f}")
 
-        mstep_mode = 'analytical' if config.get('mstep_analytical', False) else 'autograd'
+        mstep_mode = 'analytical' if config['mstep_analytical'] else 'autograd'
         print(f"\nTraining with mode='vargp_direct' (eigenspace projection):")
         print(f"  n_iterations={n_iterations}, n_estep={n_estep}, n_fstep={n_fstep}, n_mstep={n_mstep}")
         print(f"  lr_f={lr}, lr_m={lr}, mstep_mode={mstep_mode}")
@@ -690,7 +682,7 @@ def run_single_config(config):
                 lr_f=lr,
                 lr_m=lr,
                 print_every=print_every,
-                use_analytical_mstep=config.get('mstep_analytical', False),
+                use_analytical_mstep=config['mstep_analytical'],
                 early_stop=early_stop,
                 stop_window=stop_window,
                 stop_thresh=stop_thresh,
@@ -754,24 +746,20 @@ def run_single_config(config):
             eps_0y=eps_0y,
             beta=config['beta'],
             rho=config['rho'],
-            use_mask=config.get('use_mask', True),
-            gradient_mode=config.get('gradient_mode', 'autograd')
+            use_mask=config['use_mask'],
+            gradient_mode=config['gradient_mode']
         )
         kernel = base_kernel
         kernel.Amp = config['Amp']
 
         model = VariationalGPModel(
             inducing_points, kernel, jitter=jitter,
-            standard_variational_distribution=not config.get('unwhitened_variational_dist', False)
+            standard_variational_distribution=not config['unwhitened_variational_dist']
         )
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
 
-        if use_float32:
-            model = model.float().to(device)
-            likelihood = likelihood.float().to(device)
-        else:
-            model = model.double().to(device)
-            likelihood = likelihood.double().to(device)
+        model = model.to(dtype=dtype, device=device)
+        likelihood = likelihood.to(dtype=dtype, device=device)
 
         print(f"\nInitial parameters:")
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
@@ -797,7 +785,7 @@ def run_single_config(config):
                 stop_window=stop_window,
                 stop_thresh=stop_thresh,
                 min_iterations=min_iterations,
-                lbfgs_max_iter=config.get('gpy_lbfgs_max_iter', 20),
+                lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
@@ -858,7 +846,7 @@ def run_single_config(config):
     print(f"  Prediction stats: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
 
     # Print kernel call stats if analytical gradients were used
-    gradient_mode = config.get('gradient_mode', 'autograd')
+    gradient_mode = config['gradient_mode']
     if gradient_mode != 'autograd':
         if gradient_mode == 'vjp':
             from analytical_gradients_vjp import ArcCosineVJPGradients as GradImpl
@@ -936,13 +924,13 @@ def main():
     parser.add_argument('--n-fstep', type=int, default=defaults['training']['n_fstep'], help=f'F-steps per iteration (default: {defaults["training"]["n_fstep"]})')
     parser.add_argument('--n-mstep', type=int, default=defaults['training']['n_mstep'], help=f'M-steps per iteration (default: {defaults["training"]["n_mstep"]})')
     parser.add_argument('--lr', type=float, default=defaults['training']['lr'], help=f'Learning rate (default: {defaults["training"]["lr"]})')
-    parser.add_argument('--optimizer', type=str, default=defaults['training'].get('optimizer', 'lbfgs'),
+    parser.add_argument('--optimizer', type=str, default=defaults['training']['optimizer'],
                         choices=['adam', 'lbfgs'],
-                        help=f'Optimizer for default_gpy mode (default: {defaults["training"].get("optimizer", "lbfgs")})')
-    parser.add_argument('--device', type=str, default='cuda', help='Device (default: cuda)')
-    parser.add_argument('--mode', type=str, default='vargp_direct',
+                        help=f'Optimizer for default_gpy mode (default: {defaults["training"]["optimizer"]})')
+    parser.add_argument('--device', type=str, default=defaults['run']['device'], help=f'Device (default: {defaults["run"]["device"]})')
+    parser.add_argument('--mode', type=str, default=defaults['run']['mode'],
                         choices=['vargp_old', 'default_gpy', 'vargp_direct'],
-                        help='Training mode: vargp_old (reference), default_gpy (standard GPyTorch), vargp_direct (eigenspace projection, default)')
+                        help=f'Training mode (default: {defaults["run"]["mode"]})')
 
     # Kernel parameters
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
@@ -959,9 +947,9 @@ def main():
                         help=f'Use pixel masking (default: {defaults["kernel"]["use_mask"]})')
     parser.add_argument('--no-mask', action='store_false', dest='use_mask',
                         help='Disable pixel masking (WARNING: uses full 11664x11664 C matrix)')
-    parser.add_argument('--gradient-mode', type=str, default='autograd',
+    parser.add_argument('--gradient-mode', type=str, default=defaults['kernel']['gradient_mode'],
                         choices=list(GRADIENT_MODES),
-                        help='Gradient computation mode: autograd (default), vjp (fast analytical), jacobian (slow, matches varGP)')
+                        help=f'Gradient computation mode (default: {defaults["kernel"]["gradient_mode"]})')
     parser.add_argument('--mstep-analytical', action='store_true',
                         help='Use analytical gradients for M-step in vargp_direct mode (faster, matches varGP)')
 
@@ -983,23 +971,24 @@ def main():
                         help='Save plot path. "auto" saves to imgs/{mode}_M{ntilde}.png, "none" to disable')
     parser.add_argument('--seed', type=int, default=defaults['data']['seed'],
                         help=f'Random seed for reproducibility (default: {defaults["data"]["seed"]})')
-    parser.add_argument('--float32', action='store_true',
-                        help='Use float32 instead of float64 (WARNING: may cause numerical instability)')
+    parser.add_argument('--dtype', type=str, default=defaults['run']['dtype'],
+                        choices=['float32', 'float64'],
+                        help=f'Data type (default: {defaults["run"]["dtype"]})')
 
     # JSON output for benchmark tracking
     parser.add_argument('--json-append', type=str, default=None,
                         help='Append results as JSON line to specified file (for benchmark tracking)')
 
     # Early stopping options (defaults from default_params.json)
-    es_defaults = defaults.get('early_stopping', {})
+    es_defaults = defaults['early_stopping']
     parser.add_argument('--no-early-stop', action='store_true',
                         help='Disable early stopping (early stopping is ON by default)')
-    parser.add_argument('--stop-window', type=int, default=es_defaults.get('window', 20),
-                        help=f'Number of iterations to look back for improvement (default: {es_defaults.get("window", 20)})')
-    parser.add_argument('--stop-thresh', type=float, default=es_defaults.get('threshold', 5e-3),
-                        help=f'Minimum relative improvement over window to continue (default: {es_defaults.get("threshold", 5e-3)})')
-    parser.add_argument('--min-iterations', type=int, default=es_defaults.get('min_iterations', 10),
-                        help=f'Minimum iterations before early stopping can trigger (default: {es_defaults.get("min_iterations", 10)})')
+    parser.add_argument('--stop-window', type=int, default=es_defaults['window'],
+                        help=f'Number of iterations to look back for improvement (default: {es_defaults["window"]})')
+    parser.add_argument('--stop-thresh', type=float, default=es_defaults['threshold'],
+                        help=f'Minimum relative improvement over window to continue (default: {es_defaults["threshold"]})')
+    parser.add_argument('--min-iterations', type=int, default=es_defaults['min_iterations'],
+                        help=f'Minimum iterations before early stopping can trigger (default: {es_defaults["min_iterations"]})')
 
     args = parser.parse_args()
 
@@ -1007,44 +996,44 @@ def main():
     eps_0x = args.eps_0x if args.eps_0x != defaults['kernel']['eps_0x'] else None
     eps_0y = args.eps_0y if args.eps_0y != defaults['kernel']['eps_0y'] else None
 
-    # Build config dict from CLI args
-    config = {
-        'mode': args.mode,
-        'M': args.ntilde,
-        'n_train': args.n_train,
-        'seed': args.seed,
-        'cell': args.cell,
-        'n_iterations': args.n_iterations,
-        'device': args.device,
-        'dtype': 'float32' if args.float32 else 'float64',
-        'sigma_0': args.sigma_0,
-        'Amp': args.Amp,
-        'beta': args.beta,
-        'rho': args.rho,
-        'eps_0x': eps_0x,
-        'eps_0y': eps_0y,
-        'gradient_mode': args.gradient_mode,
-        'use_mask': args.use_mask,
-        'A_init': args.A_init,
-        'lambda0_init': args.lambda0_init,
-        'n_estep': args.n_estep,
-        'n_fstep': args.n_fstep,
-        'n_mstep': args.n_mstep,
-        'lr': args.lr,
-        'optimizer': args.optimizer,
-        'early_stop': not args.no_early_stop,
-        'stop_window': args.stop_window,
-        'stop_thresh': args.stop_thresh,
-        'min_iterations': args.min_iterations,
-        'jitter': args.jitter,
-        'eigval_tol': EIGVAL_TOL,
-        'n_px_side': 108,
-        'use_cache': args.use_cache,
-        'mstep_analytical': args.mstep_analytical,
-        'unwhitened_variational_dist': args.unwhitened_variational_dist,
-        'save_plot': args.save_plot,
-        'plot': args.plot,
-    }
+    # Build config from default_params.json, then overlay CLI args.
+    # All argparse defaults already come from the same JSON, so only
+    # user-provided CLI flags actually change anything.
+    config = build_config_from_defaults(
+        mode=args.mode,
+        M=args.ntilde,
+        n_train=args.n_train,
+        seed=args.seed,
+        cell=args.cell,
+        n_iterations=args.n_iterations,
+        device=args.device,
+        dtype=args.dtype,
+        sigma_0=args.sigma_0,
+        Amp=args.Amp,
+        beta=args.beta,
+        rho=args.rho,
+        eps_0x=eps_0x,
+        eps_0y=eps_0y,
+        gradient_mode=args.gradient_mode,
+        use_mask=args.use_mask,
+        A_init=args.A_init,
+        lambda0_init=args.lambda0_init,
+        n_estep=args.n_estep,
+        n_fstep=args.n_fstep,
+        n_mstep=args.n_mstep,
+        lr=args.lr,
+        optimizer=args.optimizer,
+        early_stop=not args.no_early_stop,
+        stop_window=args.stop_window,
+        stop_thresh=args.stop_thresh,
+        min_iterations=args.min_iterations,
+        jitter=args.jitter,
+        use_cache=args.use_cache,
+        mstep_analytical=args.mstep_analytical,
+        unwhitened_variational_dist=args.unwhitened_variational_dist,
+        save_plot=args.save_plot,
+        plot=args.plot,
+    )
 
     # Run
     result = run_single_config(config)

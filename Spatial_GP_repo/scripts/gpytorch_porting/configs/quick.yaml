@@ -75,6 +75,7 @@ numerical:
   lambda_var_clamp: 1.0e-6         # HARDCODED in 4 files (eigenspace_model, training, mstep, gradients)
   stability_threshold: 1000        # HARDCODED eigenspace_estep.py:23
   dtype: float32
+  device: cuda
 
 # ===== UTILITY / ACQUISITION =====
 utility:

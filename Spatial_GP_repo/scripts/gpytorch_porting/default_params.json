@@ -1,6 +1,12 @@
 {
   "_comment": "Standard default parameters matching original varGP (utils.py, one_cell_fit.py)",
 
+  "run": {
+    "mode": "default_gpy",
+    "device": "cuda",
+    "dtype": "float32"
+  },
+
   "kernel": {
     "sigma_0": 1.0,
     "Amp": 1.0,
@@ -35,7 +41,9 @@
 
   "model": {
     "use_cache": true,
-    "jitter": 0.0001
+    "jitter": 0.0001,
+    "eigval_tol": 0.0001,
+    "gpy_lbfgs_max_iter": 20
   },
 
   "data": {
