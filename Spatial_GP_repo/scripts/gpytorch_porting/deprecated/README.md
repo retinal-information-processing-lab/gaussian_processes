@@ -55,4 +55,19 @@ However, this is **not recommended** - use eigenspace or default_gpy instead.
 
 ---
 
-*Archived during codebase reorganization: 2025-02-02*
+## Additional Archived Files
+
+These files were orphaned after the codebase reorganization. They reference
+modules (model.py, estep.py, train.py) that no longer exist.
+
+- `whitening.py` - Whitening parameter conversions (not vargp_style-specific copy)
+- `test_m_whitening.py` - Tests for whitening operations
+- `test_kernel_cache.py` - Tests for kernel caching in vargp_style
+- `test_reference_comparison.py` - Comparison tests (broken imports)
+- `diagnose_unwhitened_performance.py` - Diagnostic script for whitened vs unwhitened
+
+*Archived during codebase cleanup: 2025-02-05*
+
+---
+
+*Original archive during codebase reorganization: 2025-02-02*

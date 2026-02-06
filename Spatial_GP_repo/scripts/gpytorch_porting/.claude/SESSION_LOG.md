@@ -5,6 +5,37 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-06: Codebase Cleanup - Orphaned Files Archived
+
+**Accomplished:**
+- Moved 5 orphaned files to `deprecated/`: `whitening.py`, `test_m_whitening.py`, `test_kernel_cache.py`, `test_reference_comparison.py`, `diagnose_unwhitened_performance.py`
+- Fixed CLAUDE.md: `VARGP_DIRECT_REFERENCE.md` → `EIGENSPACE_REFERENCE.md` (3 locations)
+- Removed stale "Superseded" section from CLAUDE.md (run_canonical_tests.py, query_benchmark.py already deleted)
+- Updated test files list and deprecated folder description
+
+**Files Changed:**
+- 5 files moved to `deprecated/`
+- `deprecated/README.md` - added "Additional Archived Files" section
+- `.claude/CLAUDE.md` - fixed stale references
+
+---
+
+## 2026-02-05: YAML Experiment System (COMPLETE)
+
+**Accomplished:**
+- Created `configs/canonical.yaml` and `configs/quick.yaml` — all 35 params with WIRED/HARDCODED annotations
+- Created `create_experiment.py`, `run_experiment.py`, `analyze_experiment.py`
+- Refactored `run_single_mode.py`: extracted `run_single_config(config)` and `flatten_yaml_config()`
+- Fixed bug: `--lr` was silently ignored for vargp_direct (was reading from defaults instead of args)
+- Moved `results/` to `old_results/`
+- Wired `gpy_lbfgs_max_iter` and `early_stopping` params through code
+
+**Validation:** quick run gives test_r=0.849 (baseline match)
+
+**Commit:** 5c31686
+
+---
+
 ## 2026-02-02: Final Cleanup - Legacy Files Removed (COMPLETE)
 
 **Accomplished:**

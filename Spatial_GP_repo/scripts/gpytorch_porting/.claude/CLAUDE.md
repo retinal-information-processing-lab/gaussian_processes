@@ -67,7 +67,9 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 See `.claude/rules/debugging.md` (auto-loads for test files) or use `/debug` skill.
 
-Key issues: torch.pi workaround, jitter consistency, seed sensitivity, whitening modes, RF init, performance degradation, early stopping.
+Key issues: torch.pi workaround, jitter consistency, seed sensitivity, RF init, performance degradation, early stopping.
+
+**Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
 
 ---
 
@@ -155,21 +157,18 @@ Use `--gradient-mode MODE` in CLI:
 | `run_single_mode.py` | Quick dev test (reads `default_params.json`, full CLI control, no experiment tracking). Exports `run_single_config(config: dict) -> dict` (core training function) and `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell) -> dict` (YAML→flat config bridge). |
 | `run_experiment.py` | Structured experiments (reads YAML configs, frozen config, full tracking) |
 
-### Superseded (kept for reference, not deleted)
-| File | Purpose |
+### Archived data
+| Path | Purpose |
 |------|---------|
-| `run_canonical_tests.py` | Old 12-config benchmark matrix (superseded by `run_experiment.py --exp`) |
-| `query_benchmark.py` | Old JSONL query tool (superseded by `analyze_experiment.py`) |
 | `old_results/` | Archived flat JSONL results from development phase (220 records) |
 
 ### Deprecated Code (archived, self-contained)
 | Folder | Purpose |
 |---------|---------|
-| `deprecated/` | Archived vargp_style mode with full implementation (self-contained, unmaintained) |
+| `deprecated/` | Archived vargp_style mode, orphaned whitening/test files (self-contained, unmaintained) |
 
 **Test files** (in `tests/`):
-- `test_kernel_cache.py`, `test_m_whitening.py`, `test_mask_validation.py`
-- `test_reference_comparison.py`, `test_analytical_gradients.py`
+- `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
 - `test_vargp_direct_match.py`, `test_mstep_analytical.py`, `test_direct_vgp_model.py`
 
 ---
@@ -214,7 +213,7 @@ python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --n-iteratio
 | vargp_direct | float32 | 5.6s | 0.84 |
 | vargp_direct | float64 | 18.9s | 0.81 |
 
-See `VARGP_DIRECT_REFERENCE.md` for full implementation details.
+See `EIGENSPACE_REFERENCE.md` for full implementation details.
 
 ---
 
@@ -250,7 +249,7 @@ Spatial_GP_repo/
 | "Why was X designed this way?" | DECISION_LOG.md |
 | Performance numbers | `analyze_experiment.py --exp <name>` (old: `old_results/BENCHMARK_LOG.md`) |
 | How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
-| vargp_direct implementation | VARGP_DIRECT_REFERENCE.md |
+| vargp_direct implementation | EIGENSPACE_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
 | GPyTorch code patterns | PATTERNS_REFERENCE.md |
 | Data format/preprocessing | DATA_REFERENCE.md |
@@ -265,7 +264,7 @@ Spatial_GP_repo/
 |-------------------------|-----------------|
 | Math formulas, E-step derivations | `.claude/rules/math.md` |
 | Design rationale (Q1-Q25) | DECISION_LOG.md |
-| vargp_direct mode | VARGP_DIRECT_REFERENCE.md |
+| vargp_direct mode | EIGENSPACE_REFERENCE.md |
 | Analytical kernel gradients | `.claude/rules/gradients.md` |
 | GPyTorch patterns | PATTERNS_REFERENCE.md |
 | Data loading/preprocessing | DATA_REFERENCE.md |
