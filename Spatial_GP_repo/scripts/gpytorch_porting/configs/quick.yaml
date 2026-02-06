@@ -76,6 +76,11 @@ numerical:
   stability_threshold: 1000        # HARDCODED eigenspace_estep.py:23
   dtype: float32
 
+# ===== UTILITY / ACQUISITION =====
+utility:
+  n_mc_samples: 200             # MC samples from p(x) for distribution-aware utility
+  r_max: 100                    # Max spike count for Laplace approximation truncation
+
 # ===== DATA =====
 data:
   n_px_side: 108

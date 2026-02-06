@@ -159,8 +159,122 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
 
 
 # =========================================================================
-# YAML config utilities
+# Config builders
 # =========================================================================
+
+def build_config_from_defaults(mode, **overrides):
+    """Build a flat config dict by reading default_params.json.
+
+    This is the mandatory way for standalone scripts (investigations,
+    validations) to build a config for run_single_config(). All parameter
+    values come from default_params.json — the same file the CLI uses —
+    so they stay in sync with the project defaults automatically.
+
+    Only 'mode' is required. Everything else (seed, cell, M, n_train, ...)
+    comes from default_params.json unless explicitly overridden via kwargs.
+
+    Args:
+        mode: Training mode ('default_gpy', 'vargp_direct', 'vargp_old').
+        **overrides: Key-value pairs to override. Any key accepted by
+            run_single_config() can be overridden here.
+
+    Returns:
+        Flat config dict suitable for run_single_config().
+
+    Example:
+        # All defaults from default_params.json:
+        config = build_config_from_defaults(mode='default_gpy')
+
+        # Override M for a quick test (everything else from defaults):
+        config = build_config_from_defaults(mode='default_gpy', M=50)
+    """
+    # ------------------------------------------------------------------
+    # Read default_params.json — single source of truth for defaults
+    # ------------------------------------------------------------------
+    defaults_path = Path(__file__).parent / 'default_params.json'
+    with open(defaults_path, 'r') as f:
+        defaults = json.load(f)
+
+    ker = defaults['kernel']
+    lik = defaults['link_function']
+    trn = defaults['training']
+    es = defaults.get('early_stopping', {})
+    mod = defaults.get('model', {})
+    dat = defaults['data']
+    utl = defaults.get('utility', {})
+
+    # ------------------------------------------------------------------
+    # Build flat config — every value traces back to default_params.json
+    # except where noted
+    # ------------------------------------------------------------------
+    config = {
+        # --- Run point (from data section) ---
+        'mode': mode,
+        'M': dat['ntilde'],              # default_params.json -> data.ntilde
+        'n_train': dat['n_train'],        # default_params.json -> data.n_train
+        'seed': dat['seed'],              # default_params.json -> data.seed
+        'cell': dat['cellid'],            # default_params.json -> data.cellid
+        'n_iterations': trn['n_iterations'],
+
+        # --- Device/dtype ---
+        'device': 'cuda',
+        'dtype': 'float32',              # project standard (rule #3)
+
+        # --- Kernel (from kernel section) ---
+        'sigma_0': ker['sigma_0'],
+        'Amp': ker['Amp'],
+        'beta': ker['beta'],
+        'rho': ker['rho'],
+        'eps_0x': None,                   # None = compute from STA
+        'eps_0y': None,                   # (default_params.json has 0.0 as placeholder)
+        'gradient_mode': ker.get('gradient_mode', 'autograd'),
+        'use_mask': ker.get('use_mask', True),
+
+        # --- Likelihood (from link_function section) ---
+        'A_init': lik['A_init'],
+        'lambda0_init': lik['lambda0_init'],
+
+        # --- Training (from training section) ---
+        'n_estep': trn['n_estep'],
+        'n_fstep': trn['n_fstep'],
+        'n_mstep': trn['n_mstep'],
+        'lr': trn['lr'],
+        'optimizer': trn.get('optimizer', 'lbfgs'),
+
+        # --- Early stopping (from early_stopping section) ---
+        'early_stop': es.get('enabled', True),
+        'stop_window': es.get('window', 20),
+        'stop_thresh': es.get('threshold', 5e-3),
+        'min_iterations': es.get('min_iterations', 10),
+
+        # --- Numerical (from model section + hardcoded defaults) ---
+        'jitter': mod.get('jitter', 1e-4),
+        'eigval_tol': 1e-4,              # not in default_params.json; matches YAML
+        'gpy_lbfgs_max_iter': 20,         # not in default_params.json; matches YAML
+
+        # --- Data (from data section) ---
+        'n_px_side': dat.get('n_px_side', 108),
+        'use_cache': mod.get('use_cache', True),
+
+        # --- Utility / acquisition (from utility section) ---
+        'n_mc_samples': utl.get('n_mc_samples', 200),
+        'r_max': utl.get('r_max', 100),
+
+        # --- Runtime flags (not configurable via default_params.json) ---
+        'mstep_analytical': False,
+        'unwhitened_variational_dist': False,
+        'save_plot': 'none',
+        'plot': False,
+    }
+
+    # ------------------------------------------------------------------
+    # Apply caller overrides — these are the ONLY non-default values.
+    # Anything passed here is an intentional, visible deviation.
+    # ------------------------------------------------------------------
+    config.update(overrides)
+
+    return config
+
 
 def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
     """Convert nested YAML config + single matrix point to flat config dict.
@@ -246,6 +360,39 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'save_plot': 'none',
         'plot': False,
     }
+
+
+# =========================================================================
+# Parameter consistency check
+# =========================================================================
+
+def _validate_model_params(model, likelihood, results):
+    """Verify that scalar params in results dict match model/likelihood objects.
+
+    Called before returning from run_single_config to prevent silent divergence
+    between the two sources of truth. Only checks parameters available in
+    default_gpy and vargp_direct modes.
+    """
+    kernel = model.covar_module
+    checks = {
+        'final_A': likelihood.A.item(),
+        'final_lambda0': likelihood.lambda0.item(),
+        'final_sigma_0': kernel.sigma_0.item(),
+        'final_Amp': kernel.Amp.item(),
+        'final_beta': kernel.beta.item(),
+        'final_rho': kernel.rho.item(),
+        'final_eps_0x': kernel.eps_0x.item(),
+        'final_eps_0y': kernel.eps_0y.item(),
+    }
+    for key, model_val in checks.items():
+        dict_val = results[key]
+        if dict_val is None:
+            continue
+        if abs(model_val - dict_val) > 1e-6:
+            raise ValueError(
+                f"Parameter mismatch: results['{key}']={dict_val} "
+                f"but model has {model_val}"
+            )
 
 
 # =========================================================================
@@ -758,7 +905,14 @@ def run_single_config(config):
         # Keep references for plotting (not serialized to JSON)
         '_predictions': predictions,
         '_r_test_mean': r_test_mean,
+        '_model': model,
+        '_likelihood': likelihood,
+        '_indices_train': indices_train,
     }
+
+    # Validate that scalar params in dict match model/likelihood objects
+    if mode in ('default_gpy', 'vargp_direct'):
+        _validate_model_params(model, likelihood, result)
 
     return result
 

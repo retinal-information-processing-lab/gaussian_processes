@@ -44,5 +44,10 @@
     "cellid": 8,
     "ntilde": 100,
     "seed": 42
+  },
+
+  "utility": {
+    "n_mc_samples": 200,
+    "r_max": 100
   }
 }
