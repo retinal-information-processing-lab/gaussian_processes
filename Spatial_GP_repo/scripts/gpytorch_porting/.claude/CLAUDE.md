@@ -43,7 +43,7 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 | default_gpy mode | COMPLETE |
 | Pixel masking | COMPLETE |
 | YAML experiment system | COMPLETE |
-| Utility functions | OUT OF SCOPE |
+| Acquisition functions (default_gpy) | IN PROGRESS — `acquisition.py` |
 
 ---
 
@@ -68,6 +68,8 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 See `.claude/rules/debugging.md` (auto-loads for test files) or use `/debug` skill.
 
 Key issues: torch.pi workaround, jitter consistency, seed sensitivity, RF init, performance degradation, early stopping.
+
+**Import side effects**: Importing from old codebase (1D/2D playgrounds, utility.py) can change global state (e.g., `torch.set_default_dtype`). Always guard with save/restore pattern. See `acquisition.py` for example.
 
 **Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
 
@@ -122,6 +124,7 @@ Use `--gradient-mode MODE` in CLI:
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
+| `acquisition.py` | Acquisition functions: `standard_utility()`, `distribution_aware_utility()`. Imports from 1D/2D playgrounds and old `utility.py`. Currently default_gpy only. |
 
 ### Eigenspace Implementation (vargp_direct mode)
 | File | Purpose |
@@ -170,14 +173,21 @@ Use `--gradient-mode MODE` in CLI:
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
 - `test_vargp_direct_match.py`, `test_mstep_analytical.py`, `test_direct_vgp_model.py`
+- `test_acquisition.py` — validates `acquisition.py` against manual computation and 1D playground
 
 ---
 
 ## Deferred Items (DO NOT IMPLEMENT UNLESS ASKED)
 
-### Utility Functions - OUT OF SCOPE
-`utility.py` functions are NOT part of this porting effort:
-- `nd_utility_new()`, `distribution_aware_utility_gpytorch()`, `conditioned_utility_clean()`
+### Acquisition Functions - IN PROGRESS
+`acquisition.py` implements `standard_utility()` and `distribution_aware_utility()` for `default_gpy` mode.
+Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments_nd` (2D playground), `nd_utility_new` (utility.py).
+
+**Deferred**:
+- vargp_direct support (needs augmented matrix approach — EigenspacePosterior has no covariance_matrix)
+- Gradient-based x* optimization (door is open — no torch.no_grad() wrapper)
+- Removing old codebase dependency (copy Laplace functions locally)
+- Scalability for large candidate pools
 
 
 ### Multi-Cell Validation - DEFERRED
