@@ -188,6 +188,7 @@ Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments
 - Gradient-based x* optimization (door is open — no torch.no_grad() wrapper)
 - Removing old codebase dependency (copy Laplace functions locally)
 - Scalability for large candidate pools
+- Rewrite `nd_utility_new` to take raw GP moments + (A, lambda0) like `compute_H` does, removing the manual transform in `standard_utility`
 
 
 ### Multi-Cell Validation - DEFERRED
@@ -261,6 +262,7 @@ Spatial_GP_repo/
 | How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
 | vargp_direct implementation | EIGENSPACE_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
+| Acquisition functions | `.claude/rules/acquisition.md` (auto-loads, or `/acquisition` skill) |
 | GPyTorch code patterns | PATTERNS_REFERENCE.md |
 | Data format/preprocessing | DATA_REFERENCE.md |
 
@@ -276,6 +278,7 @@ Spatial_GP_repo/
 | Design rationale (Q1-Q25) | DECISION_LOG.md |
 | vargp_direct mode | EIGENSPACE_REFERENCE.md |
 | Analytical kernel gradients | `.claude/rules/gradients.md` |
+| Acquisition functions, utility | `.claude/rules/acquisition.md` |
 | GPyTorch patterns | PATTERNS_REFERENCE.md |
 | Data loading/preprocessing | DATA_REFERENCE.md |
 
