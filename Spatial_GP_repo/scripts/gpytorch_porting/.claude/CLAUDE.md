@@ -25,9 +25,9 @@ It defines:
 |------|-------|
 | **Conda environment** | `pytorch_gpytorch` - ALWAYS use this |
 | **Run canonical experiment** | `python create_experiment.py --name baseline --desc "..."` then `python run_experiment.py --exp baseline` |
-| **Run quick exploratory** | `python run_experiment.py --quick test_lr --mode vargp_direct --M 50 --seed 123` |
+| **Run quick exploratory** | `python run_experiment.py --quick test_lr --mode vargp_direct` |
 | **Analyze results** | `python analyze_experiment.py --exp baseline` or `--list` |
-| **Quick dev test** | `python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --seed 123` |
+| **Quick dev test** | `python run_single_mode.py --mode vargp_direct` |
 | **GPU REQUIRED** | Scripts default to CUDA. CPU is too slow. |
 
 Experiments (`run_experiment.py`) use YAML configs (`configs/canonical.yaml`, `configs/quick.yaml`) — all params tracked.
@@ -53,9 +53,9 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 2. **Parameters MUST match between GPyTorch and varGP** - See Parameter Matching Table below.
 
-3. **Use --float32** - float64 is 10x slower and the reference old code used float32
+3. **Float32 is the default** - float64 is 10x slower and the reference old code used float32. No need to pass `--float32` explicitly.
 
-4. **All jitter values MUST match model.jitter** (default 1e-4) - Mismatch causes whitening failures.
+4. **Jitter architecture** — `model.jitter` (default 1e-4) controls two layers: (a) GPyTorch's `jitter_val` adds it to K_uu before Cholesky, (b) `cholesky_jitter` override in `gpy_training.py` uses the same value as the retry starting point if Cholesky fails. `cholesky_max_tries` (default 3) controls how many retry decades above that. `gpy_model.py:forward()` does NOT add jitter — GPyTorch handles it internally.
 
 5. **Avoid .data parameter** - Use `torch.no_grad() + copy()` instead.
 
@@ -69,7 +69,7 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 See `.claude/rules/debugging.md` (auto-loads for test files) or use `/debug` skill.
 
-Key issues: torch.pi workaround, jitter consistency, seed sensitivity, RF init, performance degradation, early stopping.
+Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rules/jitter.md`), seed sensitivity, RF init, performance degradation, early stopping.
 
 **Import side effects**: Importing from old codebase (1D/2D playgrounds, utility.py) can change global state (e.g., `torch.set_default_dtype`). Always guard with save/restore pattern. See `acquisition.py` for example.
 
@@ -216,7 +216,7 @@ The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Sinc
 
 **Usage**:
 ```bash
-python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --n-iterations 50 --seed 123
+python run_single_mode.py --mode vargp_direct
 ```
 
 **Performance** (M=50, 50 iterations):
@@ -265,6 +265,9 @@ Spatial_GP_repo/
 | vargp_direct implementation | EIGENSPACE_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
 | Acquisition functions | `.claude/rules/acquisition.md` (auto-loads, or `/acquisition` skill) |
+| Jitter & Cholesky stability | `.claude/rules/jitter.md` |
+| Session handoff (implementation) | `/handoff-plan` skill |
+| Session handoff (investigation) | `/handoff-investigation` skill |
 | GPyTorch code patterns | PATTERNS_REFERENCE.md |
 | Data format/preprocessing | DATA_REFERENCE.md |
 
@@ -281,6 +284,8 @@ Spatial_GP_repo/
 | vargp_direct mode | EIGENSPACE_REFERENCE.md |
 | Analytical kernel gradients | `.claude/rules/gradients.md` |
 | Acquisition functions, utility | `.claude/rules/acquisition.md` |
+| Jitter, Cholesky, numerical stability | `.claude/rules/jitter.md` |
+| Handing off to next session | `/handoff-plan` or `/handoff-investigation` skill |
 | GPyTorch patterns | PATTERNS_REFERENCE.md |
 | Data loading/preprocessing | DATA_REFERENCE.md |
 

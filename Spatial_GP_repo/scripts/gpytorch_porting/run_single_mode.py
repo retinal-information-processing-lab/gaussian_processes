@@ -201,6 +201,7 @@ def build_config_from_defaults(**overrides):
     es = defaults['early_stopping']
     mod = defaults['model']
     dat = defaults['data']
+    ind = defaults['inducing']
     utl = defaults['utility']
 
     # ------------------------------------------------------------------
@@ -249,12 +250,18 @@ def build_config_from_defaults(**overrides):
 
         # --- Numerical (from model section) ---
         'jitter': mod['jitter'],
+        'cholesky_max_tries': mod['cholesky_max_tries'],
         'eigval_tol': mod['eigval_tol'],
         'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
 
         # --- Data (from data section) ---
         'n_px_side': dat['n_px_side'],
         'use_cache': mod['use_cache'],
+
+        # --- Inducing point selection (from inducing section) ---
+        'ip_selection': ind['selection_method'],
+        'n_candidates': ind['n_candidates'],
+        'n_samples_sta': ind['n_samples_sta'],
 
         # --- Utility / acquisition (from utility section) ---
         'n_mc_samples': utl['n_mc_samples'],
@@ -348,6 +355,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
 
         # Numerical
         'jitter': num['jitter'],
+        'cholesky_max_tries': num['cholesky_max_tries'],
         'eigval_tol': num['eigval_tol'],
 
         # Data
@@ -415,7 +423,8 @@ def run_single_config(config):
             early_stop, stop_window, stop_thresh, min_iterations,
             jitter, eigval_tol,
             n_px_side, use_cache,
-            mstep_analytical, unwhitened_variational_dist
+            mstep_analytical, unwhitened_variational_dist,
+            ip_selection, n_candidates, n_samples_sta
 
     Returns:
         dict with metrics, timing, and final parameters. None if training failed.
@@ -475,39 +484,122 @@ def run_single_config(config):
     r = R[:, cell]
     r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
 
-    # Select training subset
-    n_train = min(n_train_requested, X.shape[0])
-    indices_train = torch.randperm(X.shape[0], device=device)[:n_train]
-    X_train = X[indices_train]
-    r_train = r[indices_train]
-
-    # Select inducing points
-    ntilde = min(M, n_train)
-    indices_inducing = indices_train[:ntilde]
-    inducing_points = X[indices_inducing].clone()
-
-    print(f"\nData shapes:")
-    print(f"  X_train: {X_train.shape}")
-    print(f"  r_train: {r_train.shape}")
-    print(f"  inducing_points: {inducing_points.shape}")
-    print(f"  X_test: {X_test.shape}")
-
-    # Compute RF center from spike-triggered average (STA)
+    # =========================================================================
+    # Step 1: Compute RF center from STA
+    # =========================================================================
+    # STA is computed BEFORE training set selection because pivoted Cholesky
+    # needs the kernel (which needs the RF center). n_samples_sta controls
+    # how many random images are used — mimics a real experiment with limited
+    # initial data. null = use all available data (idealized).
     from utils import compute_rf_center_from_sta
 
+    ip_selection = config['ip_selection']
+    n_samples_sta = config['n_samples_sta']
+
+    if n_samples_sta is not None:
+        n_sta = min(n_samples_sta, X.shape[0])
+        indices_sta = torch.randperm(X.shape[0], device=device)[:n_sta]
+        X_sta = X[indices_sta]
+        r_sta = r[indices_sta]
+        print(f"\nSTA computed from {n_sta} random images (n_samples_sta={n_samples_sta})")
+    else:
+        X_sta = X
+        r_sta = r
+        print(f"\nSTA computed from all {X.shape[0]} available images")
+
     eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
-        X_train, r_train, n_px_side, zscore=True
+        X_sta, r_sta, n_px_side, zscore=True
     )
 
     # Use STA-computed center if config has None (null in YAML)
     eps_0x = config['eps_0x'] if config['eps_0x'] is not None else eps_0x_sta
     eps_0y = config['eps_0y'] if config['eps_0y'] is not None else eps_0y_sta
 
-    print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+    print(f"RF center: ({eps_0x:.4f}, {eps_0y:.4f})")
     if eps_0x == eps_0x_sta and eps_0y == eps_0y_sta:
         print(f"  (computed from STA)")
     else:
         print(f"  (from config, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+
+    # =========================================================================
+    # Step 2: Select inducing points
+    # =========================================================================
+    jitter = config['jitter']
+    if dtype == torch.float64 and jitter >= 1e-4:
+        import warnings
+        warnings.warn(
+            f"jitter={jitter} is high for float64 (GPyTorch default for float64 is 1e-6). "
+            f"Consider reducing jitter when using --dtype float64."
+        )
+    n_train = min(n_train_requested, X.shape[0])
+
+    if ip_selection == 'pivoted' and mode != 'vargp_old':
+        from utils import select_inducing_points_pivoted
+
+        # Create temporary kernel for pivoted selection (will be re-created
+        # by the training code with the same params)
+        temp_kernel = ArcCosineKernel(
+            n_px_side=n_px_side,
+            sigma_0=config['sigma_0'],
+            Amp=config['Amp'],
+            beta=config['beta'],
+            rho=config['rho'],
+            eps_0x=eps_0x,
+            eps_0y=eps_0y,
+            use_mask=config['use_mask'],
+            jitter=jitter,
+        ).to(device=device, dtype=dtype)
+
+        ntilde = min(M, X.shape[0])
+        n_candidates = config['n_candidates']
+        inducing_points, indices_inducing = select_inducing_points_pivoted(
+            X, temp_kernel, ntilde,
+            n_candidates=n_candidates,
+            seed=seed,
+            jitter=jitter,
+        )
+        del temp_kernel  # Free GPU memory
+
+        print(f"\nInducing points: {ntilde} selected via pivoted Cholesky"
+              f" (n_candidates={'all' if n_candidates is None else n_candidates})")
+    else:
+        # Random selection: shuffle and take first M (original behavior)
+        all_indices = torch.randperm(X.shape[0], device=device)
+        ntilde = min(M, n_train)
+        indices_inducing = all_indices[:ntilde]
+        inducing_points = X[indices_inducing].clone()
+        print(f"\nInducing points: {ntilde} selected randomly")
+
+    # =========================================================================
+    # Step 3: Build training set
+    # =========================================================================
+    # Inducing points are always included in training. If n_train > M,
+    # add extra random points from the remaining pool.
+    inducing_set = set(indices_inducing.cpu().numpy().tolist())
+
+    if n_train > ntilde:
+        # Get indices not already selected as inducing
+        remaining = [i for i in range(X.shape[0]) if i not in inducing_set]
+        remaining_t = torch.tensor(remaining, device=device)
+
+        # Shuffle remaining and take (n_train - ntilde) extras
+        n_extra = n_train - ntilde
+        perm = torch.randperm(remaining_t.shape[0], device=device)[:n_extra]
+        extra_indices = remaining_t[perm]
+
+        indices_train = torch.cat([indices_inducing, extra_indices])
+    else:
+        indices_train = indices_inducing
+        n_train = ntilde  # Can't have fewer training points than inducing
+
+    X_train = X[indices_train]
+    r_train = r[indices_train]
+
+    print(f"\nData shapes:")
+    print(f"  X_train: {X_train.shape}")
+    print(f"  r_train: {r_train.shape}")
+    print(f"  inducing_points: {inducing_points.shape}")
+    print(f"  X_test: {X_test.shape}")
 
     # Training params from config
     lr = config['lr']
@@ -786,6 +878,8 @@ def run_single_config(config):
                 stop_thresh=stop_thresh,
                 min_iterations=min_iterations,
                 lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
+                jitter=jitter,
+                cholesky_max_tries=config['cholesky_max_tries'],
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
@@ -801,14 +895,16 @@ def run_single_config(config):
         print(f"  lambda0: {likelihood.lambda0.item():.4f}")
 
         print("\nEvaluating on test data...")
-        predictions = predict(model, likelihood, X_test, device=device)
+        predictions = predict(model, likelihood, X_test, device=device,
+                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
         f_pred = predictions['f_pred']
 
         r_test_mean = r_test.mean(dim=0)
         test_corr = compute_pearson_correlation(r_test_mean, f_pred)
         explained_var, reliability = compute_explained_variance(r_test, f_pred)
 
-        train_preds = predict(model, likelihood, X_train, device=device)
+        train_preds = predict(model, likelihood, X_train, device=device,
+                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
         train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
 
         pred_mean = f_pred.mean().item()
@@ -960,6 +1056,8 @@ def main():
                         help='Disable kernel caching (for testing fallback path)')
     parser.add_argument('--jitter', type=float, default=defaults['model']['jitter'],
                         help=f'Jitter for numerical stability (default: {defaults["model"]["jitter"]})')
+    parser.add_argument('--cholesky-max-tries', type=int, default=defaults['model']['cholesky_max_tries'],
+                        help=f'Max Cholesky retry attempts (default: {defaults["model"]["cholesky_max_tries"]})')
 
     parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
@@ -989,6 +1087,16 @@ def main():
                         help=f'Minimum relative improvement over window to continue (default: {es_defaults["threshold"]})')
     parser.add_argument('--min-iterations', type=int, default=es_defaults['min_iterations'],
                         help=f'Minimum iterations before early stopping can trigger (default: {es_defaults["min_iterations"]})')
+
+    # Inducing point selection
+    ind_defaults = defaults['inducing']
+    parser.add_argument('--ip-selection', type=str, default=ind_defaults['selection_method'],
+                        choices=['pivoted', 'random'],
+                        help=f'Inducing point selection method (default: {ind_defaults["selection_method"]})')
+    parser.add_argument('--n-candidates', type=int, default=ind_defaults['n_candidates'],
+                        help='Number of candidate points for pivoted selection (default: null = all available)')
+    parser.add_argument('--n-samples-sta', type=int, default=ind_defaults['n_samples_sta'],
+                        help='Number of random images for initial STA estimate (default: null = all available)')
 
     args = parser.parse_args()
 
@@ -1028,11 +1136,15 @@ def main():
         stop_thresh=args.stop_thresh,
         min_iterations=args.min_iterations,
         jitter=args.jitter,
+        cholesky_max_tries=args.cholesky_max_tries,
         use_cache=args.use_cache,
         mstep_analytical=args.mstep_analytical,
         unwhitened_variational_dist=args.unwhitened_variational_dist,
         save_plot=args.save_plot,
         plot=args.plot,
+        ip_selection=args.ip_selection,
+        n_candidates=args.n_candidates,
+        n_samples_sta=args.n_samples_sta,
     )
 
     # Run

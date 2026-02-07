@@ -98,9 +98,9 @@ class VariationalGPModel(ApproximateGP):
         mean = self.mean_module(x)
         covar = self.covar_module(x)
 
-        # Add jitter for numerical stability
-        if self.jitter > 0:
-            covar = covar.add_jitter(self.jitter)
+        # NOTE: No jitter added here. GPyTorch's VariationalStrategy handles
+        # jitter internally via jitter_val (passed in __init__), adding it to
+        # K_uu before Cholesky and to K_XX for predictive covariance.
 
         return gpytorch.distributions.MultivariateNormal(mean, covar)
 

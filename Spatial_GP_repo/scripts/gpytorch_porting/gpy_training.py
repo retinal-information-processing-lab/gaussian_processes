@@ -11,13 +11,17 @@ Key functions:
 Extracted from train.py during codebase reorganization (2025-02).
 """
 
+import warnings
+
 import torch
+from linear_operator import settings as lo_settings
 
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
                        print_every=100, device=None,
                        early_stop=True, stop_window=20, stop_thresh=1e-3, min_iterations=10,
-                       lbfgs_max_iter=20):
+                       lbfgs_max_iter=20,
+                       jitter=1e-4, cholesky_max_tries=3):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -37,6 +41,8 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
         lbfgs_max_iter: Max inner iterations for LBFGS per outer step (default: 20)
+        jitter: Jitter value for Cholesky retry schedule starting point (default: 1e-4)
+        cholesky_max_tries: Number of Cholesky retry attempts (default: 3)
 
     Returns:
         dict: {'losses': list, 'stopped_early': bool, 'final_iteration': int}
@@ -105,7 +111,21 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     stopped_early = False
     final_iteration = 0
 
-    with torch.enable_grad():
+    if train_x.dtype == torch.float64 and jitter >= 1e-4:
+        warnings.warn(
+            f"jitter={jitter} is high for float64 (GPyTorch default is 1e-6). "
+            f"Consider reducing jitter for float64 training."
+        )
+
+    # Cholesky stability: GPyTorch adds jitter_val (our 1e-4) to K_uu before
+    # Cholesky, then promotes to float64. If Cholesky still fails,
+    # psd_safe_cholesky retries with escalating jitter. We override:
+    #   - cholesky_jitter: retry starting jitter = our jitter value (not 1e-8)
+    #   - cholesky_max_tries: number of retries (each adds 10x more jitter)
+    # With jitter=1e-4, max_tries=3: retries at 1e-4, 1e-3, 1e-2.
+    with torch.enable_grad(), \
+         lo_settings.cholesky_jitter(float_value=jitter, double_value=jitter), \
+         lo_settings.cholesky_max_tries(cholesky_max_tries):
         for i in range(n_iterations):
             if optimizer_name == 'lbfgs':
                 optimizer.step(closure)
@@ -147,7 +167,8 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     }
 
 
-def predict(model, likelihood, test_x, device=None):
+def predict(model, likelihood, test_x, device=None,
+            jitter=1e-4, cholesky_max_tries=3):
     """Make predictions on test data.
 
     Args:
@@ -155,6 +176,8 @@ def predict(model, likelihood, test_x, device=None):
         likelihood: Trained PoissonLikelihood
         test_x: Test inputs, shape (n_test, n_features)
         device: Device to use (defaults to test_x.device)
+        jitter: Jitter value for Cholesky retry schedule starting point (default: 1e-4)
+        cholesky_max_tries: Number of Cholesky retry attempts (default: 3)
 
     Returns:
         dict with:
@@ -172,7 +195,9 @@ def predict(model, likelihood, test_x, device=None):
     model.eval()
     likelihood.eval()
 
-    with torch.no_grad():
+    with torch.no_grad(), \
+         lo_settings.cholesky_jitter(float_value=jitter, double_value=jitter), \
+         lo_settings.cholesky_max_tries(cholesky_max_tries):
         # Get posterior q(λ*) at test points
         posterior = model(test_x)
         lambda_mean = posterior.mean

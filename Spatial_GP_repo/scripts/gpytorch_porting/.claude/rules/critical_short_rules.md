@@ -20,10 +20,23 @@
 ## Float32
 - All training and evaluation uses `--float32`. Float64 is 10x slower and the reference code used float32.
 
+## Config API: Use the Right Builder
+- **Standalone scripts** (investigations, one-offs): use `build_config_from_defaults(mode, **overrides)` from `run_single_mode.py`. It reads `default_params.json` and returns a complete config.
+- **Experiment matrix iteration**: use `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell)`. This is for `run_experiment.py`'s `itertools.product()` loop — not for standalone scripts.
+- Do NOT use `flatten_yaml_config` and fill in "reasonable" values for mode/M/seed — that's hardcoding with extra steps.
+
+## Verify Config Keys Before Using Them
+- Before setting a config key (e.g., `config['float32'] = True`), verify what key the consumer function actually reads. The correct key might be `config['dtype']`, not `config['float32']`. Check the source, don't assume.
+
+## Investigation Scripts Are Not Throwaway Code
+Investigation scripts that **fit models or produce metrics** follow the same parameter discipline as production scripts — parameters must trace to config files, use `build_config_from_defaults()`, etc. The dividing line: if the output will be used to make a decision or get documented, parameter discipline applies.
+
+Quick inline checks (printing shapes, inspecting config keys, verifying a value) are fine without config traceability — they're debugging, not results.
+
 ## Numerical Debugging Checklist
 When diagnosing numerical issues, always check these in order:
 1. Kernel initialization (bounds, lengthscale)
 2. Coordinate normalization (pixel vs normalized)
 3. Parameter bounds (A > 0, lambda0 constraints)
-4. Jitter consistency (must match model.jitter everywhere)
+4. Jitter architecture (see `.claude/rules/jitter.md` — model.jitter feeds both jitter_val and cholesky_jitter)
 5. Gradient flow (no accidental detach or no_grad)

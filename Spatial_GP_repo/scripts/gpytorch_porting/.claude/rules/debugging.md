@@ -81,10 +81,10 @@ torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
 ```
 **Workaround**: Replicates side effect from `GP_utils.py` line 49. Root cause unknown.
 
-### 3.2 Jitter Consistency
-**Issue**: All jitter values MUST match `model.jitter` (default 1e-4).
-**Fix**: All `estep.py` functions now default to `model.jitter`.
-**Symptom**: Mismatch causes whitening failures.
+### 3.2 Jitter & Cholesky Stability
+**Architecture**: `model.jitter` (default 1e-4) feeds two GPyTorch layers: (1) `jitter_val` adds it to K_uu before Cholesky, (2) `cholesky_jitter` override sets the retry starting point if Cholesky fails. See `.claude/rules/jitter.md` for the full GPyTorch internals.
+**Symptom**: `NotPSDError: Matrix not positive definite after repeatedly adding jitter up to X`.
+**Fix**: `gpy_training.py` overrides `cholesky_jitter` and `cholesky_max_tries` via context managers. `gpy_model.py:forward()` does NOT add jitter (GPyTorch handles it).
 
 ### 3.3 set_reproducible_seed Device Parameter
 **Issue**: `set_reproducible_seed(seed, device=device)` produces DIFFERENT random sequences than `set_reproducible_seed(seed)`.

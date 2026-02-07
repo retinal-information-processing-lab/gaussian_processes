@@ -70,7 +70,8 @@ early_stopping:
 
 # ===== NUMERICAL =====
 numerical:
-  jitter: 1.0e-4                   # WIRED via run_single_config
+  jitter: 1.0e-4                   # WIRED via run_single_config + gpy_training cholesky_jitter
+  cholesky_max_tries: 3            # WIRED via gpy_training context manager
   eigval_tol: 1.0e-4               # WIRED via DirectVGPModel constructor
   lambda_var_clamp: 1.0e-6         # HARDCODED in 4 files (eigenspace_model, training, mstep, gradients)
   stability_threshold: 1000        # HARDCODED eigenspace_estep.py:23

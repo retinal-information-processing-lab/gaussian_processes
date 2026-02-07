@@ -8,6 +8,7 @@ Functions:
 - compute_rf_center_from_sta: Initialize RF center from spike-triggered average
 - lambda0_given_A: Closed-form optimal lambda0 given A (added 2025-02)
 - compute_f_mean: Expected firing rate computation (added 2025-02)
+- select_inducing_points_pivoted: Pivoted Cholesky inducing point selection (added 2025-02)
 """
 
 import torch
@@ -152,3 +153,78 @@ def compute_f_mean(
         f_mean: Expected firing rate, shape (N,)
     """
     return torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
+
+
+def select_inducing_points_pivoted(X, kernel, n_inducing, n_candidates=None, seed=None, jitter=1e-4):
+    """Select inducing points via pivoted Cholesky decomposition.
+
+    Greedily selects points that maximize kernel diversity, avoiding
+    near-duplicate points that cause ill-conditioned K_uu matrices.
+    Each iteration picks the point adding the most new variance beyond
+    already-selected points (maximizes Schur complement diagonal).
+
+    Ported from spatiotemporal_gpy/utils.py:154-252.
+
+    Args:
+        X: All available data points, shape (n_samples, n_features).
+        kernel: Instantiated GPyTorch kernel (e.g., ArcCosineKernel).
+            Must be on the same device as X.
+        n_inducing: Number of inducing points to select.
+        n_candidates: Number of candidate points to consider (subsampled
+            from X). None = use all samples. Larger = better selection
+            but O(n_candidates^2) memory for the kernel matrix.
+        seed: Random seed for candidate subsampling. The pivoted
+            selection itself is deterministic given the candidates.
+        jitter: Diagonal jitter for numerical stability. Should match
+            model jitter (default 1e-4).
+
+    Returns:
+        inducing_points: (n_inducing, n_features) selected points,
+            ordered by informativeness (first = most informative).
+        indices: (n_inducing,) indices into the original X tensor.
+    """
+    from gpytorch.functions import pivoted_cholesky
+
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    n_samples = X.shape[0]
+    device = X.device
+    dtype = X.dtype
+
+    # Determine number of candidates
+    if n_candidates is None:
+        n_candidates = n_samples
+    n_candidates = min(n_candidates, n_samples)
+
+    if n_inducing > n_candidates:
+        import warnings
+        warnings.warn(
+            f"Requested {n_inducing} inducing points but only {n_candidates} "
+            f"candidates. Increasing n_candidates to {n_inducing}."
+        )
+        n_candidates = n_inducing
+
+    # Subsample candidates
+    if n_candidates < n_samples:
+        candidate_idx = torch.randperm(n_samples, device=device)[:n_candidates]
+    else:
+        candidate_idx = torch.arange(n_samples, device=device)
+
+    X_candidates = X[candidate_idx]
+
+    # Compute kernel matrix on candidates
+    with torch.no_grad():
+        K = kernel(X_candidates).evaluate()
+        K = K + jitter * torch.eye(K.shape[0], device=K.device, dtype=K.dtype)
+
+        # Pivoted Cholesky — returns pivots in order of informativeness
+        _, pivots = pivoted_cholesky(K, rank=n_inducing, return_pivots=True)
+
+    # Map pivots back to original indices
+    selected_candidate_idx = pivots[:n_inducing]
+    original_indices = candidate_idx[selected_candidate_idx.to(candidate_idx.device)]
+
+    inducing_points = X[original_indices].clone()
+
+    return inducing_points, original_indices

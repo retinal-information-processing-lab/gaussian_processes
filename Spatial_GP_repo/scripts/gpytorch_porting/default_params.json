@@ -42,6 +42,7 @@
   "model": {
     "use_cache": true,
     "jitter": 0.0001,
+    "cholesky_max_tries": 3,
     "eigval_tol": 0.0001,
     "gpy_lbfgs_max_iter": 20
   },
@@ -52,6 +53,12 @@
     "cellid": 8,
     "ntilde": 100,
     "seed": 42
+  },
+
+  "inducing": {
+    "selection_method": "pivoted",
+    "n_candidates": null,
+    "n_samples_sta": null
   },
 
   "utility": {
