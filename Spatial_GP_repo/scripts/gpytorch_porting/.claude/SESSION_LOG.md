@@ -5,6 +5,28 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-07: Clean Jitter Fix — Discussion + Implementation
+
+**Branch**: `pietro/investigate-n50-failure`
+
+**Accomplished:**
+- Deep investigation of GPyTorch's three-layer jitter mechanism (Layer 1: forward(), Layer 2: jitter_val, Layer 3: psd_safe_cholesky retry)
+- Identified Layer 1 (our forward() jitter) is redundant with GPyTorch's Layer 2 — removed it from `gpy_model.py`
+- Replaced crude `cholesky_max_tries(7)` hack with clean approach: override `cholesky_jitter` to start retry at our configured jitter value (1e-4), making retries meaningful (1e-4 → 1e-3 → 1e-2 in 3 tries)
+- Made `cholesky_max_tries` configurable via `default_params.json`, CLI, and YAML configs
+- Ran quick experiments confirming fix works: seed=123 M=50 n_train=50 (previously crashed) → default_gpy test_r=0.682, vargp_direct test_r=0.718
+
+**Uncommitted changes:**
+- `configs/canonical.yaml`, `configs/quick.yaml`: inducing section added
+- `run_single_mode.py`: `flatten_yaml_config` wiring for inducing/utility sections, `_validate_model_params` skip for vargp_direct
+- `.claude/CLAUDE.md`: known bug warning for `_validate_model_params`
+
+**Unresolved:**
+- `_validate_model_params()` crashes for vargp_direct (`DirectVGPModel` has no `covar_module`) — documented as known bug, needs separate fix
+- `stash@{0}` on `pietro/workingbranch` still exists (from investigation branch creation)
+
+---
+
 ## 2026-02-06: Codebase Cleanup - Orphaned Files Archived
 
 **Accomplished:**

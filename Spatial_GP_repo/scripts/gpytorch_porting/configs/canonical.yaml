@@ -80,6 +80,12 @@ numerical:
   dtype: float32
   device: cuda
 
+# ===== INDUCING POINT SELECTION =====
+inducing:
+  selection_method: pivoted        # WIRED via run_single_config: pivoted | random
+  n_candidates: null               # WIRED: null = all available images
+  n_samples_sta: null              # WIRED: null = all available images for STA
+
 # ===== UTILITY / ACQUISITION =====
 utility:
   n_mc_samples: 200             # MC samples from p(x) for distribution-aware utility

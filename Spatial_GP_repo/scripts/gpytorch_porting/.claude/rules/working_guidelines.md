@@ -168,7 +168,7 @@ python run_experiment.py --exp baseline
 python analyze_experiment.py --exp baseline
 
 # Exploratory: one step
-python run_experiment.py --quick test_lr --mode vargp_direct --M 50 --seed 123
+python run_experiment.py --quick test_lr --mode vargp_direct
 
 # List all experiments
 python analyze_experiment.py --list
@@ -322,7 +322,7 @@ Full cell fits using inline python scripts are reserved for debugging.
 
 **Correct pattern** (just use python directly):
 ```bash
-python run_single_mode.py --mode vargp_direct --float32 --seed 123
+python run_single_mode.py --mode vargp_direct
 ```
 
 **Patterns that FAIL** (don't use these):
@@ -403,6 +403,8 @@ When user says "wrap up", "done for now", or "session end":
 3. Update CLAUDE.md Quick Start if status changed
 4. If anything came up during session that was not addressed or not solved, remind the user
 5. Add brief entry to SESSION_LOG.md
+
+**If using `/handoff-plan` or `/handoff-investigation`**: The handoff replaces steps 1, 2, and 4 above. Steps 3 and 5 still apply, but the SESSION_LOG entry should point to the handoff file rather than duplicating its content.
 
 ---
 

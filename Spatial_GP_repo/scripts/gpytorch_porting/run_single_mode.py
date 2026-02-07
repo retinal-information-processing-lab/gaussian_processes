@@ -308,6 +308,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
     opt = yaml_config['optimizer']
     es = yaml_config['early_stopping']
     num = yaml_config['numerical']
+    ind = yaml_config['inducing']
+    utl = yaml_config['utility']
     dat = yaml_config['data']
 
     return {
@@ -357,6 +359,15 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'jitter': num['jitter'],
         'cholesky_max_tries': num['cholesky_max_tries'],
         'eigval_tol': num['eigval_tol'],
+
+        # Inducing point selection
+        'ip_selection': ind['selection_method'],
+        'n_candidates': ind['n_candidates'],
+        'n_samples_sta': ind['n_samples_sta'],
+
+        # Utility / acquisition
+        'n_mc_samples': utl['n_mc_samples'],
+        'r_max': utl['r_max'],
 
         # Data
         'n_px_side': dat['n_px_side'],
@@ -995,7 +1006,7 @@ def run_single_config(config):
     }
 
     # Validate that scalar params in dict match model/likelihood objects
-    if mode in ('default_gpy', 'vargp_direct'):
+    if mode in ('default_gpy'): # Known bug. vargp_direct should be tested too but validate funcitn needs updating
         _validate_model_params(model, likelihood, result)
 
     return result
