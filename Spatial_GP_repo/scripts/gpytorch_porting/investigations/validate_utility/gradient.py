@@ -51,32 +51,37 @@ M = 50                     # Number of inducing points
 MIN_TEST_R = 0.3           # Minimum model quality to proceed
 
 
-def check_rf_mask_structure(grad, model, label=""):
+def check_rf_mask_structure(grad, model, label=""):  # investigation needed
     """Check that gradient sparsity matches the kernel's RF mask.
+
+    The ArcCosineKernel stores the mask as kernel._cached_mask (boolean,
+    computed on first forward pass) when use_mask=True.
 
     Args:
         grad: (N_candidates, n_pixels) gradient tensor.
-        model: GP model with kernel that may have an RF mask (alpha).
+        model: GP model with kernel that may have an RF mask.
         label: String label for print output.
     """
     kernel = model.covar_module
-    if hasattr(kernel, 'alpha') and kernel.alpha is not None:
-        mask = kernel.alpha  # (n_pixels,) — 0 outside RF, >0 inside
-        mask_binary = (mask > 0).float()
-        n_masked = int(mask_binary.sum().item())
-        n_pixels = mask_binary.shape[0]
+    if hasattr(kernel, '_cached_mask') and kernel._cached_mask is not None:
+        mask = kernel._cached_mask  # (n_pixels,) boolean
+        n_masked = int(mask.sum().item())
+        n_pixels = mask.shape[0]
 
         # Check: are non-zero gradients confined to masked pixels?
+        mask_float = mask.float()
         grad_nonzero = (grad.abs() > 1e-10).float()  # (N_candidates, n_pixels)
-        outside_rf = grad_nonzero * (1 - mask_binary.unsqueeze(0))
+        outside_rf = grad_nonzero * (1 - mask_float.unsqueeze(0))
         n_outside = int(outside_rf.sum().item())
-        n_inside = int((grad_nonzero * mask_binary.unsqueeze(0)).sum().item())
+        n_inside = int((grad_nonzero * mask_float.unsqueeze(0)).sum().item())
 
         print(f"  [{label}] RF mask: {n_masked}/{n_pixels} pixels active")
         print(f"  [{label}] Non-zero grads inside RF: {n_inside}")
         print(f"  [{label}] Non-zero grads outside RF: {n_outside} (should be 0)")
+    elif hasattr(kernel, 'use_mask') and not kernel.use_mask:
+        print(f"  [{label}] Kernel has use_mask=False — no RF mask applied")
     else:
-        print(f"  [{label}] No RF mask found on kernel (use_mask=False?)")
+        print(f"  [{label}] No cached RF mask found (run model forward first?)")
 
 
 def main():

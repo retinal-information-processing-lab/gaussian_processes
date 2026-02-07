@@ -11,7 +11,7 @@ Functions:
 - select_inducing_points_pivoted: Pivoted Cholesky inducing point selection (added 2025-02)
 - get_gp_marginal_moments: Differentiable GP posterior moments (added 2025-02)
 - get_gp_conditional_moments: Differentiable Gaussian conditioning (added 2025-02)
-- Differentiable Laplace pipeline: compute_entropy_diff, compute_utility_diff (added 2026-02)
+- Differentiable Laplace pipeline: compute_H, nd_utility_new (added 2026-02)
 """
 
 import torch
@@ -423,11 +423,13 @@ def _diff_laplace_log_probs(mu, sigma2, r):
     return torch.exp(log_p), log_p
 
 
-def compute_entropy_diff(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
-    """Compute entropy H(R | mu, sigma2) using differentiable Laplace approximation.
+def compute_H(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
+    """Compute entropy H(R | mu, sigma2) using Laplace approximation.
 
-    Replaces gp_utility_playground.compute_H. Transforms raw GP moments
-    to log-firing rate, then computes entropy via Laplace.
+    Differentiable — supports gradient flow through mu and sigma2.
+    Local copy of gp_utility_playground.compute_H, rewritten to use
+    torch.where instead of indexed assignment (which breaks autograd).
+    Transforms raw GP moments to log-firing rate, then computes entropy.
 
     Args:
         mu: (N,) raw GP posterior means (lambda, NOT log-firing rate).
@@ -450,11 +452,13 @@ def compute_entropy_diff(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
     return H
 
 
-def compute_utility_diff(mu_g, sigma2_g, r_max=100):
-    """Compute standard utility U = H_marg - E[H_noise], differentiable.
+def nd_utility_new(mu_g, sigma2_g, r_max=100):
+    """Compute standard utility U = H_marg - E[H_noise].
 
-    Replaces utility.py:nd_utility_new. Takes pre-transformed log-firing
-    rate moments (g = A*lambda + lambda0).
+    Differentiable — supports gradient flow through mu_g and sigma2_g.
+    Local copy of utility.py:nd_utility_new, rewritten to use torch.where
+    instead of indexed assignment (which breaks autograd).
+    Takes pre-transformed log-firing rate moments (g = A*lambda + lambda0).
 
     Args:
         mu_g: (N,) mean of log-firing rate.

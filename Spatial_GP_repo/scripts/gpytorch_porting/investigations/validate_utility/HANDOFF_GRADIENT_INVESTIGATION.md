@@ -33,7 +33,7 @@ This session was the first milestone: (1) enable gradient flow through both stan
 - **What**: Since we cannot modify playground/utility.py files, created local differentiable versions in `utils.py`:
   - `get_gp_marginal_moments()` — model(x) without `torch.no_grad()` (3 lines)
   - `get_gp_conditional_moments()` — Gaussian conditioning without `torch.no_grad()`, accepts tensor lambda_sample (20 lines)
-  - Full differentiable Laplace pipeline: `_LambertWLogFunction` (copied from utility.py), `_lambertw0_log`, `_diff_argmax_g`, `_diff_laplace_log_probs` (uses `torch.where` instead of indexed assignment), `compute_entropy_diff` (replaces `compute_H`), `compute_utility_diff` (replaces `nd_utility_new`)
+  - Full differentiable Laplace pipeline: `_LambertWLogFunction` (copied from utility.py), `_lambertw0_log`, `_diff_argmax_g`, `_diff_laplace_log_probs` (uses `torch.where` instead of indexed assignment), `compute_H` (replaces playground's `compute_H`), `nd_utility_new` (replaces utility.py's `nd_utility_new`). Same names as originals — docstrings note they are differentiable local copies.
 - **Result**: All 6 existing tests pass (one tolerance adjusted from `atol=0` to `atol=1e-14` due to `torch.log1p` vs `GP_utils.safe_log` float path difference — max observed diff was 4.4e-16). Gradient flow verified end-to-end.
 - **Interpretation**: The Laplace pipeline duplication was larger than originally planned, but it eliminates ALL playground imports from `acquisition.py`, making it fully self-contained.
 - **Verdict**: Complete success. `acquisition.py` now has zero external dependencies.
@@ -64,7 +64,7 @@ This session was the first milestone: (1) enable gradient flow through both stan
 
 5. **CONFIRMED**: The `importlib.util` approach is required to import from local `utils.py` because playground imports cache the repo-root `utils.py` in `sys.modules`. Simple `sys.path` manipulation is insufficient.
 
-6. **HYPOTHESIS**: The ~10% non-zero gradient pixels correspond to the RF mask region. The RF mask check in the script printed "No RF mask found on kernel (use_mask=False?)" — the kernel stores the mask as `alpha` but the check `hasattr(kernel, 'alpha')` might not find it at the right level. The 10% sparsity is consistent with RF masking though.
+6. **CONFIRMED**: The ~10% non-zero gradient pixels correspond exactly to the RF mask region. The kernel stores the mask as `_cached_mask` (boolean, computed on first forward pass). RF has 1156/11664 active pixels. For both standard and DA: all non-zero gradient entries are inside the RF, zero outside.
 
 7. **CONFIRMED**: `acquisition.py` now has zero playground imports. All Laplace/entropy computation is local. The `sys.path` manipulation block, the `gp_utility_playground` import, the `utility_2d_rbf_base` import, and the `utility` import are all gone.
 
@@ -76,7 +76,7 @@ Context running out. Milestone 1 (gradient flow verification) is complete. The n
 
 ## Things Noticed But Not Acted Upon
 
-1. **RF mask check needs fixing**: The `check_rf_mask_structure` function in `gradient.py` looks for `model.covar_module.alpha` but the arc-cosine kernel stores the mask differently. The gradient sparsity (~10%) strongly suggests RF masking works, but the explicit check should be fixed to verify pixel-level agreement.
+1. **RF mask check — FIXED**: The `check_rf_mask_structure` function in `gradient.py` now correctly reads `model.covar_module._cached_mask` (boolean mask, 1156/11664 active). Verified: 0 non-zero gradient entries outside RF for both utilities. Function still marked `# investigation needed` for further robustness testing.
 
 2. **DA utility is ~10-20x smaller than standard utility**: This is consistent with prior session findings (see HANDOFF_SESSION_NOTES.md). The conditioning step reduces the entropy difference. For gradient ascent, this means DA gradients will be weaker — may need different step sizes.
 
@@ -117,13 +117,11 @@ The `imgs/default_gpy_M50.png` and `.claude/rules/working_guidelines.md` changes
 
 1. **Gradient ascent on x***: Start from a natural image, compute dU/dx*, take a step in the gradient direction, repeat. Visualize the trajectory. Both standard and DA gradients are available. Use `sample_lambda=False` initially for reproducibility.
 
-2. **Fix RF mask check**: Update `check_rf_mask_structure` in gradient.py to find the mask at the right kernel attribute (may be `model.covar_module.base_kernel.alpha` or similar). Verify gradient sparsity matches RF mask exactly.
+2. **Visualize gradients as images**: Reshape gradient (11664,) to (108, 108) and display. Should show structure within the RF. Compare standard vs DA gradient images for the same candidate.
 
-3. **Visualize gradients as images**: Reshape gradient (11664,) to (108, 108) and display. Should show structure within the RF. Compare standard vs DA gradient images for the same candidate.
+3. **Explore step size and convergence**: DA gradients are ~10-20x smaller than standard. May need separate step sizes. Consider normalized gradient ascent (step along gradient direction with fixed pixel magnitude).
 
-4. **Explore step size and convergence**: DA gradients are ~10-20x smaller than standard. May need separate step sizes. Consider normalized gradient ascent (step along gradient direction with fixed pixel magnitude).
-
-5. **Stochastic DA gradients**: Enable `sample_lambda=True` with fixed noise seeds. Compare gradient variance across MC realizations.
+4. **Stochastic DA gradients**: Enable `sample_lambda=True` with fixed noise seeds. Compare gradient variance across MC realizations.
 
 **What NOT to try again**:
 

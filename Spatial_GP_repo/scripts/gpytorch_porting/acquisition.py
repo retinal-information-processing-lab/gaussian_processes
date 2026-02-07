@@ -33,8 +33,8 @@ _spec.loader.exec_module(_local_utils)
 
 get_gp_marginal_moments = _local_utils.get_gp_marginal_moments
 get_gp_conditional_moments = _local_utils.get_gp_conditional_moments
-compute_entropy_diff = _local_utils.compute_entropy_diff
-compute_utility_diff = _local_utils.compute_utility_diff
+compute_H = _local_utils.compute_H
+nd_utility_new = _local_utils.nd_utility_new
 
 
 def standard_utility(model, likelihood, x_candidates, r_max=100):
@@ -63,11 +63,11 @@ def standard_utility(model, likelihood, x_candidates, r_max=100):
     A = likelihood.A.squeeze()
     lambda0 = likelihood.lambda0.squeeze()
 
-    # compute_utility_diff expects log-firing rate moments g = A*lambda + lambda0
+    # nd_utility_new expects log-firing rate moments g = A*lambda + lambda0
     mu_g = A * lambda_mean + lambda0
     sigma2_g = A ** 2 * lambda_var
 
-    utility = compute_utility_diff(mu_g, sigma2_g, r_max=r_max)
+    utility = nd_utility_new(mu_g, sigma2_g, r_max=r_max)
 
     return {'utility': utility}
 
@@ -112,7 +112,7 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
 
     # Step 1: Marginal entropy at all candidates
     mu_marg, sigma2_marg = get_gp_marginal_moments(model, x_candidates)
-    H_marg = compute_entropy_diff(mu_marg, sigma2_marg, r_max=r_max, a=A, lambda0=lambda0)
+    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max, a=A, lambda0=lambda0)
 
     # Step 2: Monte Carlo estimate of conditional entropy
     n_mc = x_samples.shape[0]
@@ -138,7 +138,7 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         )
 
         # Conditional entropy
-        H_cond_i = compute_entropy_diff(mu_cond, sigma2_cond, r_max=r_max, a=A, lambda0=lambda0)
+        H_cond_i = compute_H(mu_cond, sigma2_cond, r_max=r_max, a=A, lambda0=lambda0)
         H_cond_sum += H_cond_i
 
         if (i + 1) % 100 == 0:
