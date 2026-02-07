@@ -396,11 +396,12 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 
 ## 9. Session Wrap-up
 
-When user says "wrap up", "done for now", or "session end":
+**Use the `/session-wrap-up` skill.** It supersedes the old manual checklist and includes documentation audit, hanging thread check, and git commit guidance.
 
+If the skill is not available, the minimum checklist is:
 1. Summarize what was accomplished (3-5 bullets)
 2. List uncommitted changes (if any)
-3. Update CLAUDE.md Quick Start if status changed
+3. Update CLAUDE.md if status changed
 4. If anything came up during session that was not addressed or not solved, remind the user
 5. Add brief entry to SESSION_LOG.md
 

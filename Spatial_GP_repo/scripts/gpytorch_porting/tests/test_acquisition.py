@@ -138,8 +138,12 @@ def test_standard_utility():
         posterior = model(x_candidates)
         expected = nd_utility_new(posterior.mean, posterior.variance, r_max=100)
 
-    torch.testing.assert_close(result['utility'], expected, atol=0, rtol=0)
-    print("PASSED: test_standard_utility — exact match with direct nd_utility_new")
+    # Tolerance: acquisition.py now uses a local Laplace implementation
+    # (torch.log1p path) instead of utility.py:nd_utility_new (GP_utils.safe_log
+    # path). Both compute the same math but via different float operations.
+    # Max observed diff: 4.4e-16 (double-precision machine epsilon).
+    torch.testing.assert_close(result['utility'], expected, atol=1e-14, rtol=1e-13)
+    print("PASSED: test_standard_utility — matches direct nd_utility_new within 1e-14")
 
 
 def test_distribution_aware_utility_matches_manual():

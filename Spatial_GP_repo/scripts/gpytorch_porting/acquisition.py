@@ -9,40 +9,32 @@ Implements:
 Currently supports default_gpy mode only (requires model(X).covariance_matrix).
 vargp_direct support deferred (needs augmented matrix approach).
 
-Dependencies (imported, not modified):
-- 1D_playground/gp_utility_playground.py: compute_H, get_marginal_moments
-- 2D_playground/utility_2d_rbf_base.py: get_conditional_moments_nd
-- Spatial_GP_repo/utility.py: nd_utility_new (via 1D playground sys.path)
+Fully gradient-compatible: All functions support gradient flow from x_candidates
+through the kernel into the utility values. The caller controls whether gradients
+are tracked (pass requires_grad=True tensors) or suppressed (wrap in
+torch.no_grad()).
+
+All dependencies are local (utils.py). No playground imports.
 """
 
-import sys
+import importlib.util
 import torch
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Path setup for imports from existing codebase
+# Import from local utils.py via importlib to avoid sys.path/sys.modules
+# shadowing by the repo-root utils.py (which gets cached when other modules
+# import from the old codebase).
 # ---------------------------------------------------------------------------
-_repo_root = Path(__file__).resolve().parent.parent.parent
-# => .../Spatial_GP_repo
-_scripts_dir = _repo_root / "scripts"
+_local_utils_path = Path(__file__).resolve().parent / 'utils.py'
+_spec = importlib.util.spec_from_file_location("gpytorch_porting_utils", str(_local_utils_path))
+_local_utils = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_local_utils)
 
-# Guard against side effects from playground imports:
-# - gp_utility_playground sets torch.set_default_dtype(float64)
-# - gp_utility_playground inserts Spatial_GP_repo root into sys.path[0],
-#   which shadows local utils.py with the repo-root utils.py
-_prev_path = sys.path.copy()
-_prev_dtype = torch.get_default_dtype()
-
-sys.path.append(str(_repo_root))
-sys.path.append(str(_scripts_dir / "1D_playground"))
-sys.path.append(str(_scripts_dir / "2D_playground"))
-
-from gp_utility_playground import compute_H, get_marginal_moments
-from utility_2d_rbf_base import get_conditional_moments_nd
-from utility import nd_utility_new
-
-sys.path = _prev_path
-torch.set_default_dtype(_prev_dtype)
+get_gp_marginal_moments = _local_utils.get_gp_marginal_moments
+get_gp_conditional_moments = _local_utils.get_gp_conditional_moments
+compute_entropy_diff = _local_utils.compute_entropy_diff
+compute_utility_diff = _local_utils.compute_utility_diff
 
 
 def standard_utility(model, likelihood, x_candidates, r_max=100):
@@ -66,16 +58,16 @@ def standard_utility(model, likelihood, x_candidates, r_max=100):
         dict with:
             'utility': (N,) utility values U(x*) = H_marg - H_noise
     """
-    lambda_mean, lambda_var = get_marginal_moments(model, x_candidates)
+    lambda_mean, lambda_var = get_gp_marginal_moments(model, x_candidates)
 
     A = likelihood.A.squeeze()
     lambda0 = likelihood.lambda0.squeeze()
 
-    # nd_utility_new expects log-firing rate moments g = A*lambda + lambda0
+    # compute_utility_diff expects log-firing rate moments g = A*lambda + lambda0
     mu_g = A * lambda_mean + lambda0
     sigma2_g = A ** 2 * lambda_var
 
-    utility = nd_utility_new(mu_g, sigma2_g, r_max=r_max)
+    utility = compute_utility_diff(mu_g, sigma2_g, r_max=r_max)
 
     return {'utility': utility}
 
@@ -93,9 +85,9 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
     Currently requires default_gpy model (needs .covariance_matrix for
     Gaussian conditioning).
 
-    Note: This function does NOT wrap its body in torch.no_grad(). The caller
-    should wrap externally for evaluation. This keeps the door open for
-    gradient-based x* optimization in future sessions.
+    Note: This function is fully differentiable w.r.t. x_candidates. The
+    caller should wrap in torch.no_grad() for evaluation-only use, or pass
+    x_candidates with requires_grad=True for gradient-based optimization.
 
     Args:
         model: Trained GP model in eval mode. Must support
@@ -119,8 +111,8 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
     lambda0 = likelihood.lambda0.squeeze()
 
     # Step 1: Marginal entropy at all candidates
-    mu_marg, sigma2_marg = get_marginal_moments(model, x_candidates)
-    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max, a=A, lambda0=lambda0)
+    mu_marg, sigma2_marg = get_gp_marginal_moments(model, x_candidates)
+    H_marg = compute_entropy_diff(mu_marg, sigma2_marg, r_max=r_max, a=A, lambda0=lambda0)
 
     # Step 2: Monte Carlo estimate of conditional entropy
     n_mc = x_samples.shape[0]
@@ -134,19 +126,19 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         mu_i = post_i.mean[0]
         sigma2_i = post_i.variance[0]
 
-        # Lambda value: sample or use mean
+        # Lambda value: sample or use mean (keep as tensor for gradient flow)
         if sample_lambda:
-            lambda_i = (mu_i + sigma2_i.sqrt() * torch.randn(1, dtype=mu_i.dtype, device=mu_i.device)).item()
+            lambda_i = mu_i + sigma2_i.sqrt() * torch.randn(1, dtype=mu_i.dtype, device=mu_i.device)
         else:
-            lambda_i = mu_i.item()
+            lambda_i = mu_i
 
         # Conditional moments at all candidates given lambda(x_i)
-        mu_cond, sigma2_cond = get_conditional_moments_nd(
+        mu_cond, sigma2_cond = get_gp_conditional_moments(
             model, x_candidates, x_i, lambda_i
         )
 
         # Conditional entropy
-        H_cond_i = compute_H(mu_cond, sigma2_cond, r_max=r_max, a=A, lambda0=lambda0)
+        H_cond_i = compute_entropy_diff(mu_cond, sigma2_cond, r_max=r_max, a=A, lambda0=lambda0)
         H_cond_sum += H_cond_i
 
         if (i + 1) % 100 == 0:

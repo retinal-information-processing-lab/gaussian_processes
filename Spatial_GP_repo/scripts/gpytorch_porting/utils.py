@@ -9,6 +9,9 @@ Functions:
 - lambda0_given_A: Closed-form optimal lambda0 given A (added 2025-02)
 - compute_f_mean: Expected firing rate computation (added 2025-02)
 - select_inducing_points_pivoted: Pivoted Cholesky inducing point selection (added 2025-02)
+- get_gp_marginal_moments: Differentiable GP posterior moments (added 2025-02)
+- get_gp_conditional_moments: Differentiable Gaussian conditioning (added 2025-02)
+- Differentiable Laplace pipeline: compute_entropy_diff, compute_utility_diff (added 2026-02)
 """
 
 import torch
@@ -228,3 +231,254 @@ def select_inducing_points_pivoted(X, kernel, n_inducing, n_candidates=None, see
     inducing_points = X[original_indices].clone()
 
     return inducing_points, original_indices
+
+
+def get_gp_marginal_moments(model, x_star):
+    """Get marginal GP posterior moments at query points.
+
+    Differentiable version — does NOT wrap in torch.no_grad(). Gradient
+    flows from x_star through kernel(x_star, inducing) into mu and sigma2.
+
+    Local replacement for gp_utility_playground.get_marginal_moments(),
+    which wraps in torch.no_grad() and blocks gradient flow.
+
+    Args:
+        model: Trained GP model in eval mode. Must support model(X)
+            returning an object with .mean and .variance.
+        x_star: (N, d) or (N,) query points.
+
+    Returns:
+        mu: (N,) posterior means at x_star.
+        sigma2: (N,) posterior variances at x_star.
+    """
+    model.eval()
+    posterior = model(x_star)
+    return posterior.mean, posterior.variance
+
+
+def get_gp_conditional_moments(model, x_star, x_sample, lambda_sample):
+    """Compute conditional GP moments after observing lambda(x_sample).
+
+    Differentiable version — does NOT wrap in torch.no_grad(). Supports
+    gradient flow from x_star and lambda_sample through the Gaussian
+    conditioning formulas.
+
+    Local replacement for utility_2d_rbf_base.get_conditional_moments_nd(),
+    which wraps in torch.no_grad() and blocks gradient flow.
+
+    Gaussian conditioning on joint [x_sample; x_star]:
+        mu_cond    = mu_star + cross_cov * (lambda_sample - mu_sample) / var_sample
+        sigma2_cond = var_star - cross_cov^2 / var_sample
+
+    Args:
+        model: Trained GP model in eval mode. Must support
+            model(X).covariance_matrix (default_gpy mode).
+        x_star: (K, d) query points.
+        x_sample: (d,) single observation point tensor.
+        lambda_sample: Observed lambda value at x_sample. Must be a
+            tensor (scalar or 0-d), NOT a Python float — this preserves
+            gradient flow through the reparameterization trick.
+
+    Returns:
+        mu_cond: (K,) conditional posterior means.
+        sigma2_cond: (K,) conditional posterior variances (clamped >= 1e-8).
+    """
+    model.eval()
+
+    # Build joint input: [x_sample (1,d); x_star (K,d)]
+    x_sample_2d = x_sample.unsqueeze(0)  # (1, d)
+    all_x = torch.cat([x_sample_2d, x_star])  # (K+1, d)
+
+    # Joint posterior — full covariance needed for conditioning
+    posterior = model(all_x)
+    full_covar = posterior.covariance_matrix  # (K+1, K+1)
+
+    # Extract blocks
+    mu_sample = posterior.mean[0]
+    var_sample = full_covar[0, 0]
+    mu_star = posterior.mean[1:]
+    var_star = full_covar.diagonal()[1:]
+    cross_cov = full_covar[0, 1:]
+
+    # Gaussian conditioning
+    innovation = lambda_sample - mu_sample
+    mu_cond = mu_star + cross_cov * (innovation / var_sample)
+    sigma2_cond = var_star - (cross_cov ** 2) / var_sample
+    sigma2_cond = torch.clamp(sigma2_cond, min=1e-8)
+
+    return mu_cond, sigma2_cond
+
+
+# ============================================================================
+# Differentiable Laplace Approximation Pipeline
+# ============================================================================
+# Local, gradient-compatible versions of the Laplace approximation for
+# Poisson-GP entropy computation. Replaces utility.py:laplace_approximations_new
+# and utility.py:nd_utility_new, which use indexed assignment (torch.empty +
+# __setitem__) that breaks autograd.
+#
+# Also replaces gp_utility_playground.py:compute_H.
+#
+# The Lambert W function is copied from utility.py:LambertWLogFunction for
+# self-containment — it has a proper custom backward (dW/dy = W/(1+W)).
+# ============================================================================
+
+_TINY = 1e-30
+
+
+class _LambertWLogFunction(torch.autograd.Function):
+    """Compute W_0(exp(y)) without computing exp(y).
+
+    Solves w + log(w) = y via Newton iteration.
+    Copied from utility.py:LambertWLogFunction for local self-containment.
+    """
+
+    @staticmethod
+    def forward(ctx, y):
+        safe_log_input = y.clamp(min=1.0)
+        w = torch.where(y >= 2.0, y - torch.log(safe_log_input),
+            torch.where(y >= 0.0, 0.567 + 0.5 * y,
+                        torch.exp(y)))
+        for _ in range(10):
+            w = w.clamp(min=_TINY)
+            log_w = torch.log(w)
+            w = w - w * (w + log_w - y) / (w + 1.0)
+        w = w.clamp(min=_TINY)
+        ctx.save_for_backward(w)
+        return w
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        w, = ctx.saved_tensors
+        # dW/dy = W / (1 + W)  — the e^y terms cancel
+        return grad_output * w / (1.0 + w)
+
+
+def _lambertw0_log(y):
+    """Compute W_0(exp(y)) via custom autograd function."""
+    return _LambertWLogFunction.apply(y)
+
+
+def _diff_argmax_g(r, sigma2, mu):
+    """Mode of the Laplace approximation.
+
+    g_bar = r*sigma2 + mu - W_0(sigma2 * exp(r*sigma2 + mu))
+
+    Differentiable version of utility.py:argmax_g.
+
+    Args:
+        r: (R,) spike count values.
+        sigma2: (N,) variance of log-firing rate.
+        mu: (N,) mean of log-firing rate.
+
+    Returns:
+        g_bar: (N, R) mode values.
+    """
+    rsigma2 = sigma2[:, None] * r[None, :]  # (N, R)
+    y = torch.log(sigma2.clamp(min=_TINY))[:, None] + rsigma2 + mu[:, None]  # (N, R)
+    lambert_W_result = _lambertw0_log(y)
+    return rsigma2 + mu[:, None] - lambert_W_result
+
+
+def _diff_laplace_log_probs(mu, sigma2, r):
+    """Laplace approximation of log p(r|x,D), fully differentiable.
+
+    Replaces utility.py:laplace_approximations_new. The key difference:
+    uses torch.where instead of indexed assignment into a pre-allocated
+    tensor, which preserves the autograd computational graph.
+
+    For samples with sigma2 < 1e-6, falls back to exact Poisson via
+    torch.where (differentiable branching).
+
+    Args:
+        mu: (N,) mean of log-firing rate g = A*lambda + lambda0.
+        sigma2: (N,) variance of log-firing rate.
+        r: (R,) spike count values.
+
+    Returns:
+        p_r: (N, R) probabilities.
+        log_p_r: (N, R) log probabilities.
+    """
+    log_r_fact = torch.lgamma(r + 1)  # (R,)
+
+    # Laplace path (clamp sigma2 for numerical safety)
+    sigma2_safe = sigma2.clamp(min=1e-10)
+    g_bar = _diff_argmax_g(r, sigma2_safe, mu)  # (N, R)
+    exp_g_bar = torch.exp(g_bar)
+    log_p_laplace = (g_bar * r[None, :]
+                     - exp_g_bar
+                     - ((g_bar - mu[:, None]) ** 2) / (2 * sigma2_safe[:, None])
+                     - 0.5 * torch.log1p(sigma2_safe[:, None] * exp_g_bar)
+                     - log_r_fact[None, :])
+
+    # Exact Poisson path (for small sigma2 where Laplace is unstable)
+    log_p_poisson = (mu[:, None] * r[None, :]
+                     - torch.exp(mu[:, None])
+                     - log_r_fact[None, :])
+
+    # Select via torch.where (differentiable branching)
+    small_var = (sigma2 < 1e-6).unsqueeze(1)  # (N, 1)
+    log_p = torch.where(small_var, log_p_poisson, log_p_laplace)
+
+    return torch.exp(log_p), log_p
+
+
+def compute_entropy_diff(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
+    """Compute entropy H(R | mu, sigma2) using differentiable Laplace approximation.
+
+    Replaces gp_utility_playground.compute_H. Transforms raw GP moments
+    to log-firing rate, then computes entropy via Laplace.
+
+    Args:
+        mu: (N,) raw GP posterior means (lambda, NOT log-firing rate).
+        sigma2: (N,) raw GP posterior variances.
+        r_max: Max spike count for truncation.
+        a: Firing rate scaling (g = a*lambda + lambda0).
+        lambda0: Firing rate offset.
+
+    Returns:
+        H: (N,) entropy values.
+    """
+    if torch.any(sigma2 < 0):
+        raise ValueError(f"sigma2 must be non-negative. Min: {sigma2.min().item()}")
+
+    r = torch.arange(0, r_max, dtype=mu.dtype, device=mu.device)
+    logf_mean = a * mu + lambda0
+    logf_var = a ** 2 * sigma2
+    p_r, log_p_r = _diff_laplace_log_probs(logf_mean, logf_var, r)
+    H = -torch.sum(p_r * log_p_r, dim=1)
+    return H
+
+
+def compute_utility_diff(mu_g, sigma2_g, r_max=100):
+    """Compute standard utility U = H_marg - E[H_noise], differentiable.
+
+    Replaces utility.py:nd_utility_new. Takes pre-transformed log-firing
+    rate moments (g = A*lambda + lambda0).
+
+    Args:
+        mu_g: (N,) mean of log-firing rate.
+        sigma2_g: (N,) variance of log-firing rate.
+        r_max: Max spike count.
+
+    Returns:
+        utility: (N,) utility values.
+    """
+    if sigma2_g.ndim == 0:
+        sigma2_g = sigma2_g[None]
+        mu_g = mu_g[None]
+
+    r = torch.arange(0, r_max + 1, dtype=mu_g.dtype, device=mu_g.device)
+
+    # Laplace approximation
+    p_r, log_p_r = _diff_laplace_log_probs(mu_g, sigma2_g, r)
+
+    # Marginal entropy H(R|x,D)
+    H_marg = -torch.sum(p_r * log_p_r, dim=1)
+
+    # Conditional entropy E[H(R|f,x)] (Eq. 33 PNAS)
+    log_r_fact = torch.lgamma(r + 1)
+    p_times_logr_sum = torch.sum(p_r * log_r_fact[None, :], dim=1)
+    E_H_noise = -torch.exp(mu_g + 0.5 * sigma2_g) * (mu_g + sigma2_g - 1) + p_times_logr_sum
+
+    return H_marg - E_H_noise

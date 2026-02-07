@@ -5,6 +5,16 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-07: Gradient Flow Through Utility Functions
+
+**Branch**: `pietro/acquisition-functions`
+**Handoff**: `investigations/validate_utility/HANDOFF_GRADIENT_INVESTIGATION.md`
+**Status**: Continuing
+
+Enabled end-to-end gradient flow through both `standard_utility` and `distribution_aware_utility`. Rewrote `acquisition.py` to eliminate all playground imports, replacing them with a local differentiable Laplace pipeline in `utils.py`. Created `gradient.py` investigation script that verified non-zero, structured gradients (confined to RF region). Model with n_train=50, M=50 gives test_r=0.7283. Next: gradient ascent on x*.
+
+---
+
 ## 2026-02-07: Clean Jitter Fix — Discussion + Implementation
 
 **Branch**: `pietro/investigate-n50-failure`
