@@ -22,15 +22,22 @@ import numpy as np
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Path setup (same as acquisition.py)
+# Path setup — save/restore sys.path around playground imports.
+# (gp_utility_playground inserts repo root at sys.path[0], shadowing local utils.py)
+# NOTE: We do NOT restore dtype here. The playground sets float64, and this test
+# trains a playground model that needs float64. Restoring to float32 would cause
+# dtype mismatches. The dtype restore is only needed in acquisition.py (production).
 # ---------------------------------------------------------------------------
 _repo_root = Path(__file__).resolve().parent.parent.parent.parent
 _scripts_dir = _repo_root / "scripts"
+_gpytorch_dir = Path(__file__).resolve().parent.parent
 
-sys.path.insert(0, str(_repo_root))
-sys.path.insert(0, str(_scripts_dir / "1D_playground"))
-sys.path.insert(0, str(_scripts_dir / "2D_playground"))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_prev_path = sys.path.copy()
+
+sys.path.append(str(_repo_root))
+sys.path.append(str(_scripts_dir / "1D_playground"))
+sys.path.append(str(_scripts_dir / "2D_playground"))
+sys.path.append(str(_gpytorch_dir))
 
 from gp_utility_playground import (
     VariationalGP, PoissonLikelihood as PlaygroundPoissonLikelihood,
@@ -40,6 +47,8 @@ from gp_utility_playground import (
 from utility_2d_rbf_base import get_conditional_moments_nd
 from utility import nd_utility_new
 from acquisition import standard_utility, distribution_aware_utility
+
+sys.path = _prev_path
 
 
 # ---------------------------------------------------------------------------

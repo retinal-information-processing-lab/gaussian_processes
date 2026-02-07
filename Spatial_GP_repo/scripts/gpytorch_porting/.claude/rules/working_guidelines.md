@@ -18,11 +18,14 @@
 - **YES** straightforward code that does one thing well
 - If unsure, choose the simpler approach
 
-### 1.3 First Version Mindset
+### 1.3 First Version Mindset & Don't Change Scope
 - We are building a FIRST VERSION implementation
 - Additional features can be added later if needed
 - Don't optimize prematurely
 - Don't add features that weren't requested
+- **Only modify what was explicitly requested** — do not rewrite, refactor, or "improve" surrounding code beyond the stated task
+- If changes beyond the request seem necessary, **ASK first**
+- When asked to move files, **MOVE them** (git mv or mv) — do not rewrite from scratch
 
 ### 1.4 Precision Over Speed
 - Take time to understand fully before implementing
@@ -53,7 +56,16 @@
 - Reference existing code when relevant
 - Keep explanations concise
 
-### 2.4 Keep user in the loop with summaries
+### 2.4 Honest Reporting
+- Do not claim results "match" when discrepancies exist — report the actual numbers and flag the difference
+- Do not present overconfident conclusions; flag caveats and remaining unknowns honestly
+- If a fix is partial or a result is ambiguous, say so explicitly
+
+### 2.5 Explain vs Implement
+- When asked to **explain** something, explain — do not run tests or write code unless asked
+- If a task is exploratory or ambiguous, confirm the user's intent before writing code
+
+### 2.6 Keep user in the loop with summaries
 - When running investigations, provide short summaries when things come up
 - Surprising results ( good and bad ) should be comminucated shortly
 - Make sure you communicate code changes you are doing so they do not pass unnoticed. Especially when edits are accepted automatically.
@@ -96,7 +108,19 @@
 - Print elapsed time in results summary
 - Enables performance comparisons across configurations
 
-### 3.7 Flag debug code
+### 3.7 No Hidden Hardcoded Parameters
+
+All parameters used by a script must be traceable to a config source. Never scatter magic numbers as literals — read from the project's config files and override explicitly when needed. If someone changes a default in the config, every script should pick it up automatically.
+
+### 3.7b Parameter Discipline (Claude's Own Behavior)
+
+When writing or modifying code, NEVER invent parameter values. This includes:
+- **No fallback defaults**: `.get('key', some_value)` is a hardcoded parameter in disguise. If a key is missing from config, that's a config error — let it crash with KeyError, don't silently fall back.
+- **No guessing hyperparameters**: If the code needs a trained value (kernel lengthscale, variational parameters, learning rate, etc.), extract it from the codebase, checkpoint, or config file. If you can't find it, ASK the user.
+- **No "reasonable defaults"**: Even if a value seems standard (e.g., lr=0.01, seed=42), do not use it unless you can point to where it comes from in the project.
+- **Explicit overrides only**: If a value must differ from the config default, it must be clearly labeled with a comment explaining why and where the original value lives.
+
+### 3.8 Flag debug code
 - **Precede a code with "DEBUG" if you are writing it while debugging**
 - Temporary / printing code should be easy to recognize
 - Remove it when done
@@ -174,6 +198,14 @@ Default matrix in `configs/canonical.yaml`:
 - When comparing implementations
 
 **Exploratory runs** (`--quick`) go to `experiments/exploratory/` and don't clutter canonical results.
+
+### 3.12b Config Immutability
+
+YAML config defaults (`configs/canonical.yaml`, `configs/quick.yaml`) are **immutable** — do not change their values unless the user explicitly requests it. These files define the project's reproducibility baseline.
+
+After milestone codebase changes, Claude should remind the user to run a canonical experiment to benchmark the change — but this means running the existing configs as-is, not modifying them.
+
+For quick one-off tests with different parameters, use `run_single_mode.py` which loads defaults from `default_params.json` and accepts CLI overrides. That is the lightweight alternative — not editing YAML configs.
 
 ### 3.13 Bug Investigation Cleanup
 

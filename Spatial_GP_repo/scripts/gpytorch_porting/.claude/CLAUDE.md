@@ -61,6 +61,8 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 6. **Conda environment hook** - If a Bash command fails with `CONDA_ENV_WRONG`, immediately run `conda activate pytorch_gpytorch` and retry the command.
 
+7. **No hidden hardcoded parameters** - Scripts (including investigations) must read defaults from `default_params.json`, not hardcode literals like `seed=123, M=50`. Use `build_config_from_defaults()` helper in `run_single_mode.py`. Explicit overrides are fine but must be visible and justified.
+
 ---
 
 ## Known Issues & Debugging
@@ -157,7 +159,7 @@ Use `--gradient-mode MODE` in CLI:
 ### Entry Points
 | File | Purpose |
 |------|---------|
-| `run_single_mode.py` | Quick dev test (reads `default_params.json`, full CLI control, no experiment tracking). Exports `run_single_config(config: dict) -> dict` (core training function) and `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell) -> dict` (YAML→flat config bridge). |
+| `run_single_mode.py` | Quick dev test (reads `default_params.json`, full CLI control, no experiment tracking). Exports `run_single_config(config: dict) -> dict` (core training function), `build_config_from_defaults(mode, **overrides) -> dict` (MANDATORY for standalone scripts — reads `default_params.json`), and `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell) -> dict` (YAML experiment system bridge). |
 | `run_experiment.py` | Structured experiments (reads YAML configs, frozen config, full tracking) |
 
 ### Archived data

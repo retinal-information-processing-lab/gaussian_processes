@@ -26,16 +26,22 @@ _repo_root = Path(__file__).resolve().parent.parent.parent
 # => .../Spatial_GP_repo
 _scripts_dir = _repo_root / "scripts"
 
-# Order matters: repo root first (for utility.py), then playgrounds
-sys.path.insert(0, str(_repo_root))
-sys.path.insert(0, str(_scripts_dir / "1D_playground"))
-sys.path.insert(0, str(_scripts_dir / "2D_playground"))
-
-# Guard against side effects: gp_utility_playground sets torch.set_default_dtype(float64)
+# Guard against side effects from playground imports:
+# - gp_utility_playground sets torch.set_default_dtype(float64)
+# - gp_utility_playground inserts Spatial_GP_repo root into sys.path[0],
+#   which shadows local utils.py with the repo-root utils.py
+_prev_path = sys.path.copy()
 _prev_dtype = torch.get_default_dtype()
+
+sys.path.append(str(_repo_root))
+sys.path.append(str(_scripts_dir / "1D_playground"))
+sys.path.append(str(_scripts_dir / "2D_playground"))
+
 from gp_utility_playground import compute_H, get_marginal_moments
 from utility_2d_rbf_base import get_conditional_moments_nd
 from utility import nd_utility_new
+
+sys.path = _prev_path
 torch.set_default_dtype(_prev_dtype)
 
 
