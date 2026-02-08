@@ -38,7 +38,7 @@ nd_utility_new = _local_utils.nd_utility_new
 compute_adaptive_rmax = _local_utils.compute_adaptive_rmax
 
 
-def standard_utility(model, likelihood, x_candidates, r_max=100,
+def standard_utility(model, likelihood, x_candidates, r_max=None,
                      adaptive_r_max=False):
     """Compute standard (non-distribution-aware) utility at candidate points.
 
@@ -55,7 +55,7 @@ def standard_utility(model, likelihood, x_candidates, r_max=100,
         likelihood: PoissonLikelihood with .A and .lambda0 attributes.
         x_candidates: (N,) or (N, d) query points to evaluate utility at.
         r_max: Max spike count for Laplace approximation truncation.
-            Ignored when adaptive_r_max=True.
+            Required unless adaptive_r_max=True.
         adaptive_r_max: If True, compute r_max adaptively from GP moments
             to prevent entropy collapse at high mu_g (non-stationary kernels).
 
@@ -63,6 +63,11 @@ def standard_utility(model, likelihood, x_candidates, r_max=100,
         dict with:
             'utility': (N,) utility values U(x*) = H_marg - H_noise
     """
+    if r_max is None and not adaptive_r_max:
+        raise ValueError("Must specify either r_max=<int> or adaptive_r_max=True")
+    if r_max is not None and adaptive_r_max:
+        raise ValueError("Cannot specify both r_max and adaptive_r_max=True")
+
     lambda_mean, lambda_var = get_gp_marginal_moments(model, x_candidates)
 
     A = likelihood.A.squeeze()
@@ -81,7 +86,7 @@ def standard_utility(model, likelihood, x_candidates, r_max=100,
 
 
 def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
-                               r_max=100, sample_lambda=True,
+                               r_max=None, sample_lambda=True,
                                adaptive_r_max=False):
     """Compute distribution-aware utility at candidate points.
 
@@ -106,7 +111,7 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         x_samples: (N_mc,) or (N_mc, d) pre-drawn samples from p(x).
             Caller decides how to sample (image pool subset, Gaussian, etc.).
         r_max: Max spike count for Laplace approximation truncation.
-            Ignored when adaptive_r_max=True.
+            Required unless adaptive_r_max=True.
         sample_lambda: If True (default), sample lambda_i ~ N(mu_i, sigma2_i)
             at each x_i. If False, use posterior mean mu_i (deterministic,
             useful for sanity checks).
@@ -120,6 +125,11 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
             'H_marg': (N_candidates,) marginal entropy at each candidate
             'H_cond': (N_candidates,) average conditional entropy
     """
+    if r_max is None and not adaptive_r_max:
+        raise ValueError("Must specify either r_max=<int> or adaptive_r_max=True")
+    if r_max is not None and adaptive_r_max:
+        raise ValueError("Cannot specify both r_max and adaptive_r_max=True")
+
     A = likelihood.A.squeeze()
     lambda0 = likelihood.lambda0.squeeze()
 

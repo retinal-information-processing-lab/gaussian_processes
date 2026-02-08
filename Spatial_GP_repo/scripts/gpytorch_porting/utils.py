@@ -468,7 +468,7 @@ def compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=10000, min_rmax
     return result
 
 
-def compute_H(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
+def compute_H(mu, sigma2, r_max, a, lambda0):
     """Compute entropy H(R | mu, sigma2) using Laplace approximation.
 
     Differentiable — supports gradient flow through mu and sigma2.
@@ -621,7 +621,7 @@ def compute_H_MC(mu, sigma2, n_samples=1000, a=1.0, lambda0=0.0, max_rate=1e10,
         return H
 
 
-def nd_utility_new(mu_g, sigma2_g, r_max=100):
+def nd_utility_new(mu_g, sigma2_g, r_max):
     """Compute standard utility U = H_marg - E[H_noise].
 
     Differentiable — supports gradient flow through mu_g and sigma2_g.
