@@ -70,6 +70,7 @@ distribution_aware_utility = _gpy_acquisition.distribution_aware_utility
 get_gp_marginal_moments = _gpy_utils.get_gp_marginal_moments
 get_gp_conditional_moments = _gpy_utils.get_gp_conditional_moments
 compute_H = _gpy_utils.compute_H
+compute_adaptive_rmax = _gpy_utils.compute_adaptive_rmax
 
 
 # -----------------------------------------------------------------------------
@@ -224,11 +225,13 @@ def create_2d_grid(n_x, n_y, x_range=(-2, 2), y_range=(-2, 2)):
 # -----------------------------------------------------------------------------
 def compute_mc_diagnostics_2d(
     model,
+    likelihood,
     candidates,
     n_mc_samples,
     p_x_mean,
     p_x_std,
-    r_max=100,
+    r_max=None,
+    adaptive_r_max=False,
 ):
     """Compute MC statistics for conditioning analysis in 2D.
 
@@ -237,21 +240,40 @@ def compute_mc_diagnostics_2d(
 
     Args:
         model: Trained 2D GP model
+        likelihood: PoissonLikelihood with .A and .lambda0 attributes.
         candidates: (K, 2) query points
         n_mc_samples: Number of MC samples from p(x)
         p_x_mean: (2,) mean of 2D Gaussian p(x)
         p_x_std: (2,) std of 2D Gaussian p(x)
-        r_max: Max spike count for entropy computation
+        r_max: Max spike count for entropy computation.
+            Required unless adaptive_r_max=True.
+        adaptive_r_max: If True, compute r_max adaptively from GP moments.
 
     Returns:
         H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg
     """
+    if r_max is None and not adaptive_r_max:
+        raise ValueError("Must specify either r_max=<int> or adaptive_r_max=True")
+    if r_max is not None and adaptive_r_max:
+        raise ValueError("Cannot specify both r_max and adaptive_r_max=True")
+
     model.eval()
     device = candidates.device
     dtype = candidates.dtype
 
+    A = likelihood.A.squeeze()
+    lambda0 = likelihood.lambda0.squeeze()
+
     mu_marg, sigma2_marg = get_gp_marginal_moments(model, candidates)
-    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max)
+
+    if adaptive_r_max:
+        mu_g_marg = A * mu_marg + lambda0
+        sigma2_g_marg = A ** 2 * sigma2_marg
+        r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg)
+    else:
+        r_max_marg = r_max
+
+    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max_marg, a=A, lambda0=lambda0)
 
     H_cond_sum = torch.zeros_like(H_marg)
     mu_cond_sum = torch.zeros_like(mu_marg)
@@ -271,7 +293,14 @@ def compute_mc_diagnostics_2d(
                 model, candidates, x_i, lambda_i
             )
 
-            H_cond_i = compute_H(mu_cond_i, sigma2_cond_i, r_max=r_max)
+            if adaptive_r_max:
+                mu_g_cond = A * mu_cond_i + lambda0
+                sigma2_g_cond = A ** 2 * sigma2_cond_i
+                r_max_cond = compute_adaptive_rmax(mu_g_cond, sigma2_g_cond)
+            else:
+                r_max_cond = r_max
+
+            H_cond_i = compute_H(mu_cond_i, sigma2_cond_i, r_max=r_max_cond, a=A, lambda0=lambda0)
             H_cond_sum += H_cond_i
             mu_cond_sum += mu_cond_i
             sigma2_cond_sum += sigma2_cond_i
