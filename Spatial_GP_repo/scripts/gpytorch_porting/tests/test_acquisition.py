@@ -10,12 +10,12 @@ Validates:
 
 Uses a fresh 1D GP (from the 1D playground) trained on synthetic Poisson
 data as the test model. This is intentional: the imported functions
-(compute_H, get_conditional_moments_nd) were developed and tested with
-playground-style GPyTorch models.
+were developed and tested with playground-style GPyTorch models.
 
 Run: python -m pytest tests/test_acquisition.py -v
 """
 
+import importlib.util
 import sys
 import torch
 import numpy as np
@@ -36,19 +36,30 @@ _prev_path = sys.path.copy()
 
 sys.path.append(str(_repo_root))
 sys.path.append(str(_scripts_dir / "1D_playground"))
-sys.path.append(str(_scripts_dir / "2D_playground"))
 sys.path.append(str(_gpytorch_dir))
 
 from gp_utility_playground import (
     VariationalGP, PoissonLikelihood as PlaygroundPoissonLikelihood,
     generate_poisson_data, train_gp, lambda_true,
-    compute_H, get_marginal_moments, DEVICE, DTYPE, MAX_R,
+    DEVICE, DTYPE,
 )
-from utility_2d_rbf_base import get_conditional_moments_nd
-from utility import nd_utility_new
 from acquisition import standard_utility, distribution_aware_utility
 
 sys.path = _prev_path
+
+# ---------------------------------------------------------------------------
+# Import gpytorch_porting's local utils via importlib (same pattern as
+# acquisition.py) to avoid sys.modules collision with repo-root utils.py.
+# ---------------------------------------------------------------------------
+_local_utils_path = _gpytorch_dir / 'utils.py'
+_spec = importlib.util.spec_from_file_location("gpytorch_porting_utils_test", str(_local_utils_path))
+_local_utils = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_local_utils)
+
+get_gp_marginal_moments = _local_utils.get_gp_marginal_moments
+get_gp_conditional_moments = _local_utils.get_gp_conditional_moments
+compute_H = _local_utils.compute_H
+nd_utility_new = _local_utils.nd_utility_new
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +161,8 @@ def test_distribution_aware_utility_matches_manual():
     """distribution_aware_utility matches a manual loop using the same functions.
 
     This is the most important test. We manually replicate the MC loop
-    using the same imported building blocks (compute_H, get_conditional_moments_nd)
+    using the same building blocks from gpytorch_porting/utils.py
+    (compute_H, get_gp_marginal_moments, get_gp_conditional_moments)
     and verify exact match.
 
     Uses sample_lambda=False for determinism.
@@ -172,10 +184,10 @@ def test_distribution_aware_utility_matches_manual():
             r_max=75, sample_lambda=False,
         )
 
-    # --- Manual computation ---
+    # --- Manual computation (using same functions as acquisition.py) ---
     with torch.no_grad():
         # H_marg
-        mu_marg, sigma2_marg = get_marginal_moments(model, x_candidates)
+        mu_marg, sigma2_marg = get_gp_marginal_moments(model, x_candidates)
         H_marg_manual = compute_H(mu_marg, sigma2_marg, r_max=75, a=A, lambda0=lambda0)
 
         # MC loop
@@ -184,9 +196,9 @@ def test_distribution_aware_utility_matches_manual():
             x_i = x_samples[i]
             post_i = model(x_i.unsqueeze(0))
             mu_i = post_i.mean[0]
-            lambda_i = mu_i.item()  # sample_lambda=False -> use mean
+            lambda_i = mu_i  # sample_lambda=False -> use mean (keep as tensor)
 
-            mu_cond, sigma2_cond = get_conditional_moments_nd(
+            mu_cond, sigma2_cond = get_gp_conditional_moments(
                 model, x_candidates, x_i, lambda_i
             )
             H_cond_i = compute_H(mu_cond, sigma2_cond, r_max=75, a=A, lambda0=lambda0)

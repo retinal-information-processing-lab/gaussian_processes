@@ -28,43 +28,27 @@ import warnings
 sys.path.insert(0, str(Path(__file__).parent.parent))  # 2D_playground
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "1D_playground"))  # 1D_playground
 
-# Import from 1D playground (core components)
-from gp_utility_playground import (
-    VariationalGP,
-    evaluate_nd_utility_new,
-    DEVICE,
-    DTYPE,
-)
-
-# Import from 2D playground (2D-specific components + checkpoint loader)
 from utility_2d_rbf_base import (
     # Checkpoint loader
     load_rbf_2d_checkpoint,
     # 2D-specific functions
     lambda_true_2d,
     create_2d_grid,
-    evaluate_distribution_aware_utility_2d,
-    # Configuration - CORRECTED: use _2D suffix!
+    # From gpytorch_porting (re-exported)
+    PoissonLikelihood,
+    standard_utility,
+    distribution_aware_utility,
+    # Configuration
+    DEVICE, DTYPE,
     DEFAULT_P_X_MEAN_2D,
     DEFAULT_P_X_STD_2D,
 )
 
+from utility_acos_2d_base import load_arccosine_2d_checkpoint
+
 # Domain bounds (local override for tighter visualization)
 X_MIN, X_MAX = -20, 20
 Y_MIN, Y_MAX = -20, 20
-
-# Import ArcCosineKernel and PoissonLikelihood from gpytorch_porting
-GPYTORCH_PORTING_PATH = Path(__file__).parent.parent.parent / 'gpytorch_porting'
-EXPECTED_KERNEL_PATH = '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting'
-
-if not GPYTORCH_PORTING_PATH.exists():
-    raise ImportError(f"gpytorch_porting not found at {GPYTORCH_PORTING_PATH}")
-if str(GPYTORCH_PORTING_PATH.resolve()) != EXPECTED_KERNEL_PATH:
-    raise ImportError(f"Wrong kernel path!\n  Expected: {EXPECTED_KERNEL_PATH}\n  Got: {GPYTORCH_PORTING_PATH.resolve()}")
-
-sys.path.insert(0, str(GPYTORCH_PORTING_PATH))
-from kernels import ArcCosineKernel
-from likelihoods import PoissonLikelihood
 
 warnings.filterwarnings("ignore", message=".*torch.cuda.*DtypeTensor.*")
 warnings.filterwarnings("ignore", message=".*torch.sparse.SparseTensor.*")
@@ -72,64 +56,6 @@ warnings.filterwarnings("ignore", message=".*torch.sparse.SparseTensor.*")
 # Override p(x) distribution with wider std for better visualization
 P_X_MEAN = torch.tensor([0.0, 0.0], dtype=DTYPE, device=DEVICE)
 P_X_STD = torch.tensor([2.0, 2.0], dtype=DTYPE, device=DEVICE)
-
-
-# -----------------------------------------------------------------------------
-# Checkpoint Loading
-# -----------------------------------------------------------------------------
-def load_arccosine_2d_checkpoint(filepath):
-    """
-    Load Arc-Cosine checkpoint with kernel swap.
-
-    IMPORTANT: Kernel must be swapped BEFORE loading state_dict!
-    The state dict contains covar_module.* params that must match kernel type.
-
-    Returns:
-        model: VariationalGP with ArcCosineKernel
-        likelihood: PoissonLikelihood (gpytorch_porting version)
-        metadata: dict with training info
-    """
-    checkpoint = torch.load(filepath, map_location=DEVICE, weights_only=False)
-
-    # Reconstruct model with RBF kernel first (VariationalGP default)
-    inducing_points = checkpoint['inducing_points']
-    model = VariationalGP(inducing_points, jitter=1e-4).to(DEVICE)
-
-    # CRITICAL: Swap to Arc-Cosine BEFORE loading state dict
-    kernel_params = checkpoint['kernel_params']
-    model.covar_module = ArcCosineKernel(
-        sigma_0=kernel_params['sigma_0'],
-        Amp=kernel_params['Amp'],
-        C=None  # Stage 1 identity
-    ).to(DEVICE)
-
-    # NOW load model state (covar_module params will match)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-
-    # Reconstruct likelihood (gpytorch_porting version)
-    lik_params = checkpoint['likelihood_params']
-    likelihood = PoissonLikelihood(
-        A_init=lik_params['A'],
-        lambda0_init=lik_params['lambda_0']
-    ).to(DEVICE)
-    likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
-    likelihood.eval()
-
-    metadata = {
-        'inducing_points': inducing_points,
-        'train_x': checkpoint['train_x'],
-        'train_y': checkpoint['train_y'],
-        'kernel_params': kernel_params,
-        'likelihood_params': lik_params,
-        'training_config': checkpoint.get('training_config', {})
-    }
-
-    print(f"✓ Loaded Arc-Cosine checkpoint from {filepath}")
-    print(f"  Kernel: σ₀={kernel_params['sigma_0']:.4f}, Amp={kernel_params['Amp']:.4f}")
-    print(f"  Likelihood: A={lik_params['A']:.4f}, λ₀={lik_params['lambda_0']:.3f}")
-
-    return model, likelihood, metadata
 
 
 # -----------------------------------------------------------------------------
@@ -382,25 +308,34 @@ if __name__ == "__main__":
     eval_grid_x, eval_grid_y = torch.meshgrid(x_eval, y_eval, indexing='xy')
     eval_grid_flat = torch.stack([eval_grid_x.flatten(), eval_grid_y.flatten()], dim=-1)
 
-    # Arc-Cosine utilities
-    print("\nArc-Cosine - Standard utility...")
-    utility_standard_acos = evaluate_nd_utility_new(model_acos, eval_grid_flat, max_r=100)
+    # Draw MC samples from p(x)
+    n_mc = 500
+    x_samples = P_X_MEAN + P_X_STD * torch.randn(n_mc, 2, dtype=DTYPE, device=DEVICE)
 
-    print("\nArc-Cosine - Distribution-aware utility...")
-    utility_distr_acos = evaluate_distribution_aware_utility_2d(
-        model_acos, eval_grid_flat, n_mc_samples=500, r_max=100,
-        p_x_mean=P_X_MEAN, p_x_std=P_X_STD
-    )
+    with torch.no_grad():
+        # Arc-Cosine utilities
+        print("\nArc-Cosine - Standard utility...")
+        utility_standard_acos = standard_utility(
+            model_acos, likelihood_acos, eval_grid_flat, adaptive_r_max=True
+        )['utility']
 
-    # RBF utilities
-    print("\nRBF - Standard utility...")
-    utility_standard_rbf = evaluate_nd_utility_new(model_rbf, eval_grid_flat, max_r=100)
+        print("\nArc-Cosine - Distribution-aware utility...")
+        utility_distr_acos = distribution_aware_utility(
+            model_acos, likelihood_acos, eval_grid_flat, x_samples,
+            adaptive_r_max=True
+        )['utility']
 
-    print("\nRBF - Distribution-aware utility...")
-    utility_distr_rbf = evaluate_distribution_aware_utility_2d(
-        model_rbf, eval_grid_flat, n_mc_samples=500, r_max=100,
-        p_x_mean=P_X_MEAN, p_x_std=P_X_STD
-    )
+        # RBF utilities
+        print("\nRBF - Standard utility...")
+        utility_standard_rbf = standard_utility(
+            model_rbf, likelihood_rbf, eval_grid_flat, adaptive_r_max=True
+        )['utility']
+
+        print("\nRBF - Distribution-aware utility...")
+        utility_distr_rbf = distribution_aware_utility(
+            model_rbf, likelihood_rbf, eval_grid_flat, x_samples,
+            adaptive_r_max=True
+        )['utility']
 
     # ------------------------------
     # Visualization

@@ -52,19 +52,16 @@ from utility_2d_rbf_base import (
     # Checkpoint loading
     load_rbf_2d_checkpoint,
     RBF_2D_CHECKPOINT_PATH,
-    # Functions
-    get_conditional_moments_nd,
+    # Functions (from gpytorch_porting, re-exported)
+    get_gp_marginal_moments,
+    get_gp_conditional_moments,
+    compute_H,
+    compute_mc_diagnostics_2d,
     lambda_true_2d,
     # Config
     DEVICE, DTYPE,
     X_MIN, X_MAX, Y_MIN, Y_MAX,
     DEFAULT_P_X_MEAN_2D, DEFAULT_P_X_STD_2D,
-)
-
-from gp_utility_playground import (
-    get_marginal_moments,
-    compute_H,
-    MAX_R,
 )
 
 
@@ -74,92 +71,6 @@ from gp_utility_playground import (
 N_EVAL_X = 40  # Resolution of evaluation grid
 N_EVAL_Y = 40
 N_MC_SAMPLES = 500  # Number of MC samples for averaging (higher = less noise)
-
-
-# =============================================================================
-# MC Diagnostics for 2D
-# =============================================================================
-def compute_mc_diagnostics_2d(
-    model,
-    candidates,
-    n_mc_samples,
-    p_x_mean,
-    p_x_std,
-    r_max=MAX_R,
-):
-    """
-    Compute all MC statistics in a single loop for 2D GP.
-
-    Computes:
-    - H_marg: Marginal entropy at each query point
-    - H_cond: Expected conditional entropy (averaged over samples from p(x))
-    - mu_cond_avg: Average conditional mean E[μ(x* | λ(x))]
-    - sigma2_cond_avg: Average conditional variance E[σ²(x* | λ(x))]
-
-    Args:
-        model: Trained 2D GP model
-        candidates: Query points (K, 2)
-        n_mc_samples: Number of MC samples
-        p_x_mean: (2,) mean of 2D Gaussian p(x)
-        p_x_std: (2,) std of 2D Gaussian p(x)
-        r_max: Max spike count for entropy computation
-
-    Returns:
-        H_marg: (K,) Marginal entropy H(R | x*, D)
-        H_cond: (K,) Expected conditional entropy E[H(R | x*, λ(x), D)]
-        mu_marg: (K,) Marginal mean μ(x* | D)
-        mu_cond_avg: (K,) Average conditional mean E[μ(x* | λ(x), D)]
-        sigma2_marg: (K,) Marginal variance σ²(x* | D)
-        sigma2_cond_avg: (K,) Average conditional variance E[σ²(x* | λ(x), D)]
-    """
-    model.eval()
-    device = candidates.device
-    dtype = candidates.dtype
-
-    # Compute marginal quantities once (no loop needed)
-    mu_marg, sigma2_marg = get_marginal_moments(model, candidates)
-    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max)
-
-    # Initialize accumulators
-    H_cond_sum = torch.zeros_like(H_marg)
-    mu_cond_sum = torch.zeros_like(mu_marg)
-    sigma2_cond_sum = torch.zeros_like(sigma2_marg)
-
-    # Single MC loop - accumulates entropy AND moments
-    with torch.no_grad():
-        for i in range(n_mc_samples):
-            # Step 1: Sample x from 2D Gaussian p(x)
-            x_i = p_x_mean + p_x_std * torch.randn(2, dtype=dtype, device=device)
-            x_i_tensor = x_i.unsqueeze(0)  # (1, 2)
-
-            # Step 2: Get GP posterior at x_i
-            post_i = model(x_i_tensor)
-            mu_i = post_i.mean[0]
-            std_i = post_i.variance[0].sqrt()
-
-            # Step 3: Sample λ_i from posterior at x_i
-            lambda_i = (mu_i + std_i * torch.randn(1, dtype=dtype, device=device)).item()
-
-            # Step 4: Update posterior at ALL query points x* after "observing" λ_i
-            mu_cond_i, sigma2_cond_i = get_conditional_moments_nd(
-                model, candidates, x_i, lambda_i
-            )
-
-            # Step 5: Accumulate statistics
-            H_cond_i = compute_H(mu_cond_i, sigma2_cond_i, r_max=r_max)
-            H_cond_sum += H_cond_i
-            mu_cond_sum += mu_cond_i
-            sigma2_cond_sum += sigma2_cond_i
-
-            if (i + 1) % 50 == 0:
-                print(f"  MC sample {i+1}/{n_mc_samples}")
-
-    # Average all accumulated quantities
-    H_cond = H_cond_sum / n_mc_samples
-    mu_cond_avg = mu_cond_sum / n_mc_samples
-    sigma2_cond_avg = sigma2_cond_sum / n_mc_samples
-
-    return H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg
 
 
 # =============================================================================

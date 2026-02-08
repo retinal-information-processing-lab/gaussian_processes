@@ -491,6 +491,83 @@ class ArcCosineKernel(Kernel):
         return K
 
 
+class SimpleArcCosineKernel(Kernel):
+    """Arc-cosine kernel for low-dimensional playground inputs (NOT images).
+
+    For simple 2D/3D coordinate inputs where C = identity. No RF structure,
+    no pixel masking, no Amp parameter (Amp scales C, which doesn't apply
+    when C = I; use ScaleKernel for linear output scaling if needed).
+
+    K(x, x') = (1/pi) * M * J(theta)
+
+    where:
+        v_x     = x^T x + sigma_0^2
+        v_x'    = x'^T x' + sigma_0^2
+        M       = sqrt(v_x * v_x')
+        cos(theta) = (x^T x' + sigma_0^2) / M
+        J(theta) = sin(theta) + (pi - theta) * cos(theta)
+
+    Diagonal: K(x, x) = v_x = ||x||^2 + sigma_0^2
+
+    Parameters
+    ----------
+    sigma_0 : float
+        Bias variance parameter (default: 1.0).
+    """
+
+    has_lengthscale = False
+
+    def __init__(self, sigma_0=1.0, **kwargs):
+        super().__init__(**kwargs)
+
+        self.register_parameter(
+            name='raw_sigma_0',
+            parameter=torch.nn.Parameter(torch.zeros(1))
+        )
+        self.register_constraint('raw_sigma_0', Positive())
+        self.sigma_0 = sigma_0
+
+    @property
+    def sigma_0(self):
+        return self.raw_sigma_0_constraint.transform(self.raw_sigma_0)
+
+    @sigma_0.setter
+    def sigma_0(self, value):
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value).to(self.raw_sigma_0)
+        self.initialize(raw_sigma_0=self.raw_sigma_0_constraint.inverse_transform(value))
+
+    def forward(self, x1, x2, diag=False, **params):
+        sigma_0_sq = self.sigma_0 ** 2
+
+        # v_x = x^T x + sigma_0^2  (C = I)
+        V1 = (x1 * x1).sum(dim=-1) + sigma_0_sq  # (..., n1)
+
+        if diag:
+            # K(x, x) = v_x (since theta=0, J(0)=pi, K = M*pi/pi = M = v_x)
+            return V1
+
+        V2 = (x2 * x2).sum(dim=-1) + sigma_0_sq  # (..., n2)
+
+        # Cross-term: x^T x' + sigma_0^2
+        C12 = torch.matmul(x1, x2.transpose(-2, -1)) + sigma_0_sq  # (..., n1, n2)
+
+        # M = sqrt(v_x * v_x')
+        M = torch.sqrt(V1.unsqueeze(-1) * V2.unsqueeze(-2))  # (..., n1, n2)
+
+        # Normalized inner product
+        eps = 1e-7
+        cos_theta = torch.clamp(C12 / M, -1.0 + eps, 1.0 - eps)
+
+        theta_angle = torch.arccos(cos_theta)
+        sin_theta = torch.sqrt(torch.clamp(1.0 - cos_theta ** 2, min=eps))
+
+        # J(theta) = sin(theta) + (pi - theta) * cos(theta)
+        J = sin_theta + (torch.pi - theta_angle) * cos_theta
+
+        return M * J / torch.pi
+
+
 def test_kernel_matches_reference():
     """Test that ArcCosineKernel matches acosker_clean() output."""
     import sys

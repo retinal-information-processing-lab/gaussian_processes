@@ -47,8 +47,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # 2D_playground
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "1D_playground"))
 
 from utility_2d_rbf_base import (
-    # Functions (kernel-agnostic)
-    get_conditional_moments_nd,
+    # Functions (from gpytorch_porting, re-exported)
+    get_gp_marginal_moments,
+    get_gp_conditional_moments,
+    compute_H,
+    compute_mc_diagnostics_2d,
     lambda_true_2d,
     # Config
     DEVICE, DTYPE,
@@ -56,26 +59,7 @@ from utility_2d_rbf_base import (
     DEFAULT_P_X_MEAN_2D, DEFAULT_P_X_STD_2D,
 )
 
-from gp_utility_playground import (
-    VariationalGP,
-    get_marginal_moments,
-    compute_H,
-    MAX_R,
-)
-
-# Arc-Cosine specific imports - MUST add path right before import to avoid
-# collision with repo-level kernels module
-GPYTORCH_PORTING_PATH = Path(__file__).parent.parent.parent / 'gpytorch_porting'
-EXPECTED_KERNEL_PATH = '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting'
-
-if not GPYTORCH_PORTING_PATH.exists():
-    raise ImportError(f"gpytorch_porting not found at {GPYTORCH_PORTING_PATH}")
-if str(GPYTORCH_PORTING_PATH.resolve()) != EXPECTED_KERNEL_PATH:
-    raise ImportError(f"Wrong kernel path!\n  Expected: {EXPECTED_KERNEL_PATH}\n  Got: {GPYTORCH_PORTING_PATH.resolve()}")
-
-sys.path.insert(0, str(GPYTORCH_PORTING_PATH))
-from kernels import ArcCosineKernel
-from likelihoods import PoissonLikelihood
+from utility_acos_2d_base import load_arccosine_2d_checkpoint, ARCCOSINE_CHECKPOINT_PATH
 
 
 # =============================================================================
@@ -87,135 +71,6 @@ N_MC_SAMPLES = 500  # Number of MC samples for averaging (higher = less noise)
 
 # Checkpoint path
 ARCCOSINE_CHECKPOINT_PATH = Path(__file__).parent / 'trained_arccosine_2d_checkpoint.pt'
-
-
-# =============================================================================
-# Checkpoint Loading (Arc-Cosine specific)
-# =============================================================================
-def load_arccosine_2d_checkpoint(filepath):
-    """
-    Load Arc-Cosine checkpoint with kernel swap.
-
-    CRITICAL: Kernel must be swapped BEFORE loading state_dict!
-    The state dict contains covar_module.* params that must match kernel type.
-
-    Returns:
-        model: VariationalGP with ArcCosineKernel
-        likelihood: PoissonLikelihood (gpytorch_porting version)
-        metadata: dict with training info
-    """
-    checkpoint = torch.load(filepath, map_location=DEVICE, weights_only=False)
-
-    # Reconstruct model with RBF kernel first (VariationalGP default)
-    inducing_points = checkpoint['inducing_points']
-    model = VariationalGP(inducing_points, jitter=1e-4).to(DEVICE)
-
-    # CRITICAL: Swap to Arc-Cosine BEFORE loading state dict
-    kernel_params = checkpoint['kernel_params']
-    model.covar_module = ArcCosineKernel(
-        sigma_0=kernel_params['sigma_0'],
-        Amp=kernel_params['Amp'],
-        C=None  # Stage 1 identity
-    ).to(DEVICE)
-
-    # NOW load model state (covar_module params will match)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-
-    # Reconstruct likelihood (gpytorch_porting version)
-    lik_params = checkpoint['likelihood_params']
-    likelihood = PoissonLikelihood(
-        A_init=lik_params['A'],
-        lambda0_init=lik_params['lambda_0']
-    ).to(DEVICE)
-    likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
-    likelihood.eval()
-
-    metadata = {
-        'inducing_points': inducing_points,
-        'train_x': checkpoint['train_x'],
-        'train_y': checkpoint['train_y'],
-        'kernel_params': kernel_params,
-        'likelihood_params': lik_params,
-        'training_config': checkpoint.get('training_config', {})
-    }
-
-    print(f"✓ Loaded Arc-Cosine checkpoint from {filepath}")
-    print(f"  Kernel: σ₀={kernel_params['sigma_0']:.4f}, Amp={kernel_params['Amp']:.4f}")
-    print(f"  Likelihood: A={lik_params['A']:.4f}, λ₀={lik_params['lambda_0']:.3f}")
-
-    return model, likelihood, metadata
-
-
-# =============================================================================
-# MC Diagnostics for 2D (kernel-agnostic - same as RBF version)
-# =============================================================================
-def compute_mc_diagnostics_2d(
-    model,
-    candidates,
-    n_mc_samples,
-    p_x_mean,
-    p_x_std,
-    r_max=MAX_R,
-):
-    """
-    Compute all MC statistics in a single loop for 2D GP.
-
-    This function is KERNEL-AGNOSTIC - works identically for RBF and Arc-Cosine.
-    The conditioning math (Gaussian conditioning) only depends on the GP posterior
-    covariance, which GPyTorch computes correctly for any kernel.
-
-    Returns:
-        H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg
-    """
-    model.eval()
-    device = candidates.device
-    dtype = candidates.dtype
-
-    # Compute marginal quantities once (no loop needed)
-    mu_marg, sigma2_marg = get_marginal_moments(model, candidates)
-    H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max)
-
-    # Initialize accumulators
-    H_cond_sum = torch.zeros_like(H_marg)
-    mu_cond_sum = torch.zeros_like(mu_marg)
-    sigma2_cond_sum = torch.zeros_like(sigma2_marg)
-
-    # Single MC loop - accumulates entropy AND moments
-    with torch.no_grad():
-        for i in range(n_mc_samples):
-            # Step 1: Sample x from 2D Gaussian p(x)
-            x_i = p_x_mean + p_x_std * torch.randn(2, dtype=dtype, device=device)
-            x_i_tensor = x_i.unsqueeze(0)  # (1, 2)
-
-            # Step 2: Get GP posterior at x_i
-            post_i = model(x_i_tensor)
-            mu_i = post_i.mean[0]
-            std_i = post_i.variance[0].sqrt()
-
-            # Step 3: Sample λ_i from posterior at x_i
-            lambda_i = (mu_i + std_i * torch.randn(1, dtype=dtype, device=device)).item()
-
-            # Step 4: Update posterior at ALL query points x* after "observing" λ_i
-            mu_cond_i, sigma2_cond_i = get_conditional_moments_nd(
-                model, candidates, x_i, lambda_i
-            )
-
-            # Step 5: Accumulate statistics
-            H_cond_i = compute_H(mu_cond_i, sigma2_cond_i, r_max=r_max)
-            H_cond_sum += H_cond_i
-            mu_cond_sum += mu_cond_i
-            sigma2_cond_sum += sigma2_cond_i
-
-            if (i + 1) % 50 == 0:
-                print(f"  MC sample {i+1}/{n_mc_samples}")
-
-    # Average all accumulated quantities
-    H_cond = H_cond_sum / n_mc_samples
-    mu_cond_avg = mu_cond_sum / n_mc_samples
-    sigma2_cond_avg = sigma2_cond_sum / n_mc_samples
-
-    return H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg
 
 
 # =============================================================================

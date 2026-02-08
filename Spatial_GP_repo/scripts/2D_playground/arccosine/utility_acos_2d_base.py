@@ -4,7 +4,7 @@ Arc-Cosine GP Utility Playground 2D
 Arc-Cosine version of utility_2d_rbf_base.py - same analysis, different kernel.
 
 NON-STATIONARITY NOTE:
-Arc-Cosine kernel has k(x,x) = ||x||² + σ₀² which varies with input magnitude.
+Arc-Cosine kernel has k(x,x) = ||x||^2 + sigma_0^2 which varies with input magnitude.
 This causes extreme utility values at domain corners. Values are clipped to
 99th percentile for visualization.
 
@@ -24,48 +24,48 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "1D_playground"))
 
 from utility_2d_rbf_base import (
     plot_results_2d,
-    evaluate_distribution_aware_utility_2d,
     lambda_true_2d,
     DEVICE, DTYPE,
     X_MIN, X_MAX, Y_MIN, Y_MAX,
     DEFAULT_P_X_MEAN_2D, DEFAULT_P_X_STD_2D,
+    # From gpytorch_porting (re-exported by utility_2d_rbf_base)
+    SimpleArcCosineKernel,
+    PoissonLikelihood,
+    standard_utility,
+    distribution_aware_utility,
 )
 
-from gp_utility_playground import VariationalGP, evaluate_nd_utility_new
-
-# Arc-Cosine kernel imports
-GPYTORCH_PORTING_PATH = Path(__file__).parent.parent.parent / 'gpytorch_porting'
-sys.path.insert(0, str(GPYTORCH_PORTING_PATH))
-from kernels import ArcCosineKernel
-from likelihoods import PoissonLikelihood
+from gp_utility_playground import VariationalGP
 
 warnings.filterwarnings("ignore", message=".*torch.cuda.*")
 warnings.filterwarnings("ignore", message=".*torch.sparse.*")
 
-CHECKPOINT_PATH = Path(__file__).parent / 'trained_arccosine_2d_checkpoint.pt'
+ARCCOSINE_CHECKPOINT_PATH = Path(__file__).parent / 'trained_arccosine_2d_checkpoint.pt'
 
 
-def load_checkpoint(filepath):
+def load_arccosine_2d_checkpoint(filepath):
     """Load Arc-Cosine checkpoint (kernel swap before state_dict load)."""
     checkpoint = torch.load(filepath, map_location=DEVICE, weights_only=False)
 
     inducing_points = checkpoint['inducing_points']
     model = VariationalGP(inducing_points, jitter=1e-4).to(DEVICE)
 
-    # Swap to Arc-Cosine kernel BEFORE loading state dict
+    # Swap to simple Arc-Cosine kernel (gpytorch_porting, no RF structure)
     kp = checkpoint['kernel_params']
-    model.covar_module = ArcCosineKernel(sigma_0=kp['sigma_0'], Amp=kp['Amp'], C=None).to(DEVICE)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.covar_module = SimpleArcCosineKernel(sigma_0=kp['sigma_0']).to(DEVICE)
+
+    # Load state dict with strict=False (kernel params may differ)
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
     model.eval()
 
+    # Reconstruct likelihood from gpytorch_porting
     lp = checkpoint['likelihood_params']
     likelihood = PoissonLikelihood(A_init=lp['A'], lambda0_init=lp['lambda_0']).to(DEVICE)
-    likelihood.load_state_dict(checkpoint['likelihood_state_dict'])
     likelihood.eval()
 
     print(f"Loaded: {filepath}")
-    print(f"  Kernel: sigma_0={kp['sigma_0']:.4f}, Amp={kp['Amp']:.4f}")
-    print(f"  Likelihood: A={lp['A']:.4f}, lambda_0={lp['lambda_0']:.3f}")
+    print(f"  Kernel: sigma_0={kp['sigma_0']:.4f}")
+    print(f"  Likelihood: A={likelihood.A.item():.4f}, lambda_0={likelihood.lambda0.item():.3f}")
 
     return model, likelihood, checkpoint
 
@@ -78,7 +78,7 @@ def main():
     print("Arc-Cosine GP Utility Playground 2D")
     print("=" * 60)
 
-    model, likelihood, checkpoint = load_checkpoint(CHECKPOINT_PATH)
+    model, likelihood, checkpoint = load_arccosine_2d_checkpoint(ARCCOSINE_CHECKPOINT_PATH)
     train_x = checkpoint['train_x']
     train_y = checkpoint['train_y']
 
@@ -92,14 +92,23 @@ def main():
     print(f"\nEvaluation grid: {n_eval}x{n_eval}")
 
     # Compute utilities
-    print("\nComputing standard utility...")
-    utility_std = evaluate_nd_utility_new(model, eval_points)
+    print("\nComputing standard utility (adaptive r_max)...")
+    with torch.no_grad():
+        result_std = standard_utility(model, likelihood, eval_points, adaptive_r_max=True)
+    utility_std = result_std['utility']
 
     print("Computing distribution-aware utility...")
-    utility_da = evaluate_distribution_aware_utility_2d(
-        model, eval_points, n_mc_samples=500,
-        p_x_mean=DEFAULT_P_X_MEAN_2D, p_x_std=DEFAULT_P_X_STD_2D
+    # Draw MC samples from p(x)
+    n_mc = 500
+    x_samples = DEFAULT_P_X_MEAN_2D + DEFAULT_P_X_STD_2D * torch.randn(
+        n_mc, 2, dtype=DTYPE, device=DEVICE
     )
+    with torch.no_grad():
+        result_da = distribution_aware_utility(
+            model, likelihood, eval_points, x_samples,
+            adaptive_r_max=True
+        )
+    utility_da = result_da['utility']
 
     # Report non-finite values
     n_inf = np.sum(~np.isfinite(utility_std.cpu().numpy()))

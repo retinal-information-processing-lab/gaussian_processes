@@ -33,32 +33,24 @@ from utility_2d_rbf_base import (
     DEVICE, DTYPE,
     lambda_true_2d,
     create_2d_grid,
+    # From gpytorch_porting (re-exported)
+    SimpleArcCosineKernel,
+    PoissonLikelihood,
 )
 
 # From 1D playground (model class + data generation + compute_elbo)
 from gp_utility_playground import (
     VariationalGP,
     generate_poisson_data,
-    compute_elbo,  # Works with gpytorch_porting likelihood too
+    compute_elbo,
 )
-
-# From gpytorch_porting (Arc-Cosine specific - kernel, likelihood)
-GPYTORCH_PORTING_PATH = Path(__file__).parent.parent.parent / 'gpytorch_porting'
-sys.path.insert(0, str(GPYTORCH_PORTING_PATH))
-from kernels import ArcCosineKernel
-from likelihoods import PoissonLikelihood  # FULL version with A, lambda0
 
 
 def train_arccosine_gp(model, likelihood, train_x, train_y, n_iterations=500, lr=0.1):
-    """
-    Train GP with Arc-Cosine kernel.
-
-    CRITICAL: Must call model.covar_module.clamp_hyperparameters() after each step!
-    """
+    """Train GP with SimpleArcCosineKernel."""
     model.train()
     likelihood.train()
 
-    # Combine model and likelihood parameters
     params = list(model.parameters()) + list(likelihood.parameters())
     optimizer = torch.optim.Adam(params, lr=lr)
 
@@ -69,16 +61,12 @@ def train_arccosine_gp(model, likelihood, train_x, train_y, n_iterations=500, lr
             (-elbo).backward()
             optimizer.step()
 
-            # CRITICAL for Arc-Cosine: clamp hyperparameters to valid range
-            model.covar_module.clamp_hyperparameters()
-
             if (i + 1) % 100 == 0:
                 sigma_0 = model.covar_module.sigma_0.item()
-                Amp = model.covar_module.Amp.item()
                 A = likelihood.A.item()
                 lambda0 = likelihood.lambda0.item()
                 print(f"  Iter {i+1}/{n_iterations}, ELBO: {elbo.item():.2f} "
-                      f"| σ₀={sigma_0:.4f}, Amp={Amp:.4f}, A={A:.4f}, λ₀={lambda0:.3f}")
+                      f"| sigma_0={sigma_0:.4f}, A={A:.4f}, lambda_0={lambda0:.3f}")
 
     model.eval()
     likelihood.eval()
@@ -101,7 +89,6 @@ def save_arccosine_2d_checkpoint(model, likelihood, inducing_points, train_x, tr
         'train_y': train_y,
         'kernel_params': {
             'sigma_0': model.covar_module.sigma_0.item(),
-            'Amp': model.covar_module.Amp.item(),
         },
         'likelihood_params': {
             'A': likelihood.A.item(),
@@ -152,16 +139,16 @@ def main():
     # Initialize model with RBF kernel (default)
     model = VariationalGP(inducing_points, jitter=1e-4).to(DEVICE)
 
-    # Swap to Arc-Cosine kernel
-    model.covar_module = ArcCosineKernel(sigma_0=1.0, Amp=1.0, C=None).to(DEVICE)
+    # Swap to SimpleArcCosineKernel (for low-D playground inputs, no RF structure)
+    model.covar_module = SimpleArcCosineKernel(sigma_0=1.0).to(DEVICE)
 
     # Use gpytorch_porting PoissonLikelihood (with A, lambda0)
     likelihood = PoissonLikelihood(A_init=0.01, lambda0_init=1.0).to(DEVICE)
 
     print(f"\nModel initialized:")
     print(f"  Inducing points: {inducing_points.shape[0]} (random subset)")
-    print(f"  Initial kernel: σ₀={model.covar_module.sigma_0.item():.3f}, Amp={model.covar_module.Amp.item():.3f}")
-    print(f"  Initial likelihood: A={likelihood.A.item():.4f}, λ₀={likelihood.lambda0.item():.3f}")
+    print(f"  Initial kernel: sigma_0={model.covar_module.sigma_0.item():.3f}")
+    print(f"  Initial likelihood: A={likelihood.A.item():.4f}, lambda_0={likelihood.lambda0.item():.3f}")
 
     # Training settings
     n_iterations = 500
@@ -183,8 +170,8 @@ def main():
 
     # Print final hyperparameters
     print(f"\nFinal Hyperparameters:")
-    print(f"  Kernel: σ₀={model.covar_module.sigma_0.item():.4f}, Amp={model.covar_module.Amp.item():.4f}")
-    print(f"  Likelihood: A={likelihood.A.item():.4f}, λ₀={likelihood.lambda0.item():.3f}")
+    print(f"  Kernel: sigma_0={model.covar_module.sigma_0.item():.4f}")
+    print(f"  Likelihood: A={likelihood.A.item():.4f}, lambda_0={likelihood.lambda0.item():.3f}")
 
     # Save checkpoint
     checkpoint_path = Path(__file__).parent / 'trained_arccosine_2d_checkpoint.pt'

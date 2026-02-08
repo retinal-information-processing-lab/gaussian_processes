@@ -423,6 +423,51 @@ def _diff_laplace_log_probs(mu, sigma2, r):
     return torch.exp(log_p), log_p
 
 
+def compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=10000, min_rmax=200):
+    """Compute adaptive r_max for Laplace truncation.
+
+    Computes an r_max value that ensures the Laplace sum captures the
+    probability mass regardless of (mu_g, sigma2_g). Prevents entropy
+    collapse when mu_g is high (common with non-stationary kernels).
+
+    Args:
+        mu_g: (N,) mean of log-firing rate g = A*lambda + lambda0.
+        sigma2_g: (N,) variance of log-firing rate.
+        safety_k: Number of standard deviations for upper tail (default 3.0).
+        max_rmax: Upper clamp (default 10000).
+        min_rmax: Lower clamp / floor (default 200).
+
+    Returns:
+        rmax: Integer, adaptive truncation value.
+    """
+    import warnings
+
+    upper_logf = mu_g + safety_k * torch.sqrt(sigma2_g)
+
+    # Clamp to avoid overflow in exp()
+    if upper_logf.max() > 20:
+        warnings.warn(
+            f"Adaptive r_max: upper_logf.max() = {upper_logf.max().item():.2f} > 20, "
+            f"using max_rmax = {max_rmax}. Entropy may be underestimated.",
+            UserWarning
+        )
+        return max_rmax
+
+    upper_rate = torch.exp(upper_logf.max())
+    needed = int(upper_rate + 5 * torch.sqrt(torch.maximum(upper_rate, torch.tensor(1.0, device=upper_rate.device))) + 10)
+
+    result = max(min(needed, max_rmax), min_rmax)
+
+    if result == max_rmax:
+        warnings.warn(
+            f"Adaptive r_max hit upper limit: needed = {needed}, using max_rmax = {max_rmax}. "
+            f"Entropy may be underestimated at high mu_g/sigma2_g.",
+            UserWarning
+        )
+
+    return result
+
+
 def compute_H(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
     """Compute entropy H(R | mu, sigma2) using Laplace approximation.
 
@@ -450,6 +495,130 @@ def compute_H(mu, sigma2, r_max=100, a=1.0, lambda0=0.0):
     p_r, log_p_r = _diff_laplace_log_probs(logf_mean, logf_var, r)
     H = -torch.sum(p_r * log_p_r, dim=1)
     return H
+
+
+def compute_H_MC(mu, sigma2, n_samples=1000, a=1.0, lambda0=0.0, max_rate=1e10,
+                 max_log_contrib=50.0, return_clip_fraction=False):
+    """Monte Carlo entropy estimation H(R | mu, sigma2) with variance reduction.
+
+    INVESTIGATION CONTEXT:
+    Created for investigations/understanding_utility/ (Feb 2026) to trace
+    entropy behavior under norm scaling beyond the r_max=100 valid region.
+    The fixed-r_max approach (compute_H) breaks when sigma2_g grows large
+    (entropy_landscape.png shows the valid region is roughly triangular).
+    This MC approach works at any scale by sampling from p(r) instead of
+    summing over all r values.
+
+    VARIANCE REDUCTION (clipping):
+    For heavy-tailed distributions (large sigma2_g), the naive MC estimator
+    has catastrophic variance: a few tail samples with -log p(r) ~ 10^9
+    dominate the average. We clip -log p(r) to max_log_contrib, introducing
+    bias but making the estimator practical. This is a pragmatic compromise
+    for pedagogical exploration.
+
+    AFFIDABILITY METRIC (clip_fraction):
+    The fraction of samples that hit the clip threshold is an indicator of
+    reliability, analogous to z_safe for Laplace:
+      clip_fraction < 0.05: Reliable (bias < 10%)
+      clip_fraction > 0.10: Unreliable (bias > 20%, H is overestimated)
+    Use return_clip_fraction=True to get this diagnostic.
+
+    USE CASES:
+    - Analysis/pedagogy: understanding how H_marg and H_cond behave as images
+      are scaled up (c >> 1), where the GP variance grows beyond the
+      r_max=100 boundary.
+    - NOT for production acquisition functions (not differentiable, biased).
+    - NOT needed for natural images (they stay well within the r_max=100
+      safe zone with z_safe >> 10).
+
+    Algorithm:
+        1. Sample g ~ N(mu_g, sigma2_g)    [log-firing rate from posterior]
+        2. Sample r ~ Poisson(exp(g))       [spike count given rate]
+        3. Compute log p(r) via Laplace     [single evaluation per sample]
+        4. H ≈ -mean(clamp(log p(r), min=-max_log_contrib))  [robust average]
+
+    NOT differentiable (uses torch.no_grad() and discrete Poisson sampling).
+
+    Args:
+        mu: (N,) raw GP posterior means (lambda, NOT log-firing rate).
+        sigma2: (N,) raw GP posterior variances.
+        n_samples: Number of MC samples per query point. 1000 gives ~3% error,
+            10000 gives ~1% error.
+        a: Firing rate scaling (g = a*lambda + lambda0).
+        lambda0: Firing rate offset.
+        max_rate: Clamp firing rates above this to avoid Poisson sampler issues.
+            Default 1e10 is conservative (torch.poisson works up to ~1e15 but
+            float32 loses integer precision above 16.7M).
+        max_log_contrib: Clip -log p(r) contributions above this value to
+            reduce variance from tail samples. Default 50.0 allows H up to ~50
+            nats but prevents extreme outliers from dominating. Introduces bias
+            for very large sigma2_g but extends practical range to c~20.
+        return_clip_fraction: If True, return (H, clip_fraction) tuple where
+            clip_fraction[i] is the fraction of samples that were clipped for
+            query point i. This is a reliability metric: < 0.05 is reliable,
+            > 0.10 indicates significant bias.
+
+    Returns:
+        H: (N,) entropy estimates (biased for large sigma2_g due to clipping).
+        clip_fraction: (N,) fraction of clipped samples per query point.
+            Only returned if return_clip_fraction=True.
+
+    References:
+        investigations/understanding_utility/entropy_landscape.md
+        investigations/understanding_utility/H_scaling_comparison.png
+    """
+    # Not differentiable — sampling from Poisson is discrete
+    with torch.no_grad():
+        N = mu.shape[0]
+        device = mu.device
+        dtype = mu.dtype
+
+        # Transform to log-firing rate space
+        mu_g = a * mu + lambda0
+        sigma2_g = a ** 2 * sigma2
+
+        H = torch.zeros(N, dtype=dtype, device=device)
+        clip_fractions = torch.zeros(N, dtype=dtype, device=device) if return_clip_fraction else None
+
+        # Process each query point independently
+        # (Could be batched more efficiently but this is clearer pedagogically)
+        for i in range(N):
+            # Step 1: Sample log-firing rates from the GP posterior
+            # g ~ N(mu_g[i], sigma2_g[i])
+            g_samples = (torch.randn(n_samples, dtype=dtype, device=device)
+                        * torch.sqrt(sigma2_g[i]) + mu_g[i])  # (n_samples,)
+
+            # Step 2: For each g, sample a spike count from Poisson(exp(g))
+            # r ~ Poisson(f) where f = exp(g) is the firing rate
+            rates = torch.exp(g_samples).clamp(max=max_rate)  # (n_samples,)
+            r_samples = torch.poisson(rates)  # (n_samples,) discrete counts
+
+            # Step 3: Evaluate log p(r) at each sampled r using Laplace
+            # _diff_laplace_log_probs expects:
+            #   mu, sigma2: (M,) — here M=1 (single query point)
+            #   r: (R,) — here R=n_samples (the sampled spike counts)
+            # Returns: p_r (1, n_samples), log_p_r (1, n_samples)
+            mu_i = mu_g[i:i+1]  # (1,) — unsqueeze for batch dimension
+            sigma2_i = sigma2_g[i:i+1]  # (1,)
+            _, log_p_r = _diff_laplace_log_probs(mu_i, sigma2_i, r_samples)
+            # log_p_r shape: (1, n_samples)
+
+            # Step 4: Entropy is the expectation E[-log p(R)]
+            # Clip extreme contributions to reduce variance (introduces bias)
+            neg_log_p_r = -log_p_r[0]  # (n_samples,)
+            neg_log_p_r_clipped = torch.clamp(neg_log_p_r, max=max_log_contrib)
+
+            # Track clipping rate (affidability metric)
+            if return_clip_fraction:
+                clipped = (neg_log_p_r > max_log_contrib).float()
+                clip_fractions[i] = clipped.mean()
+
+            # Monte Carlo estimate: average over clipped samples
+            H[i] = neg_log_p_r_clipped.mean()
+
+        if return_clip_fraction:
+            return H, clip_fractions
+        return H
 
 
 def nd_utility_new(mu_g, sigma2_g, r_max=100):
