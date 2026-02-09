@@ -8,6 +8,8 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 ## 2026-02-09: Normalized Arc-Cosine Kernel Validation
 
 **Branch**: `pietro/acquisition-functions`
+**Handoff**: `investigations/normalized_kernel/HANDOFF.md`
+**Status**: Continuing — ready for acquisition function integration
 
 **Accomplished:**
 - Added `ArcCosineKernelNormalized` class to `kernels.py` (lines 493-557) — autograd-only, K_bar(x,x)=1

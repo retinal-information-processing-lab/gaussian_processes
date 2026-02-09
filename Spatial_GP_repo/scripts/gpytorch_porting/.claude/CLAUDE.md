@@ -211,6 +211,8 @@ Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments
 
 **Deferred**: Integration with acquisition functions. The normalized kernel exists and works, but is not used in production training or utility optimization.
 
+**Handoff**: `investigations/normalized_kernel/HANDOFF.md` — ready for acquisition function integration in next session.
+
 ### Multi-Cell Validation - DEFERRED
 Cell 8 and 10 validation sufficient for initial implementation.
 
