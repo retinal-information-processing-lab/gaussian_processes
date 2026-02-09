@@ -177,7 +177,8 @@ Use `--gradient-mode MODE` in CLI:
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/normalized_kernel/` | Normalized arc-cosine kernel validation and training scripts (test_r drops ~25% — image norm carries signal) |
+| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), utility exploration (`explore_utility_normalized.py`). Key findings: test_r drops ~25%, utility divergence eliminated. |
+| `investigations/understanding_utility/` | Utility exploration with unnormalized kernel (`explore_utility.py` - baseline for comparison) |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -189,15 +190,22 @@ Use `--gradient-mode MODE` in CLI:
 ## Deferred Items (DO NOT IMPLEMENT UNLESS ASKED)
 
 ### Acquisition Functions - IN PROGRESS
-`acquisition.py` implements `standard_utility()` and `distribution_aware_utility()` for `default_gpy` mode.
-Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments_nd` (2D playground), `nd_utility_new` (utility.py).
+`acquisition.py` implements `standard_utility()` and `distribution_aware_utility()` for `default_gpy` mode **ONLY**.
+
+**Why default_gpy only:**
+- `distribution_aware_utility()` requires `model(X).covariance_matrix` for Gaussian conditioning
+- `vargp_direct` uses `EigenspacePosterior` which doesn't expose full covariance (only mean/variance)
+- `standard_utility()` works with both modes (only needs mean/variance) but kept consistent for now
+
+**Current implementation:**
+- All dependencies are local (in `utils.py`, no playground imports)
+- Fully differentiable (gradient flow from x* through kernel into utility)
+- Works with both `ArcCosineKernel` and `ArcCosineKernelNormalized`
 
 **Deferred (acquisition functions)**:
-- vargp_direct support (needs augmented matrix approach — EigenspacePosterior has no covariance_matrix)
+- vargp_direct support (needs augmented matrix approach for distribution-aware utility)
 - Gradient-based x* optimization (door is open — no torch.no_grad() wrapper)
-- Removing old codebase dependency (copy Laplace functions locally)
 - Scalability for large candidate pools
-- Rewrite `nd_utility_new` to take raw GP moments + (A, lambda0) like `compute_H` does, removing the manual transform in `standard_utility`
 
 ### Normalized Arc-Cosine Kernel - INVESTIGATED (Feb 2026)
 `ArcCosineKernelNormalized` class in `kernels.py:493-557` implements K_bar(x,y) = J(theta)/pi with constant diagonal = 1.0.
@@ -209,9 +217,15 @@ Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments
 - Normalized test_r: 0.594 (~25% drop)
 - **Conclusion**: Image norm (magnitude of x^T C x) carries genuine signal for neural encoding, not just a utility optimization nuisance.
 
-**Deferred**: Integration with acquisition functions. The normalized kernel exists and works, but is not used in production training or utility optimization.
+**Utility behavior** (Feb 2026):
+- Created `investigations/normalized_kernel/explore_utility_normalized.py` (copy of `explore_utility.py` with normalized kernel)
+- **Result**: Normalized kernel eliminates norm-driven utility divergence
+  - Unnormalized: scaling image by 5x increases utility 38-56x (||x||_C grows 25.9→129.2)
+  - Normalized: scaling by 5x keeps utility stable (||x||_C constant at 1.0)
+- Utilities now depend on angular structure (RF alignment), not magnitude
+- Both kernels work with `acquisition.py` functions (default_gpy mode only)
 
-**Handoff**: `investigations/normalized_kernel/HANDOFF.md` — ready for acquisition function integration in next session.
+**Status**: Normalized kernel validated for utility optimization. Available for gradient-based stimulus search if needed.
 
 ### Multi-Cell Validation - DEFERRED
 Cell 8 and 10 validation sufficient for initial implementation.
