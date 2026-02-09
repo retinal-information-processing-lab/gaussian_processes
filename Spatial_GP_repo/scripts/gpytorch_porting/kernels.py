@@ -491,6 +491,82 @@ class ArcCosineKernel(Kernel):
         return K
 
 
+class ArcCosineKernelNormalized(ArcCosineKernel):
+    """Normalized arc-cosine kernel with full RF structure.
+
+    K_bar(x, x') = J(theta) / pi
+    K_bar(x, x) = 1.0  (constant diagonal)
+
+    The magnitude factor M = sqrt(v_x * v_x') is dropped from the
+    unnormalized kernel K = M * J / pi. This eliminates the prior
+    variance's dependence on input norm (v_x = x^T C x + sigma_0^2),
+    giving constant prior variance everywhere.
+
+    All RF structure (C matrix, masking, eigenspace projection) is
+    inherited from ArcCosineKernel. Only autograd gradient mode is
+    supported (VJP/Jacobian would need separate derivations).
+
+    Parameters: Same as ArcCosineKernel. gradient_mode is forced to 'autograd'.
+    """
+
+    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
+                 eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
+                 use_mask=True, gradient_mode='autograd', **kwargs):
+        if gradient_mode != 'autograd':
+            warnings.warn(
+                f"ArcCosineKernelNormalized only supports autograd gradient mode. "
+                f"Ignoring gradient_mode='{gradient_mode}'."
+            )
+        super().__init__(
+            n_px_side=n_px_side, sigma_0=sigma_0, Amp=Amp,
+            eps_0x=eps_0x, eps_0y=eps_0y, beta=beta, rho=rho,
+            use_mask=use_mask, gradient_mode='autograd', **kwargs
+        )
+
+    def forward(self, x1, x2, diag=False, **params):
+        """Compute normalized arc-cosine kernel.
+
+        Returns J(theta)/pi for off-diagonal, 1.0 for diagonal.
+        Identical computation to parent except M is NOT multiplied
+        into the result and diagonal returns ones.
+        """
+        sigma_0_sq = self.sigma_0 ** 2
+
+        C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
+        if mask is not None:
+            self._cached_mask = mask
+
+        if mask is not None:
+            x1 = x1[..., mask]
+            x2 = x2[..., mask]
+
+        C = C.to(x1.device, x1.dtype)
+        CX1 = x1 @ C
+        V1 = (CX1 * x1).sum(dim=-1) + sigma_0_sq
+
+        if diag:
+            # Normalized: K_bar(x,x) = J(0)/pi = pi/pi = 1
+            return torch.ones(V1.shape, dtype=V1.dtype, device=V1.device)
+
+        CX2 = x2 @ C
+        V2 = (CX2 * x2).sum(dim=-1) + sigma_0_sq
+
+        C12 = torch.matmul(CX1, x2.transpose(-2, -1)) + sigma_0_sq
+
+        M = torch.sqrt(V1.unsqueeze(-1) * V2.unsqueeze(-2))
+
+        eps = 1e-7
+        cos_theta = torch.clamp(C12 / M, -1.0 + eps, 1.0 - eps)
+
+        theta_angle = torch.arccos(cos_theta)
+        sin_theta = torch.sqrt(torch.clamp(1.0 - cos_theta ** 2, min=eps))
+
+        J = sin_theta + (torch.pi - theta_angle) * cos_theta
+
+        # Normalized: drop M (it cancels in K/sqrt(K(x,x)*K(x',x')))
+        return J / torch.pi
+
+
 class SimpleArcCosineKernel(Kernel):
     """Arc-cosine kernel for low-dimensional playground inputs (NOT images).
 
@@ -566,6 +642,80 @@ class SimpleArcCosineKernel(Kernel):
         J = sin_theta + (torch.pi - theta_angle) * cos_theta
 
         return M * J / torch.pi
+
+
+class SimpleArcCosineNormalizedKernel(Kernel):
+    """Normalized arc-cosine kernel for low-dimensional playground inputs.
+
+    K_bar(x, x') = K(x, x') / sqrt(K(x,x) * K(x',x'))
+                  = (1/pi) * J(theta)
+
+    The magnitude factor M = sqrt(v_x * v_x') cancels exactly in the
+    normalization, leaving only the angular term. This gives constant
+    prior variance K_bar(x, x) = 1 for all x, eliminating the norm-scaling
+    incentive that causes utility optimization to diverge to domain corners.
+
+    sigma_0 still appears inside theta:
+        cos(theta) = (x^T x' + sigma_0^2) / sqrt((||x||^2 + sigma_0^2)(||x'||^2 + sigma_0^2))
+
+    Parameters
+    ----------
+    sigma_0 : float
+        Bias variance parameter (default: 1.0).
+    """
+
+    has_lengthscale = False
+
+    def __init__(self, sigma_0=1.0, **kwargs):
+        super().__init__(**kwargs)
+
+        self.register_parameter(
+            name='raw_sigma_0',
+            parameter=torch.nn.Parameter(torch.zeros(1))
+        )
+        self.register_constraint('raw_sigma_0', Positive())
+        self.sigma_0 = sigma_0
+
+    @property
+    def sigma_0(self):
+        return self.raw_sigma_0_constraint.transform(self.raw_sigma_0)
+
+    @sigma_0.setter
+    def sigma_0(self, value):
+        if not torch.is_tensor(value):
+            value = torch.as_tensor(value).to(self.raw_sigma_0)
+        self.initialize(raw_sigma_0=self.raw_sigma_0_constraint.inverse_transform(value))
+
+    def forward(self, x1, x2, diag=False, **params):
+        sigma_0_sq = self.sigma_0 ** 2
+
+        # v_x = x^T x + sigma_0^2  (C = I)
+        V1 = (x1 * x1).sum(dim=-1) + sigma_0_sq  # (..., n1)
+
+        if diag:
+            # K_bar(x, x) = J(0)/pi = pi/pi = 1
+            return torch.ones(V1.shape, dtype=V1.dtype, device=V1.device)
+
+        V2 = (x2 * x2).sum(dim=-1) + sigma_0_sq  # (..., n2)
+
+        # Cross-term: x^T x' + sigma_0^2
+        C12 = torch.matmul(x1, x2.transpose(-2, -1)) + sigma_0_sq  # (..., n1, n2)
+
+        # M = sqrt(v_x * v_x') — needed for cos_theta, NOT multiplied into output
+        M = torch.sqrt(V1.unsqueeze(-1) * V2.unsqueeze(-2))  # (..., n1, n2)
+
+        # Normalized inner product
+        eps = 1e-7
+        cos_theta = torch.clamp(C12 / M, -1.0 + eps, 1.0 - eps)
+
+        theta_angle = torch.arccos(cos_theta)
+        sin_theta = torch.sqrt(torch.clamp(1.0 - cos_theta ** 2, min=eps))
+
+        # J(theta) = sin(theta) + (pi - theta) * cos(theta)
+        J = sin_theta + (torch.pi - theta_angle) * cos_theta
+
+        # Normalized: drop M factor (magnitude cancels in K/sqrt(K*K))
+        return J / torch.pi
 
 
 def test_kernel_matches_reference():

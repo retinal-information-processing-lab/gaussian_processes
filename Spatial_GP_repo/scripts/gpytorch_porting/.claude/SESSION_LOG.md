@@ -5,6 +5,25 @@ Updated via "wrap up" command at session end (see WORKING_GUIDELINES.md Section 
 
 ---
 
+## 2026-02-09: Normalized Arc-Cosine Kernel Validation
+
+**Branch**: `pietro/acquisition-functions`
+
+**Accomplished:**
+- Added `ArcCosineKernelNormalized` class to `kernels.py` (lines 493-557) — autograd-only, K_bar(x,x)=1
+- Created validation suite `investigations/normalized_kernel/validate_kernel.py` — 17/17 tests pass
+- Created training script `investigations/normalized_kernel/run_normalized.py` (copy of run_single_mode.py with 7 edits)
+- Validated on PNAS cell 8, M=100: unnormalized test_r=0.791, normalized test_r=0.594 (~25% drop)
+- Confirmed with vargp_direct mode: test_r=0.576 (consistent finding)
+
+**Key Finding:** Image norm (magnitude of x^T C x) carries genuine signal for neural encoding — not just a utility optimization nuisance. The normalized kernel eliminates norm-dependent prior variance, but this costs ~25% test performance.
+
+**Documentation updated:** CLAUDE.md (File Map, Deferred Items), SESSION_LOG.md
+
+**Known issues:** none
+
+---
+
 ## 2026-02-07: Gradient Flow Through Utility Functions
 
 **Branch**: `pietro/acquisition-functions`
