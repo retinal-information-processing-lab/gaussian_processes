@@ -121,7 +121,7 @@ Use `--gradient-mode MODE` in CLI:
 ### Shared Components (used by both implementations)
 | File | Purpose |
 |------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes |
+| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized (normalized variant with K_bar(x,x)=1) |
 | `likelihoods.py` | PoissonLikelihood with A, lambda0 |
 | `metrics.py` | Evaluation functions (r², Pearson r, explained variance) |
 | `utils.py` | Shared utilities (lambda0_given_A, compute_f_mean, STA-based RF center) |
@@ -174,6 +174,11 @@ Use `--gradient-mode MODE` in CLI:
 |---------|---------|
 | `deprecated/` | Archived vargp_style mode, orphaned whitening/test files (self-contained, unmaintained) |
 
+### Investigation Artifacts
+| Path | Purpose |
+|------|---------|
+| `investigations/normalized_kernel/` | Normalized arc-cosine kernel validation and training scripts (test_r drops ~25% — image norm carries signal) |
+
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
 - `test_vargp_direct_match.py`, `test_mstep_analytical.py`, `test_direct_vgp_model.py`
@@ -187,13 +192,24 @@ Use `--gradient-mode MODE` in CLI:
 `acquisition.py` implements `standard_utility()` and `distribution_aware_utility()` for `default_gpy` mode.
 Imports from old codebase: `compute_H` (1D playground), `get_conditional_moments_nd` (2D playground), `nd_utility_new` (utility.py).
 
-**Deferred**:
+**Deferred (acquisition functions)**:
 - vargp_direct support (needs augmented matrix approach — EigenspacePosterior has no covariance_matrix)
 - Gradient-based x* optimization (door is open — no torch.no_grad() wrapper)
 - Removing old codebase dependency (copy Laplace functions locally)
 - Scalability for large candidate pools
 - Rewrite `nd_utility_new` to take raw GP moments + (A, lambda0) like `compute_H` does, removing the manual transform in `standard_utility`
 
+### Normalized Arc-Cosine Kernel - INVESTIGATED (Feb 2026)
+`ArcCosineKernelNormalized` class in `kernels.py:493-557` implements K_bar(x,y) = J(theta)/pi with constant diagonal = 1.0.
+
+**Investigation**: `investigations/normalized_kernel/` contains validation suite (17/17 tests pass) and training scripts.
+
+**Key finding** (PNAS cell 8, M=100, seed=42):
+- Unnormalized test_r: 0.791
+- Normalized test_r: 0.594 (~25% drop)
+- **Conclusion**: Image norm (magnitude of x^T C x) carries genuine signal for neural encoding, not just a utility optimization nuisance.
+
+**Deferred**: Integration with acquisition functions. The normalized kernel exists and works, but is not used in production training or utility optimization.
 
 ### Multi-Cell Validation - DEFERRED
 Cell 8 and 10 validation sufficient for initial implementation.
