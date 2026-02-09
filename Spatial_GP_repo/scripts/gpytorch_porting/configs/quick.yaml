@@ -87,7 +87,11 @@ inducing:
 # ===== UTILITY / ACQUISITION =====
 utility:
   n_mc_samples: 200             # MC samples from p(x) for distribution-aware utility
-  r_max: 100                    # Max spike count for Laplace approximation truncation
+  r_max: 100                    # Fixed spike count truncation for compute_H / nd_utility_new (ignored when adaptive_r_max=true)
+  adaptive_r_max: false         # If true, compute_adaptive_rmax() sets r_max from GP moments; overrides r_max above
+  adaptive_safety_k: 3.0        # compute_adaptive_rmax(): std devs for upper tail of log-firing rate
+  adaptive_max_rmax: 10000      # compute_adaptive_rmax(): error if needed r_max exceeds this
+  adaptive_min_rmax: 200        # compute_adaptive_rmax(): floor (minimum returned r_max)
 
 # ===== DATA =====
 data:

@@ -63,6 +63,10 @@
 
   "utility": {
     "n_mc_samples": 200,
-    "r_max": 100
+    "r_max": 100,
+    "adaptive_r_max": false,
+    "adaptive_safety_k": 3.0,
+    "adaptive_max_rmax": 10000,
+    "adaptive_min_rmax": 200
   }
 }

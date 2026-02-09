@@ -430,6 +430,9 @@ def compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=10000, min_rmax
     probability mass regardless of (mu_g, sigma2_g). Prevents entropy
     collapse when mu_g is high (common with non-stationary kernels).
 
+    Raises ValueError if the needed r_max exceeds max_rmax, because the
+    entropy would be wrong (truncation too aggressive).
+
     Args:
         mu_g: (N,) mean of log-firing rate g = A*lambda + lambda0.
         sigma2_g: (N,) variance of log-firing rate.
@@ -439,33 +442,36 @@ def compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=10000, min_rmax
 
     Returns:
         rmax: Integer, adaptive truncation value.
+
+    Raises:
+        ValueError: If the needed r_max exceeds max_rmax.
     """
-    import warnings
+    _EXP_CLAMP = 80.0  # exp(80) ≈ 5.5e34, safely below float32 overflow (~exp(88))
+
+    if max_rmax > int(torch.exp(torch.tensor(_EXP_CLAMP, dtype=mu_g.dtype)).item()):
+        raise ValueError(
+            f"max_rmax={max_rmax} exceeds exp({_EXP_CLAMP})={torch.exp(torch.tensor(_EXP_CLAMP)).item():.0e}. "
+            f"Overflow clamp would hide failures. Use a smaller max_rmax for Laplace approximation."
+        )
 
     upper_logf = mu_g + safety_k * torch.sqrt(sigma2_g)
+    max_upper_logf = upper_logf.max().item()
 
-    # Clamp to avoid overflow in exp()
-    if upper_logf.max() > 20:
-        warnings.warn(
-            f"Adaptive r_max: upper_logf.max() = {upper_logf.max().item():.2f} > 20, "
-            f"using max_rmax = {max_rmax}. Entropy may be underestimated.",
-            UserWarning
-        )
-        return max_rmax
+    # Clamp to prevent exp() overflow. The check above guarantees
+    # max_rmax < exp(_EXP_CLAMP), so any clamped value still produces
+    # needed >> max_rmax and the check below catches it.
+    safe_logf = min(max_upper_logf, _EXP_CLAMP)
+    upper_rate = float(torch.exp(torch.tensor(safe_logf, dtype=mu_g.dtype)))
+    needed = int(upper_rate + 5 * (max(upper_rate, 1.0) ** 0.5) + 10)
 
-    upper_rate = torch.exp(upper_logf.max())
-    needed = int(upper_rate + 5 * torch.sqrt(torch.maximum(upper_rate, torch.tensor(1.0, device=upper_rate.device))) + 10)
-
-    result = max(min(needed, max_rmax), min_rmax)
-
-    if result == max_rmax:
-        warnings.warn(
-            f"Adaptive r_max hit upper limit: needed = {needed}, using max_rmax = {max_rmax}. "
-            f"Entropy may be underestimated at high mu_g/sigma2_g.",
-            UserWarning
+    if needed > max_rmax:
+        raise ValueError(
+            f"Adaptive r_max: needed={needed} exceeds max_rmax={max_rmax} "
+            f"(upper_logf={max_upper_logf:.2f}). "
+            f"Entropy would be wrong. Check model convergence or A/lambda0 values."
         )
 
-    return result
+    return max(needed, min_rmax)
 
 
 def compute_H(mu, sigma2, r_max, a, lambda0):

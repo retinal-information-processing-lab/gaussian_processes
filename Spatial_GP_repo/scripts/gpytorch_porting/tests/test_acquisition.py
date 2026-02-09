@@ -19,6 +19,7 @@ import importlib.util
 import sys
 import torch
 import numpy as np
+import pytest
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,7 @@ get_gp_marginal_moments = _local_utils.get_gp_marginal_moments
 get_gp_conditional_moments = _local_utils.get_gp_conditional_moments
 compute_H = _local_utils.compute_H
 nd_utility_new = _local_utils.nd_utility_new
+compute_adaptive_rmax = _local_utils.compute_adaptive_rmax
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +327,67 @@ def test_standard_utility_non_negative():
 
 
 # ---------------------------------------------------------------------------
+# Validation error tests
+# ---------------------------------------------------------------------------
+
+def test_standard_utility_no_rmax_raises():
+    """standard_utility with neither r_max nor adaptive_r_max raises ValueError."""
+    model, likelihood = get_trained_1d_model()
+    x_candidates = torch.linspace(-1, 1, 10, dtype=DTYPE, device=DEVICE)
+
+    with pytest.raises(ValueError, match="Must specify either r_max"):
+        standard_utility(model, likelihood, x_candidates)
+
+    print("PASSED: test_standard_utility_no_rmax_raises")
+
+
+def test_standard_utility_both_rmax_raises():
+    """standard_utility with both r_max and adaptive_r_max raises ValueError."""
+    model, likelihood = get_trained_1d_model()
+    x_candidates = torch.linspace(-1, 1, 10, dtype=DTYPE, device=DEVICE)
+
+    with pytest.raises(ValueError, match="Cannot specify both"):
+        standard_utility(model, likelihood, x_candidates, r_max=100, adaptive_r_max=True)
+
+    print("PASSED: test_standard_utility_both_rmax_raises")
+
+
+def test_distribution_aware_no_rmax_raises():
+    """distribution_aware_utility with neither r_max nor adaptive_r_max raises ValueError."""
+    model, likelihood = get_trained_1d_model()
+    x_candidates = torch.linspace(-1, 1, 10, dtype=DTYPE, device=DEVICE)
+    x_samples = torch.linspace(-0.5, 0.5, 5, dtype=DTYPE, device=DEVICE)
+
+    with pytest.raises(ValueError, match="Must specify either r_max"):
+        distribution_aware_utility(model, likelihood, x_candidates, x_samples)
+
+    print("PASSED: test_distribution_aware_no_rmax_raises")
+
+
+def test_compute_adaptive_rmax_exceeds_max_raises():
+    """compute_adaptive_rmax raises ValueError when needed r_max exceeds max_rmax."""
+    # mu_g=10 with safety_k=3 gives upper_logf=10, exp(10)=22026 > max_rmax=100
+    mu_g = torch.tensor([10.0])
+    sigma2_g = torch.tensor([0.0])
+
+    with pytest.raises(ValueError, match="exceeds max_rmax"):
+        compute_adaptive_rmax(mu_g, sigma2_g, max_rmax=100)
+
+    print("PASSED: test_compute_adaptive_rmax_exceeds_max_raises")
+
+
+def test_compute_H_requires_all_args():
+    """compute_H with missing args raises TypeError (no defaults)."""
+    mu = torch.tensor([1.0])
+    sigma2 = torch.tensor([0.5])
+
+    with pytest.raises(TypeError):
+        compute_H(mu, sigma2)
+
+    print("PASSED: test_compute_H_requires_all_args")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -339,6 +402,11 @@ if __name__ == "__main__":
         test_sample_lambda_stochastic,
         test_utility_non_negative,
         test_standard_utility_non_negative,
+        test_standard_utility_no_rmax_raises,
+        test_standard_utility_both_rmax_raises,
+        test_distribution_aware_no_rmax_raises,
+        test_compute_adaptive_rmax_exceeds_max_raises,
+        test_compute_H_requires_all_args,
     ]
 
     passed = 0
