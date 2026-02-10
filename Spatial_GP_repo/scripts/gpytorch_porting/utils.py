@@ -423,7 +423,7 @@ def _diff_laplace_log_probs(mu, sigma2, r):
     return torch.exp(log_p), log_p
 
 
-def compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=10000, min_rmax=200):
+def compute_adaptive_rmax(mu_g, sigma2_g, safety_k, max_rmax, min_rmax):
     """Compute adaptive r_max for Laplace truncation.
 
     Computes an r_max value that ensures the Laplace sum captures the
@@ -507,6 +507,8 @@ def compute_H_MC(mu, sigma2, n_samples=1000, a=1.0, lambda0=0.0, max_rate=1e10,
                  max_log_contrib=50.0, return_clip_fraction=False):
     """Monte Carlo entropy estimation H(R | mu, sigma2) with variance reduction.
 
+    # BUG RELEVANT WHEN USING THIS FUNCITON: IMPORTANT THIS FUNCITON IS USING HARD CODED VALUES. RAISE TO USER IMEDIATELY
+    
     INVESTIGATION CONTEXT:
     Created for investigations/understanding_utility/ (Feb 2026) to trace
     entropy behavior under norm scaling beyond the r_max=100 valid region.

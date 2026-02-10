@@ -144,7 +144,7 @@ def test_standard_utility():
 
     # Our wrapper
     with torch.no_grad():
-        result = standard_utility(model, likelihood, x_candidates, r_max=100)
+        result = standard_utility(model, likelihood, x_candidates, r_max=100, adaptive_r_max=False)
 
     # Direct call
     with torch.no_grad():
@@ -183,7 +183,7 @@ def test_distribution_aware_utility_matches_manual():
     with torch.no_grad():
         result = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=75, sample_lambda=False,
+            r_max=75, adaptive_r_max=False, sample_lambda=False,
         )
 
     # --- Manual computation (using same functions as acquisition.py) ---
@@ -225,11 +225,11 @@ def test_sample_lambda_deterministic():
     with torch.no_grad():
         result1 = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=50, sample_lambda=False,
+            r_max=50, adaptive_r_max=False, sample_lambda=False,
         )
         result2 = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=50, sample_lambda=False,
+            r_max=50, adaptive_r_max=False, sample_lambda=False,
         )
 
     torch.testing.assert_close(result1['utility'], result2['utility'], atol=0, rtol=0)
@@ -246,12 +246,12 @@ def test_sample_lambda_stochastic():
         torch.manual_seed(100)
         result1 = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=50, sample_lambda=True,
+            r_max=50, adaptive_r_max=False, sample_lambda=True,
         )
         torch.manual_seed(200)
         result2 = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=50, sample_lambda=True,
+            r_max=50, adaptive_r_max=False, sample_lambda=True,
         )
 
     # Results should differ (different lambda samples)
@@ -278,7 +278,7 @@ def test_utility_non_negative():
     with torch.no_grad():
         result = distribution_aware_utility(
             model, likelihood, x_candidates, x_samples,
-            r_max=75, sample_lambda=True,
+            r_max=75, adaptive_r_max=False, sample_lambda=True,
         )
 
     utility = result['utility']
@@ -313,7 +313,7 @@ def test_standard_utility_non_negative():
     x_candidates = torch.linspace(-2, 2, 30, dtype=DTYPE, device=DEVICE)
 
     with torch.no_grad():
-        result = standard_utility(model, likelihood, x_candidates, r_max=100)
+        result = standard_utility(model, likelihood, x_candidates, r_max=100, adaptive_r_max=False)
 
     utility = result['utility']
     assert not torch.any(torch.isnan(utility)), "NaN in standard utility"
@@ -336,7 +336,7 @@ def test_standard_utility_no_rmax_raises():
     x_candidates = torch.linspace(-1, 1, 10, dtype=DTYPE, device=DEVICE)
 
     with pytest.raises(ValueError, match="Must specify either r_max"):
-        standard_utility(model, likelihood, x_candidates)
+        standard_utility(model, likelihood, x_candidates, r_max=None, adaptive_r_max=False)
 
     print("PASSED: test_standard_utility_no_rmax_raises")
 
@@ -359,7 +359,8 @@ def test_distribution_aware_no_rmax_raises():
     x_samples = torch.linspace(-0.5, 0.5, 5, dtype=DTYPE, device=DEVICE)
 
     with pytest.raises(ValueError, match="Must specify either r_max"):
-        distribution_aware_utility(model, likelihood, x_candidates, x_samples)
+        distribution_aware_utility(model, likelihood, x_candidates, x_samples,
+                                   r_max=None, adaptive_r_max=False)
 
     print("PASSED: test_distribution_aware_no_rmax_raises")
 
@@ -371,7 +372,7 @@ def test_compute_adaptive_rmax_exceeds_max_raises():
     sigma2_g = torch.tensor([0.0])
 
     with pytest.raises(ValueError, match="exceeds max_rmax"):
-        compute_adaptive_rmax(mu_g, sigma2_g, max_rmax=100)
+        compute_adaptive_rmax(mu_g, sigma2_g, safety_k=3.0, max_rmax=100, min_rmax=200)
 
     print("PASSED: test_compute_adaptive_rmax_exceeds_max_raises")
 

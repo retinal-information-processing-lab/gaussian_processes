@@ -38,8 +38,9 @@ nd_utility_new = _local_utils.nd_utility_new
 compute_adaptive_rmax = _local_utils.compute_adaptive_rmax
 
 
-def standard_utility(model, likelihood, x_candidates, r_max=None,
-                     adaptive_r_max=False):
+def standard_utility(model, likelihood, x_candidates, r_max, adaptive_r_max,
+                     adaptive_safety_k=None, adaptive_max_rmax=None,
+                     adaptive_min_rmax=None):
     """Compute standard (non-distribution-aware) utility at candidate points.
 
     U(x*) = H_marg(x*) - H_noise(x*)
@@ -55,9 +56,12 @@ def standard_utility(model, likelihood, x_candidates, r_max=None,
         likelihood: PoissonLikelihood with .A and .lambda0 attributes.
         x_candidates: (N,) or (N, d) query points to evaluate utility at.
         r_max: Max spike count for Laplace approximation truncation.
-            Required unless adaptive_r_max=True.
-        adaptive_r_max: If True, compute r_max adaptively from GP moments
-            to prevent entropy collapse at high mu_g (non-stationary kernels).
+            Set to None when adaptive_r_max=True.
+        adaptive_r_max: If True, compute r_max adaptively from GP moments.
+            If False, r_max must be an int.
+        adaptive_safety_k: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_max_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_min_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
 
     Returns:
         dict with:
@@ -78,7 +82,10 @@ def standard_utility(model, likelihood, x_candidates, r_max=None,
     sigma2_g = A ** 2 * lambda_var
 
     if adaptive_r_max:
-        r_max = compute_adaptive_rmax(mu_g, sigma2_g)
+        r_max = compute_adaptive_rmax(mu_g, sigma2_g,
+                                      safety_k=adaptive_safety_k,
+                                      max_rmax=adaptive_max_rmax,
+                                      min_rmax=adaptive_min_rmax)
 
     utility = nd_utility_new(mu_g, sigma2_g, r_max=r_max)
 
@@ -86,8 +93,9 @@ def standard_utility(model, likelihood, x_candidates, r_max=None,
 
 
 def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
-                               r_max=None, sample_lambda=True,
-                               adaptive_r_max=False):
+                               r_max, adaptive_r_max, sample_lambda=True,
+                               adaptive_safety_k=None, adaptive_max_rmax=None,
+                               adaptive_min_rmax=None):
     """Compute distribution-aware utility at candidate points.
 
     U(x*) = H_marg(x*) - E_{x~p(x), lambda~q}[H(R | x*, lambda(x), D)]
@@ -111,13 +119,15 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         x_samples: (N_mc,) or (N_mc, d) pre-drawn samples from p(x).
             Caller decides how to sample (image pool subset, Gaussian, etc.).
         r_max: Max spike count for Laplace approximation truncation.
-            Required unless adaptive_r_max=True.
+            Set to None when adaptive_r_max=True.
+        adaptive_r_max: If True, compute r_max adaptively from GP moments.
+            If False, r_max must be an int.
         sample_lambda: If True (default), sample lambda_i ~ N(mu_i, sigma2_i)
             at each x_i. If False, use posterior mean mu_i (deterministic,
             useful for sanity checks).
-        adaptive_r_max: If True, compute r_max adaptively from GP moments.
-            Separate adaptive r_max is computed for marginal entropy and
-            for each MC conditional entropy step (different mu_g/sigma2_g).
+        adaptive_safety_k: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_max_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_min_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
 
     Returns:
         dict with:
@@ -139,7 +149,10 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
     if adaptive_r_max:
         mu_g_marg = A * mu_marg + lambda0
         sigma2_g_marg = A ** 2 * sigma2_marg
-        r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg)
+        r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg,
+                                           safety_k=adaptive_safety_k,
+                                           max_rmax=adaptive_max_rmax,
+                                           min_rmax=adaptive_min_rmax)
     else:
         r_max_marg = r_max
 
@@ -172,7 +185,10 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         if adaptive_r_max:
             mu_g_cond = A * mu_cond + lambda0
             sigma2_g_cond = A ** 2 * sigma2_cond
-            r_max_cond = compute_adaptive_rmax(mu_g_cond, sigma2_g_cond)
+            r_max_cond = compute_adaptive_rmax(mu_g_cond, sigma2_g_cond,
+                                               safety_k=adaptive_safety_k,
+                                               max_rmax=adaptive_max_rmax,
+                                               min_rmax=adaptive_min_rmax)
         else:
             r_max_cond = r_max
 
