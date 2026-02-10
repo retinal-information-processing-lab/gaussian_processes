@@ -7,6 +7,11 @@
             "type": "command",
             "command": "PYTHON_PATH=$(which python) && if [[ \"$PYTHON_PATH\" != *pytorch_gpytorch* ]]; then echo \"CONDA_ENV_WRONG: Python is at $PYTHON_PATH, expected pytorch_gpytorch environment\"; exit 1; fi",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-check.sh",
+            "timeout": 5
           }
         ]
       }
