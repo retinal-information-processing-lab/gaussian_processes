@@ -42,6 +42,7 @@ from utility_2d_rbf_base import (
     DEVICE, DTYPE,
     DEFAULT_P_X_MEAN_2D,
     DEFAULT_P_X_STD_2D,
+    ADAPTIVE_SAFETY_K, ADAPTIVE_MAX_RMAX, ADAPTIVE_MIN_RMAX,
 )
 
 from utility_acos_2d_base import load_arccosine_2d_checkpoint
@@ -316,25 +317,35 @@ if __name__ == "__main__":
         # Arc-Cosine utilities
         print("\nArc-Cosine - Standard utility...")
         utility_standard_acos = standard_utility(
-            model_acos, likelihood_acos, eval_grid_flat, adaptive_r_max=True
+            model_acos, likelihood_acos, eval_grid_flat,
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )['utility']
 
         print("\nArc-Cosine - Distribution-aware utility...")
         utility_distr_acos = distribution_aware_utility(
             model_acos, likelihood_acos, eval_grid_flat, x_samples,
-            adaptive_r_max=True
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )['utility']
 
         # RBF utilities
         print("\nRBF - Standard utility...")
         utility_standard_rbf = standard_utility(
-            model_rbf, likelihood_rbf, eval_grid_flat, adaptive_r_max=True
+            model_rbf, likelihood_rbf, eval_grid_flat,
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )['utility']
 
         print("\nRBF - Distribution-aware utility...")
         utility_distr_rbf = distribution_aware_utility(
             model_rbf, likelihood_rbf, eval_grid_flat, x_samples,
-            adaptive_r_max=True
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )['utility']
 
     # ------------------------------

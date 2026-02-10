@@ -278,7 +278,9 @@ def main():
     H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg = compute_mc_diagnostics_2d(
         model, likelihood, eval_points, N_MC_SAMPLES,
         DEFAULT_P_X_MEAN_2D, DEFAULT_P_X_STD_2D,
-        adaptive_r_max=True,
+        r_max=None, adaptive_r_max=True,
+        # Values from gpytorch_porting/default_params.json → utility section
+        adaptive_safety_k=3.0, adaptive_max_rmax=10000, adaptive_min_rmax=200,
     )
 
     # Print summary statistics

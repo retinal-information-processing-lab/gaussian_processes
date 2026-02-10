@@ -28,6 +28,7 @@ from utility_2d_rbf_base import (
     DEVICE, DTYPE,
     X_MIN, X_MAX, Y_MIN, Y_MAX,
     DEFAULT_P_X_MEAN_2D, DEFAULT_P_X_STD_2D,
+    ADAPTIVE_SAFETY_K, ADAPTIVE_MAX_RMAX, ADAPTIVE_MIN_RMAX,
     # From gpytorch_porting (re-exported by utility_2d_rbf_base)
     SimpleArcCosineKernel,
     PoissonLikelihood,
@@ -94,7 +95,11 @@ def main():
     # Compute utilities
     print("\nComputing standard utility (adaptive r_max)...")
     with torch.no_grad():
-        result_std = standard_utility(model, likelihood, eval_points, adaptive_r_max=True)
+        result_std = standard_utility(
+            model, likelihood, eval_points, r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
+        )
     utility_std = result_std['utility']
 
     print("Computing distribution-aware utility...")
@@ -106,7 +111,9 @@ def main():
     with torch.no_grad():
         result_da = distribution_aware_utility(
             model, likelihood, eval_points, x_samples,
-            adaptive_r_max=True
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )
     utility_da = result_da['utility']
 
@@ -134,7 +141,8 @@ def main():
         eval_grid_x, eval_grid_y,
         utility_std, utility_da,
         p_x_mean=DEFAULT_P_X_MEAN_2D, p_x_std=DEFAULT_P_X_STD_2D,
-        save_path=save_path
+        save_path=save_path,
+        clip_utility=False
     )
 
     print("\nDone!")

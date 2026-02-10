@@ -15,6 +15,7 @@ from utility_2d_rbf_base import (
     lambda_true_2d, create_2d_grid,
     PoissonLikelihood, standard_utility,
     DEVICE, DTYPE,
+    ADAPTIVE_SAFETY_K, ADAPTIVE_MAX_RMAX, ADAPTIVE_MIN_RMAX,
 )
 
 from utility_2d_rbf_base import SimpleArcCosineKernel
@@ -88,7 +89,7 @@ if __name__ == "__main__":
         # Try utility
         print(f'\n=== UTILITY TEST ===')
         test_points = torch.tensor([[0.0, 0.0], [5.0, 5.0], [-5.0, -5.0]], dtype=DTYPE, device=DEVICE)
-        utility = standard_utility(model, likelihood, test_points, adaptive_r_max=True)['utility']
+        utility = standard_utility(model, likelihood, test_points, r_max=None, adaptive_r_max=True, adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX, adaptive_min_rmax=ADAPTIVE_MIN_RMAX)['utility']
         print(f'Utility at (0,0): {utility[0].item():.10f}')
         print(f'Utility at (5,5): {utility[1].item():.10f}')
         print(f'Utility at (-5,-5): {utility[2].item():.10f}')
@@ -102,7 +103,7 @@ if __name__ == "__main__":
         eval_grid_x, eval_grid_y = torch.meshgrid(x_eval, y_eval, indexing='xy')
         eval_flat = torch.stack([eval_grid_x.flatten(), eval_grid_y.flatten()], dim=-1)
 
-        full_utility = standard_utility(model, likelihood, eval_flat, adaptive_r_max=True)['utility']
+        full_utility = standard_utility(model, likelihood, eval_flat, r_max=None, adaptive_r_max=True, adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX, adaptive_min_rmax=ADAPTIVE_MIN_RMAX)['utility']
         print(f'Utility stats:')
         print(f'  Min: {full_utility.min():.10f}')
         print(f'  Max: {full_utility.max():.10f}')

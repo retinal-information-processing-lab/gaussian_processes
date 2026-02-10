@@ -64,6 +64,7 @@ _gpy_acquisition = _load_gpytorch_module('acquisition.py', 'gpytorch_porting_acq
 # Re-export for use by other 2D scripts
 PoissonLikelihood = _gpy_likelihoods.PoissonLikelihood
 SimpleArcCosineKernel = _gpy_kernels.SimpleArcCosineKernel
+SimpleArcCosineNormalizedKernel = _gpy_kernels.SimpleArcCosineNormalizedKernel
 standard_utility = _gpy_acquisition.standard_utility
 distribution_aware_utility = _gpy_acquisition.distribution_aware_utility
 # Low-level functions needed by conditioning diagnostic scripts
@@ -76,11 +77,11 @@ compute_adaptive_rmax = _gpy_utils.compute_adaptive_rmax
 # -----------------------------------------------------------------------------
 # 2D-specific configuration (EXPORTED for other scripts)
 # -----------------------------------------------------------------------------
-Y_MIN, Y_MAX = -30, 30
-X_MIN, X_MAX = -30, 30
+Y_MIN, Y_MAX = -3500, 3500
+X_MIN, X_MAX = -3500, 3500
 
 # Default p(x) distribution parameters (2D Gaussian, diagonal covariance)
-DEFAULT_P_X_MEAN_2D = torch.tensor([10.0, 10.0], dtype=DTYPE, device=DEVICE)
+DEFAULT_P_X_MEAN_2D = torch.tensor([5.0, .0], dtype=DTYPE, device=DEVICE)
 DEFAULT_P_X_STD_2D = torch.tensor([2.0, 2.0], dtype=DTYPE, device=DEVICE)
 
 # Training configuration (used by train_rbf_2d.py)
@@ -92,6 +93,11 @@ TRAIN_Y_RANGE_DEFAULT = (-5.0, 5.0)
 # Evaluation configuration
 N_EVAL_X_DEFAULT = 40
 N_EVAL_Y_DEFAULT = 40
+
+# Adaptive r_max defaults (from default_params.json)
+ADAPTIVE_SAFETY_K = 3.0
+ADAPTIVE_MAX_RMAX = 10000
+ADAPTIVE_MIN_RMAX = 200
 N_MC_SAMPLES_DEFAULT = 500
 
 # Checkpoint path
@@ -230,8 +236,11 @@ def compute_mc_diagnostics_2d(
     n_mc_samples,
     p_x_mean,
     p_x_std,
-    r_max=None,
-    adaptive_r_max=False,
+    r_max,
+    adaptive_r_max,
+    adaptive_safety_k=None,
+    adaptive_max_rmax=None,
+    adaptive_min_rmax=None,
 ):
     """Compute MC statistics for conditioning analysis in 2D.
 
@@ -246,8 +255,12 @@ def compute_mc_diagnostics_2d(
         p_x_mean: (2,) mean of 2D Gaussian p(x)
         p_x_std: (2,) std of 2D Gaussian p(x)
         r_max: Max spike count for entropy computation.
-            Required unless adaptive_r_max=True.
+            Set to None when adaptive_r_max=True.
         adaptive_r_max: If True, compute r_max adaptively from GP moments.
+            If False, r_max must be an int.
+        adaptive_safety_k: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_max_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
+        adaptive_min_rmax: Passed to compute_adaptive_rmax (required when adaptive_r_max=True).
 
     Returns:
         H_marg, H_cond, mu_marg, mu_cond_avg, sigma2_marg, sigma2_cond_avg
@@ -269,7 +282,10 @@ def compute_mc_diagnostics_2d(
     if adaptive_r_max:
         mu_g_marg = A * mu_marg + lambda0
         sigma2_g_marg = A ** 2 * sigma2_marg
-        r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg)
+        r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg,
+                                           safety_k=adaptive_safety_k,
+                                           max_rmax=adaptive_max_rmax,
+                                           min_rmax=adaptive_min_rmax)
     else:
         r_max_marg = r_max
 
@@ -296,7 +312,10 @@ def compute_mc_diagnostics_2d(
             if adaptive_r_max:
                 mu_g_cond = A * mu_cond_i + lambda0
                 sigma2_g_cond = A ** 2 * sigma2_cond_i
-                r_max_cond = compute_adaptive_rmax(mu_g_cond, sigma2_g_cond)
+                r_max_cond = compute_adaptive_rmax(mu_g_cond, sigma2_g_cond,
+                                                   safety_k=adaptive_safety_k,
+                                                   max_rmax=adaptive_max_rmax,
+                                                   min_rmax=adaptive_min_rmax)
             else:
                 r_max_cond = r_max
 
@@ -321,7 +340,8 @@ def compute_mc_diagnostics_2d(
 def plot_results_2d(model, train_x, train_y, lambda_fn,
                     eval_grid_x, eval_grid_y,
                     utility_standard, utility_distr_aware,
-                    p_x_mean=None, p_x_std=None, save_path=None):
+                    p_x_mean=None, p_x_std=None, save_path=None,
+                    clip_utility=True):
     """Create 2D visualization of GP fit and utility landscape.
 
     Args:
@@ -336,6 +356,8 @@ def plot_results_2d(model, train_x, train_y, lambda_fn,
         p_x_mean: (2,) mean of p(x) distribution
         p_x_std: (2,) std of p(x) distribution
         save_path: Optional path to save figure
+        clip_utility: If True (default), clip utilities to 99th percentile.
+            If False, show raw values (only replaces non-finite with max finite).
     """
     model.eval()
     n_x, n_y = eval_grid_x.shape
@@ -358,24 +380,35 @@ def plot_results_2d(model, train_x, train_y, lambda_fn,
     y_np = eval_grid_y.cpu().numpy()
     train_x_np = train_x.cpu().numpy()
 
-    # Clip utilities for visualization
-    def get_clip_value(arr, pctl=99):
+    # Handle non-finite values; optionally clip to 99th percentile
+    def replace_nonfinite(arr):
         finite_vals = arr[np.isfinite(arr)]
-        if len(finite_vals) == 0:
-            return 1.0
-        return np.percentile(finite_vals, pctl)
-
-    da_clip = get_clip_value(utility_da_2d, 99)
-    std_clip_raw = get_clip_value(utility_std_2d, 99)
-    std_clip = min(std_clip_raw, da_clip * 5) if da_clip > 0 else std_clip_raw
-
-    def clip_array(arr, clip_val):
-        result = np.clip(arr, None, clip_val)
-        result[~np.isfinite(result)] = clip_val
+        fill = finite_vals.max() if len(finite_vals) > 0 else 0.0
+        result = arr.copy()
+        result[~np.isfinite(result)] = fill
         return result
 
-    utility_std_clipped = clip_array(utility_std_2d, std_clip)
-    utility_da_clipped = clip_array(utility_da_2d, da_clip)
+    if clip_utility:
+        def get_clip_value(arr, pctl=99):
+            finite_vals = arr[np.isfinite(arr)]
+            if len(finite_vals) == 0:
+                return 1.0
+            return np.percentile(finite_vals, pctl)
+
+        da_clip = get_clip_value(utility_da_2d, 99)
+        std_clip_raw = get_clip_value(utility_std_2d, 99)
+        std_clip = min(std_clip_raw, da_clip * 5) if da_clip > 0 else std_clip_raw
+
+        def clip_array(arr, clip_val):
+            result = np.clip(arr, None, clip_val)
+            result[~np.isfinite(result)] = clip_val
+            return result
+
+        utility_std_clipped = clip_array(utility_std_2d, std_clip)
+        utility_da_clipped = clip_array(utility_da_2d, da_clip)
+    else:
+        utility_std_clipped = replace_nonfinite(utility_std_2d)
+        utility_da_clipped = replace_nonfinite(utility_da_2d)
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
@@ -408,22 +441,44 @@ def plot_results_2d(model, train_x, train_y, lambda_fn,
     ax3.set_title('GP Std')
     plt.colorbar(im3, ax=ax3)
 
+    # Clipped region masks (for hatching overlay) — only when clipping
+    if clip_utility:
+        std_clipped_mask = utility_std_2d > std_clip
+        da_clipped_mask = utility_da_2d > da_clip
+    else:
+        std_clipped_mask = np.zeros_like(utility_std_2d, dtype=bool)
+        da_clipped_mask = np.zeros_like(utility_da_2d, dtype=bool)
+
+    # Max locations from RAW (unclipped) utilities
+    std_finite = np.where(np.isfinite(utility_std_2d), utility_std_2d, -np.inf)
+    max_idx_std_raw = np.argmax(std_finite)
+    max_y_std, max_x_std = np.unravel_index(max_idx_std_raw, utility_std_2d.shape)
+
+    max_idx_da_raw = np.argmax(utility_da_2d)
+    max_y_da, max_x_da = np.unravel_index(max_idx_da_raw, utility_da_2d.shape)
+
+    clip_label = ' (clipped)' if clip_utility else ''
+
     # Row 2: Standard utility, Distribution-aware utility, Difference
     ax4 = axes[1, 0]
     im4 = ax4.contourf(x_np, y_np, utility_std_clipped, levels=20, cmap='Greens')
+    if np.any(std_clipped_mask):
+        ax4.contourf(x_np, y_np, std_clipped_mask.astype(float),
+                     levels=[0.5, 1.5], colors=['#cccccc'], alpha=0.6)
     ax4.scatter(train_x_np[:, 0], train_x_np[:, 1], c='red', s=30, marker='x')
-    max_idx = np.argmax(utility_std_clipped)
-    max_y, max_x = np.unravel_index(max_idx, utility_std_clipped.shape)
-    ax4.scatter([x_np[max_y, max_x]], [y_np[max_y, max_x]], c='yellow',
+    ax4.scatter([x_np[max_y_std, max_x_std]], [y_np[max_y_std, max_x_std]], c='yellow',
                 s=80, marker='o', edgecolors='black', linewidths=1.5, zorder=10, label='Max')
     ax4.set_xlabel('x')
     ax4.set_ylabel('y')
-    ax4.set_title('Standard Utility (clipped)')
+    ax4.set_title(f'Standard Utility{clip_label}')
     ax4.legend(loc='upper right', fontsize=8)
     plt.colorbar(im4, ax=ax4)
 
     ax5 = axes[1, 1]
     im5 = ax5.contourf(x_np, y_np, utility_da_clipped, levels=20, cmap='Blues')
+    if np.any(da_clipped_mask):
+        ax5.contourf(x_np, y_np, da_clipped_mask.astype(float),
+                     levels=[0.5, 1.5], colors=['#cccccc'], alpha=0.6)
     ax5.scatter(train_x_np[:, 0], train_x_np[:, 1], c='red', s=30, marker='x')
 
     if p_x_mean is not None and p_x_std is not None:
@@ -435,13 +490,11 @@ def plot_results_2d(model, train_x, train_y, lambda_fn,
         ax5.contour(x_np, y_np, p_x_2d, levels=[np.exp(-2), np.exp(-0.5)],
                     colors='orange', linewidths=2, linestyles='--')
 
-    max_idx_da = np.argmax(utility_da_clipped)
-    max_y_da, max_x_da = np.unravel_index(max_idx_da, utility_da_clipped.shape)
     ax5.scatter([x_np[max_y_da, max_x_da]], [y_np[max_y_da, max_x_da]],
                 c='yellow', s=80, marker='o', edgecolors='black', linewidths=1.5, zorder=10, label='Max')
     ax5.set_xlabel('x')
     ax5.set_ylabel('y')
-    ax5.set_title('Distr-Aware Utility\n(orange = p(x) 1s, 2s)')
+    ax5.set_title(f'Distr-Aware Utility{clip_label}\n(orange = p(x) 1s, 2s)')
     ax5.legend(loc='upper right', fontsize=8)
     plt.colorbar(im5, ax=ax5)
 
@@ -504,7 +557,11 @@ def main():
     # Evaluate standard utility (adaptive r_max for non-stationary kernels)
     print("\nEvaluating standard utility...")
     with torch.no_grad():
-        result_std = standard_utility(model, likelihood, eval_points, adaptive_r_max=True)
+        result_std = standard_utility(
+            model, likelihood, eval_points, r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
+        )
     utility_standard = result_std['utility']
 
     # Evaluate distribution-aware utility
@@ -517,7 +574,9 @@ def main():
     with torch.no_grad():
         result_da = distribution_aware_utility(
             model, likelihood, eval_points, x_samples,
-            adaptive_r_max=True
+            r_max=None, adaptive_r_max=True,
+            adaptive_safety_k=ADAPTIVE_SAFETY_K, adaptive_max_rmax=ADAPTIVE_MAX_RMAX,
+            adaptive_min_rmax=ADAPTIVE_MIN_RMAX
         )
     utility_distr_aware = result_da['utility']
 
@@ -545,7 +604,8 @@ def main():
         eval_grid_x, eval_grid_y,
         utility_standard, utility_distr_aware,
         p_x_mean=DEFAULT_P_X_MEAN_2D,
-        p_x_std=DEFAULT_P_X_STD_2D
+        p_x_std=DEFAULT_P_X_STD_2D,
+        clip_utility=False
     )
 
     print("\nDone!")
