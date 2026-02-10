@@ -52,28 +52,23 @@ Implementing the arc-sine kernel (Williams 1998) as an alternative to the arc-co
 
 4. **CONFIRMED**: Arc-cosine kernel gets 10 productive iterations at M=50 (loss drops from ~50 to 32, learns A and lambda0), then gets stuck. Arc-sine gets only 3 productive iterations.
 
-### Initial Beta Is Absurdly Broad
+### ~~Initial Beta Is Absurdly Broad~~ CORRECTED: Beta is fine
 
-5. **CONFIRMED**: `default_params.json` sets `kernel.beta = 0.1`. The locality mask is `alpha = exp(-beta * ||x - xi_0||^2)` in normalized [-1,1] coords. With beta=0.1:
-   - sigma = sqrt(1/(2*0.1)) = 2.24 in normalized coords (image spans 2.0)
-   - sigma = 119.6 pixels on a 108x108 image
-   - The initial RF covers MORE than the entire image at 1-sigma
-   - This means the initial kernel treats every pixel with nearly equal weight — effectively no spatial structure
-   - For reference: a ~30px RF needs beta=1.59, a ~20px RF needs beta=3.58
+5. **CORRECTED** (2026-02-10, follow-up session): The analysis below was **WRONG**. The locality mask in the code is `alpha = exp(-exp(raw) * dist_sq)` where `exp(raw) = 1/(4*beta_nat^2)`. For beta_nat=0.1, `exp(raw) = 25.0`, giving sigma = beta_nat * sqrt(2) = **0.1414 normalized = 7.6 pixels**. The previous session confused natural beta (0.1) with the Gaussian coefficient (25.0). The initial RF is reasonable (~15px diameter at 2-sigma), not 120px. The visualization code had the same bug (used natural beta in `sqrt(1/(2*beta))`) — fixed in 17a1630.
 
-6. **HYPOTHESIS**: This is a contributing factor to the LBFGS stuck pattern. The optimizer has to simultaneously shrink beta from "entire image" to "localized RF" while learning A, lambda0, and other params. The gradient landscape around beta=0.1 may have a steep cliff that causes LBFGS to overshoot on its first line search step.
+6. ~~HYPOTHESIS~~: Invalidated — the initial RF is not absurdly broad.
 
-### STA Center-of-Mass Is a Poor RF Center Estimate
+### STA Center-of-Mass Is a Poor RF Center Estimate — FIXED
 
-7. **CONFIRMED**: For cell 8, the STA center-of-mass (all 3160 images, z-scored) is at pixel (55.9, 42.0), but the STA peak (argmax of |STA|) is at pixel (64, 52). The distance is 12.9 pixels.
+7. **CONFIRMED**: For cell 8, the STA center-of-mass (all 3160 images, z-scored) was at pixel (55.9, 42.0), but the STA peak (argmax of |STA|) is at pixel (64, 52). The distance was 12.9 pixels.
 
-8. **CONFIRMED**: Only 15.4% of total |STA| mass is within 15px of the center-of-mass. The z-scored STA is very diffuse — background noise contributes significant mass that pulls the CoM away from the actual RF peak.
+8. **CONFIRMED**: Only 15.4% of total |STA| mass was within 15px of the center-of-mass. The z-scored STA is very diffuse — background noise contributes significant mass that pulls the CoM away from the actual RF peak.
 
-9. **HYPOTHESIS**: Using argmax or thresholded center-of-mass (e.g., only pixels above 90th percentile of |STA|) would give a more accurate initial RF center. This matters because the initial center affects inducing point selection via pivoted Cholesky.
+9. **FIXED** (17a1630): `compute_rf_center_from_sta()` in `utils.py` now uses Gaussian-smoothed argmax (blur_sigma=3px) instead of center-of-mass. New center is 0px from raw argmax for cell 8.
 
-## Debug Logs (Temporary)
+## Debug Logs — REMOVED
 
-`gpy_training.py` contains temporary DEBUG closure counters (total/kernel_oob/lik_oob/exception/nan_inf/ok) and per-iteration summary prints. These are NOT committed. They must be **removed before committing** — they are purely diagnostic and add noise to training output.
+Debug closure counters were removed from `gpy_training.py` (they were never committed). The closure guards (params_in_bounds, try/except, NaN check) remain.
 
 ## Why This Was Stopped
 
@@ -112,17 +107,20 @@ Context ran out. The arc-sine kernel is implemented, the LBFGS stability fixes a
 
 ## If Someone Revisits This
 
-**Most promising next steps (in order):**
+**Completed (follow-up session, 2026-02-10):**
 
-1. **Remove DEBUG closure counters** from `gpy_training.py` before committing anything else. They are temporary diagnostic code.
+1. ~~Remove DEBUG closure counters~~ — DONE (were never committed, removed to restore clean state)
+2. ~~Investigate initial beta~~ — RESOLVED: beta=0.1 gives sigma=7.6px, not 120px. Previous analysis was wrong. No change needed.
+3. ~~Investigate STA center accuracy~~ — DONE: switched to smoothed argmax in `utils.py` (17a1630). 0px error vs 12.9px with old CoM.
+4. ~~Commit remaining work~~ — DONE: run_arcsine.py viz (17a1630), ported to run_single_mode.py (5869c75).
 
-2. **Investigate initial beta**: Consider changing `default_params.json` kernel.beta from 0.1 to something reasonable (e.g., 1.0 gives sigma~50px, a moderate initial RF). Test both kernels at M=50 and M=100 to see if a tighter initial beta helps LBFGS make more progress. This is likely the single biggest improvement for training stability.
+**Remaining next steps:**
 
-3. **Investigate STA center accuracy**: Try argmax instead of center-of-mass in `compute_rf_center_from_sta()`, or use a thresholded CoM (only pixels above some |STA| percentile). Compare the initial RF center to the trained one.
+1. **Investigate test_r regression**: Arc-sine M=100 dropped from 0.765 to 0.545 between sessions. Cause still unclear.
 
-4. **Investigate test_r regression**: Arc-sine M=100 dropped from 0.765 to 0.545 between sessions. Run with the same parameters and check whether the params_in_bounds() checks are interfering with optimization.
+2. **Investigate LBFGS stuck pattern at M=50**: Both kernels get stuck after a few productive iterations. The initial beta is NOT the cause (it's reasonable). Root cause is likely the Cholesky failures during line search with only 50 inducing points.
 
-5. **Commit remaining work**: After removing debug code, commit run_arcsine.py visualization changes and the eigenspace_mstep.py ArcSineKernel guard.
+3. **Commit eigenspace_mstep.py ArcSineKernel guard** (from a previous session, still uncommitted).
 
 **Do NOT retry**: The LBFGS closure diagnostic approach (printing all params on kernel_oob) was useful for understanding the stuck pattern but should not be kept in production code.
 
@@ -139,21 +137,19 @@ Context ran out. The arc-sine kernel is implemented, the LBFGS stability fixes a
 ## Continuation Prompt
 
 ```
-I'm continuing the arc-sine kernel implementation on branch pietro/arcsine-kernel.
+I'm continuing the arc-sine kernel investigation on branch pietro/arcsine-kernel.
 
-Read these files first:
-1. `investigations/arcsine_kernel/HANDOFF.md` — full context, findings, next steps
-2. `gpy_training.py` — has TEMPORARY DEBUG closure counters that MUST be removed
-3. `default_params.json` kernel section — initial beta=0.1 is too broad (see handoff)
-4. `utils.py:20-91` — compute_rf_center_from_sta uses CoM (12.9px off from STA peak)
+Read: `investigations/arcsine_kernel/HANDOFF.md`
 
-Key context from previous session:
-- params_in_bounds() and clamp_params() are committed (17a0c57)
-- Arc-sine kernel and NaN guard are committed (65dca99, 62d8172)
-- run_arcsine.py has STA+RF visualization (uncommitted)
-- Two issues found: (1) initial beta=0.1 gives sigma=120px (entire image),
-  (2) STA center-of-mass is 12.9px away from STA peak for cell 8
+Key context:
+- Arc-sine kernel, NaN guard, params_in_bounds all committed
+- STA+RF visualization committed in both run_arcsine.py and run_single_mode.py
+- RF center now uses smoothed argmax (was CoM, 12.9px off — fixed)
+- Initial beta=0.1 is FINE (sigma=7.6px, previous "120px" claim was a math error)
+- gpy_training.py debug counters removed (clean)
 
-Priority: remove debug code, then investigate initial beta impact on training.
-Check git status and git branch before starting.
+Open issues:
+1. Arc-sine M=100 test_r regression (0.765 → 0.545 between sessions)
+2. LBFGS stuck pattern at M=50 (both kernels, root cause unclear)
+3. eigenspace_mstep.py has uncommitted ArcSineKernel guard
 ```
