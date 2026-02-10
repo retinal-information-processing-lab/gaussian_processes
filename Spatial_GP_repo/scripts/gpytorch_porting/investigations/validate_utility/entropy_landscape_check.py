@@ -28,20 +28,14 @@ sys.path.insert(0, str(_gpytorch_dir))
 
 from run_single_mode import run_single_config, build_config_from_defaults
 
-# Import compute_H with side-effect guard
-_repo_root = _gpytorch_dir.parent.parent
-_scripts_dir = _repo_root / "scripts"
+# Import compute_H from local utils.py via importlib (avoids sys.modules shadowing)
+import importlib.util
+_local_utils_path = _gpytorch_dir / 'utils.py'
+_spec = importlib.util.spec_from_file_location("gpytorch_porting_utils", str(_local_utils_path))
+_local_utils = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_local_utils)
 
-_prev_path = sys.path.copy()
-_prev_dtype = torch.get_default_dtype()
-
-sys.path.append(str(_repo_root))
-sys.path.append(str(_scripts_dir / "1D_playground"))
-
-from gp_utility_playground import compute_H
-
-sys.path = _prev_path
-torch.set_default_dtype(_prev_dtype)
+compute_H = _local_utils.compute_H
 
 # ---------------------------------------------------------------------------
 # Investigation parameters

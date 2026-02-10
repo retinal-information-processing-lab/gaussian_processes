@@ -1,0 +1,410 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[margin=1in]{geometry}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{Norm Scaling in Arc-Cosine Kernel:\\Why Unconstrained Gradient Ascent on DA Utility Diverges}
+\author{Investigation notes --- \texttt{validate\_utility/}}
+\date{February 2026}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+
+We consider a sparse variational GP with a Poisson observation model:
+\begin{align}
+    r(x) &\sim \text{Poisson}(f(x)), \quad f(x) = \exp(A \lambda(x) + \lambda_0) \\
+    \lambda &\sim \mathcal{GP}(0, K_\theta)
+\end{align}
+with variational approximation $q(\tilde{\lambda}) = \mathcal{N}(m, V)$ at inducing points $\{\tilde{z}_j\}_{j=1}^M$.
+
+The approximate posterior at any point $x$ is:
+\begin{align}
+    \mu(x) &= k(x)^\top \tilde{K}^{-1} m \label{eq:post_mean}\\
+    \sigma^2(x) &= K(x,x) + k(x)^\top \tilde{K}^{-1}(V - \tilde{K})\tilde{K}^{-1} k(x) \label{eq:post_var}
+\end{align}
+where $k(x) = [K(x, \tilde{z}_1), \ldots, K(x, \tilde{z}_M)]^\top$ and $\tilde{K} = K(\tilde{Z}, \tilde{Z})$.
+
+The posterior covariance between two points $x, x'$ is:
+\begin{equation}\label{eq:post_cov}
+    \Sigma_q(x, x') = K(x, x') + k(x)^\top \tilde{K}^{-1}(V - \tilde{K})\tilde{K}^{-1} k(x')
+\end{equation}
+
+The distribution-aware (DA) utility of a candidate $x^*$, conditioned on a single target $x_t$, is:
+\begin{equation}\label{eq:da_utility}
+    U_{\text{DA}}(x^*) = H_{\text{marg}}(x^*) - H_{\text{cond}}(x^* \mid \lambda(x_t))
+\end{equation}
+where $H_{\text{marg}}$ is the marginal entropy of $r(x^*)$ under the GP posterior,
+and $H_{\text{cond}}$ is the entropy after Gaussian conditioning on the observed $\lambda(x_t)$.
+
+The conditioning formulas (standard Gaussian conditioning) are:
+\begin{align}
+    \mu_{\text{cond}}(x^*) &= \mu(x^*) + \frac{\Sigma_q(x^*, x_t)}{\Sigma_q(x_t, x_t)} \bigl(\lambda_t - \mu(x_t)\bigr) \label{eq:cond_mean}\\
+    \sigma^2_{\text{cond}}(x^*) &= \sigma^2(x^*) - \frac{\Sigma_q(x^*, x_t)^2}{\Sigma_q(x_t, x_t)} \label{eq:cond_var}
+\end{align}
+
+The kernel is the first-order arc-cosine kernel:
+\begin{equation}\label{eq:kernel}
+    K(x, x') = \frac{1}{\pi} \sqrt{v_x \cdot v_{x'}} \cdot J(\theta)
+\end{equation}
+where
+\begin{align}
+    v_x &= x^\top C x + \sigma_0^2, \label{eq:vx}\\
+    \cos\theta &= \frac{x^\top C x' + \sigma_0^2}{\sqrt{v_x \cdot v_{x'}}}, \label{eq:costheta}\\
+    J(\theta) &= \sin\theta + (\pi - \theta)\cos\theta, \label{eq:J}
+\end{align}
+with $C$ the structured covariance matrix encoding the receptive field,
+and $\sigma_0^2$ a bias variance parameter.
+
+%----------------------------------------------------------------------
+\section{Homogeneity of the Kernel ($\sigma_0^2 = 0$)}
+%----------------------------------------------------------------------
+
+\begin{theorem}[Cross-kernel proportionality]\label{thm:proportionality}
+Let $\sigma_0^2 = 0$. Let $x^* = c \, x_t$ for scalar $c > 0$. Then for any point $z$:
+\begin{equation}
+    K(x^*, z) = c \cdot K(x_t, z)
+\end{equation}
+and consequently $k(x^*) = c \cdot k(x_t)$.
+\end{theorem}
+
+\begin{proof}
+With $\sigma_0^2 = 0$, the quadratic forms become $v_{x^*} = c^2 (x_t^\top C x_t) = c^2 q$
+where $q \triangleq x_t^\top C x_t$, and $v_{x_t} = q$.
+
+For any point $z$ with $v_z = z^\top C z$:
+\[
+    \cos\theta(x^*, z) = \frac{(cx_t)^\top C z}{\sqrt{c^2 q \cdot v_z}}
+    = \frac{c \, x_t^\top C z}{c \sqrt{q \cdot v_z}}
+    = \frac{x_t^\top C z}{\sqrt{q \cdot v_z}}
+    = \cos\theta(x_t, z).
+\]
+Since $\theta(x^*, z) = \theta(x_t, z)$, we have $J(\theta(x^*, z)) = J(\theta(x_t, z))$. Then:
+\[
+    K(x^*, z) = \frac{1}{\pi}\sqrt{c^2 q \cdot v_z} \cdot J(\theta(x_t, z))
+    = c \cdot \frac{1}{\pi}\sqrt{q \cdot v_z} \cdot J(\theta(x_t, z))
+    = c \cdot K(x_t, z).
+\]
+Applying this to each inducing point $z = \tilde{z}_j$ gives $k(x^*) = c \cdot k(x_t)$.
+\end{proof}
+
+\begin{corollary}[Perfect posterior correlation]\label{cor:rho}
+Under the conditions of Theorem~\ref{thm:proportionality}, the posterior correlation
+between $x^*$ and $x_t$ is exactly~1:
+\begin{equation}
+    \rho^2 \triangleq \frac{\Sigma_q(x^*, x_t)^2}{\Sigma_q(x^*, x^*) \cdot \Sigma_q(x_t, x_t)} = 1.
+\end{equation}
+\end{corollary}
+
+\begin{proof}
+Define $W \triangleq \tilde{K}^{-1}(V - \tilde{K})\tilde{K}^{-1}$.
+From Theorem~\ref{thm:proportionality}, $k(x^*) = c \, k(x_t)$, and
+$K(x^*, x_t) = c \, K(x_t, x_t) = c \, v_t$ (using $\theta(x^*, x_t) = 0$
+when $x^* \parallel x_t$, so $J(0) = \pi$ and $K(x_t, x_t) = v_t$).
+
+Substituting into~\eqref{eq:post_cov}:
+\begin{align}
+    \Sigma_q(x^*, x_t) &= c \, v_t + c \, k(x_t)^\top W \, k(x_t) = c \cdot \Sigma_q(x_t, x_t), \label{eq:cov_scale}\\
+    \Sigma_q(x^*, x^*) &= c^2 v_t + c^2 k(x_t)^\top W \, k(x_t) = c^2 \cdot \Sigma_q(x_t, x_t). \label{eq:var_scale}
+\end{align}
+Therefore:
+\[
+    \rho^2 = \frac{[c \cdot \Sigma_q(x_t, x_t)]^2}{c^2 \cdot \Sigma_q(x_t, x_t) \cdot \Sigma_q(x_t, x_t)} = 1.
+\]
+\end{proof}
+
+\begin{corollary}[Scaling of posterior moments]\label{cor:moments}
+Under the conditions of Theorem~\ref{thm:proportionality}:
+\begin{align}
+    \mu(c \, x_t) &= c \cdot \mu(x_t), \label{eq:mu_scale}\\
+    \sigma^2(c \, x_t) &= c^2 \cdot \sigma^2(x_t). \label{eq:var_scale2}
+\end{align}
+\end{corollary}
+
+\begin{proof}
+Direct substitution of $k(x^*) = c \, k(x_t)$ into~\eqref{eq:post_mean} and~\eqref{eq:post_var}.
+\end{proof}
+
+\begin{remark}[Effect of $\sigma_0^2 > 0$]\label{rem:sigma0}
+When $\sigma_0^2 > 0$, the above results hold approximately.
+The exact expressions are:
+\begin{align}
+    v_{cx_t} &= c^2 q + \sigma_0^2 \neq c^2 (q + \sigma_0^2) = c^2 v_t, \\
+    \cos\theta(cx_t, z) &= \frac{c \, x_t^\top C z + \sigma_0^2}{\sqrt{(c^2 q + \sigma_0^2) v_z}}
+    \neq \cos\theta(x_t, z) \quad \text{in general.}
+\end{align}
+
+The fractional error $|K(cx, z) - c \, K(x, z)| / |c \, K(x,z)|$ converges to a
+\emph{constant} $O(\sigma_0^2/v_t)$ as $c \to \infty$, not to zero.
+This is because $\sigma_0^2$ shifts the angle $\theta(cx_t, z)$ relative to
+$\theta(x_t, z)$ by an amount that depends on $\sigma_0^2/v_t$, independent of $c$.
+
+In our trained model, $v_t = q + \sigma_0^2 \approx 669$ with
+$\sigma_0^2 \approx 0.98$, giving $\sigma_0^2 / v_t \approx 0.0015$.
+Numerically verified (\texttt{verify\_conclusions.py}, test C7):
+the mean fractional error in $K(cx_t, z_j)$ converges to
+$\approx 0.6\%$ for large $c$ (slightly larger than $\sigma_0^2/v_t$
+because both magnitude and angle corrections contribute).
+The posterior correlation converges to $\rho^2 \approx 0.987$
+(test C3), giving a residual variance ratio of $\approx 1.3\%$.
+Conditioning remains very effective but not perfect.
+\end{remark}
+
+%----------------------------------------------------------------------
+\section{Consequences for Conditioning}
+%----------------------------------------------------------------------
+
+From Corollary~\ref{cor:rho}, when $\rho^2 = 1$, the conditional variance~\eqref{eq:cond_var} becomes:
+\begin{equation}
+    \sigma^2_{\text{cond}}(x^*) = \sigma^2(x^*)(1 - \rho^2) = 0.
+\end{equation}
+
+The conditional mean~\eqref{eq:cond_mean} with $\lambda_t = \mu(x_t)$
+(deterministic, i.e.\ \texttt{sample\_lambda=False}) and
+using~\eqref{eq:cov_scale} becomes:
+\begin{equation}
+    \mu_{\text{cond}}(x^*) = c \, \mu(x_t) + c \cdot (\mu(x_t) - \mu(x_t)) = c \, \mu(x_t) = \mu(x^*).
+\end{equation}
+
+So in the exact parallel case ($\theta = 0$, $\sigma_0^2 = 0$):
+\begin{itemize}
+    \item The conditional mean equals the marginal mean: $\mu_{\text{cond}} = \mu$.
+    \item The conditional variance is zero: $\sigma^2_{\text{cond}} = 0$.
+    \item The conditional entropy reduces to the entropy of a single Poisson:
+    \begin{equation}
+        H_{\text{cond}} = H_{\text{Poisson}}\!\bigl(\exp(\mu_g)\bigr),
+        \quad \mu_g \triangleq A \, \mu(x^*) + \lambda_0.
+    \end{equation}
+\end{itemize}
+
+The DA utility~\eqref{eq:da_utility} becomes:
+\begin{equation}\label{eq:utility_decomp}
+    U_{\text{DA}}(c \, x_t) = H_{\text{marg}}(\mu_g, \sigma^2_g) - H_{\text{Poisson}}(\exp(\mu_g))
+\end{equation}
+where $\mu_g = A c \, \mu(x_t) + \lambda_0$ and $\sigma^2_g = A^2 c^2 \sigma^2(x_t)$.
+
+%----------------------------------------------------------------------
+\section{Why Utility Grows with $c$}
+%----------------------------------------------------------------------
+
+\begin{proposition}[Gaussian observation model: logarithmic growth]\label{prop:gaussian}
+If the observation model were Gaussian, i.e.\
+$r(x) \sim \mathcal{N}(\lambda(x), \tau^2)$ for fixed noise variance $\tau^2$,
+then the DA utility grows as $\log(c)$ for $\rho = 1$ and $\sigma^2 = c^2 \sigma^2(x_t)$.
+\end{proposition}
+
+\begin{proof}
+For Gaussian observations with GP prior variance $\sigma^2$ and noise $\tau^2$:
+\begin{align}
+    H_{\text{marg}} &= \tfrac{1}{2}\log\bigl(2\pi e (\sigma^2 + \tau^2)\bigr), \\
+    H_{\text{cond}} &= \tfrac{1}{2}\log\bigl(2\pi e (\sigma^2_{\text{cond}} + \tau^2)\bigr)
+    = \tfrac{1}{2}\log(2\pi e \, \tau^2) \quad [\text{since } \sigma^2_{\text{cond}} = 0].
+\end{align}
+Therefore:
+\[
+    U = \tfrac{1}{2}\log\!\bigl(1 + \sigma^2/\tau^2\bigr).
+\]
+Since $\sigma^2 = c^2 \sigma^2(x_t)$ (Corollary~\ref{cor:moments}), for large $c$:
+\[
+    U \approx \tfrac{1}{2}\log(c^2 \sigma^2(x_t)/\tau^2) = \log(c) + \text{const}.
+\]
+Growth is logarithmic and unbounded, but slow.
+\end{proof}
+
+\begin{remark}[What the Gaussian case shows]\label{rem:gaussian_growth}
+The Gaussian case already exhibits unbounded growth --- norm scaling is not
+specific to the Poisson model. However, because growth is only $\log(c)$,
+the gradient $dU/dc \sim 1/c$ vanishes for large $c$, making gradient ascent
+increasingly inefficient. A gradient-based optimizer would slow down but
+never fully stop. The distinction with the Poisson case is the \emph{rate}
+of growth, not its presence.
+\end{remark}
+
+For the Poisson-GP model, the marginal entropy involves:
+\begin{equation}
+    H_{\text{marg}}(\mu_g, \sigma^2_g) = -\sum_r p(r) \log p(r), \quad
+    p(r) = \int \frac{e^{gr - e^g}}{r!} \, \mathcal{N}(g \mid \mu_g, \sigma^2_g) \, dg.
+\end{equation}
+This integral is computed via the Laplace approximation (see \texttt{\_diff\_laplace\_log\_probs}
+in \texttt{utils.py}).
+
+We do not have a closed-form expression for $H_{\text{marg}}(\mu_g, \sigma^2_g)$
+in the Poisson-GP case. The following is a heuristic argument supported by
+numerical evidence.
+
+\paragraph{Heuristic argument.}
+For large $\sigma^2_g$, the distribution $p(r)$ is a Poisson mixture
+over log-normally distributed rates: $f = e^g$ with $g \sim \mathcal{N}(\mu_g, \sigma^2_g)$.
+
+We claim $H_{\text{marg}} \geq H_{\text{Poisson}}(\mathbb{E}[f])$.
+This is plausible because Poisson mixtures are overdispersed
+($\text{Var}[R] > \mathbb{E}[R]$), hence ``more spread out'' than a single
+Poisson at the same mean. However, a rigorous proof of this bound is not
+provided here.  (Note: the Poisson does \emph{not} maximize entropy on
+$\mathbb{N}_0$ under a mean constraint alone --- the geometric distribution
+does. The Poisson maximizes entropy only under the joint constraint
+$\text{Var} = \text{mean}$, so the max-entropy argument does not directly
+apply.)  The bound is consistent with the numerical evidence
+($\alpha \approx 1.9$ from \texttt{verify\_conclusions.py}).
+
+With $\mathbb{E}[f] = e^{\mu_g + \sigma^2_g/2}$ and the large-$\lambda$
+Poisson entropy $H_{\text{Poisson}}(\lambda) \approx \frac{1}{2}\log(2\pi e \lambda)$:
+\[
+    H_{\text{marg}} \geq \tfrac{1}{2}\log(2\pi e) + \tfrac{1}{2}(\mu_g + \sigma^2_g/2).
+\]
+The dominant term for large $c$ is $\frac{1}{4}\sigma^2_g = \frac{1}{4}A^2 c^2 \sigma^2(x_t)$.
+
+Meanwhile, $H_{\text{cond}} = H_{\text{Poisson}}(\exp(\mu_g))$ depends only on $\mu_g$,
+which grows as $c$ (not $c^2$). Therefore:
+\[
+    U_{\text{DA}} = H_{\text{marg}} - H_{\text{cond}} \gtrsim \tfrac{1}{4}\sigma^2_g \propto c^2,
+\]
+which is faster than the $\log(c)$ growth in the Gaussian case.
+
+\textbf{Numerical calibration} (\texttt{verify\_conclusions.py}, test C4):
+Fitting $U_{\text{DA}} \sim c^\alpha$ over the Laplace-valid range
+($c \in \{2, 5, 10\}$, all with $\sum p(r) > 0.95$) gives
+$\alpha \approx 1.9$, consistent with the predicted $c^2$ scaling.
+
+\textbf{Caveat:} The Laplace approximation truncates at $r_{\max} = 100$
+and breaks when $\sigma^2_g$ becomes large enough that the firing rate
+distribution has significant mass at $r > r_{\max}$.
+A useful pre-check is the ``Laplace safety score''
+$z_{\text{safe}} = (\log r_{\max} - \mu_g)/\sqrt{\sigma^2_g}$;
+values below 2 indicate unreliable entropy estimates.
+In our model, $z_{\text{safe}} < 2$ is reached at $c \approx 10$
+($\mu_g = 0.4$, $\sigma^2_g = 5.0$), limiting the numerically
+verifiable range.  Beyond this, the $c^2$ growth is predicted
+by the bound but cannot be confirmed computationally without
+increasing $r_{\max}$.
+
+%----------------------------------------------------------------------
+\section{Numerical Evidence}
+%----------------------------------------------------------------------
+
+The following values were obtained from \texttt{diagnose\_extreme.py} with
+a trained model (seed=42, cell=8, $M=50$, $n_{\text{train}}=50$, default\_gpy).
+Trained parameters: $A = 0.0265$, $\lambda_0 = -1.686$.
+
+\begin{center}
+\begin{tabular}{lrrrrrl}
+\hline
+Image & $\mu$ & $\sigma^2$ & $\mu_g$ & $\sigma^2_g$ & angle (rad) & notes \\
+\hline
+$x_t$ (target) & 7.86 & 70.9 & $-1.48$ & 0.050 & 0 & natural image \\
+$x^*_{\text{DA}}$ & 101 & 3{,}240 & 0.99 & 2.28 & 0.114 & DA-optimized \\
+$x^*_{\text{Std}}$ & 68{,}497 & $2.85 \times 10^8$ & 1816 & $2.0 \times 10^5$ & 0.866 & Std-optimized \\
+natural & $[-6, 16]$ & $[57, 267]$ & $[-1.8, -1.3]$ & $[0.04, 0.19]$ & $[0.6, 0.7]$ & pool images \\
+\hline
+\end{tabular}
+\end{center}
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\hline
+Image & $\sum p(r)$ & $H_{\text{marg}}$ & $H_{\text{cond}}$ & $U_{\text{DA}}$ & var.\ ratio \\
+\hline
+$x_t$ & 1.000 & 0.593 & 0.583 & 0.010 & 0.000003 \\
+$x^*_{\text{DA}}$ & 0.984 & 2.836 & 2.036 & 0.800 & 0.060 \\
+$x^*_{\text{Std}}$ & 0.000007 & 0.00009 & 0.00009 & $\sim$0 ($U_{\text{std}} = \infty$) & 0.9999 \\
+natural & $\sim$1.0 & $[0.49, 0.69]$ & $[0.49, 0.69]$ & $[0.0001, 0.006]$ & $[0.82, 1.0]$ \\
+\hline
+\end{tabular}
+\end{center}
+
+Key observations:
+\begin{enumerate}
+    \item \textbf{DA-optimized image ($\theta = 0.114$ rad):}
+    After 5000 gradient ascent steps, $\mu(x^*) = 101$
+    ($\approx 13 \times \mu(x_t)$; C-norm ratio $\sqrt{K(x^*,x^*)/K(x_t,x_t)} \approx 7.8$).
+    The variance ratio $\sigma^2_{\text{cond}}/\sigma^2 = 0.060$ confirms
+    strong conditioning ($\rho^2 \approx 0.94$, consistent with $\theta = 6.5°$).
+    The log-firing rate mean $\mu_g = 0.99$ is in the useful band
+    $[-5, 10]$ because $A = 0.0265$ compresses the raw GP mean.
+    The utility $U_{\text{DA}} = 0.800$ is genuine.
+
+    \item \textbf{Std-optimized image ($\theta = 0.866$ rad):}
+    Standard utility diverged after 1479 steps (utility $= \infty$ from overflow).
+    With $\mu_g = 1816$, the Laplace approximation catastrophically fails
+    ($\sum p(r) = 7 \times 10^{-6}$). The entropy is numerically zero.
+    The \texttt{nd\_utility\_new} formula involves $\exp(\mu_g + \sigma^2_g/2)$
+    which overflows float32. Note the large angle ($0.87$ rad vs $0.11$ for DA):
+    without conditioning to preserve alignment, the standard utility optimizer
+    diverged in a different direction.
+
+    \item \textbf{Natural images ($\theta \approx 0.65$ rad):}
+    The large angle to the target gives weak conditioning (variance ratio $> 0.82$),
+    resulting in tiny utility $U_{\text{DA}} < 0.006$.
+
+    \item \textbf{Threshold for DA collapse:}
+    DA utility will eventually collapse when $\mu_g > 10$ (edge of useful band).
+    This requires $\mu(x^*) > (10 - \lambda_0)/A \approx 441$, i.e.\
+    $c > 441/\mu(x_t) \approx 56$.
+    At the current DA-optimized image with $\mu = 101$, there is
+    still substantial headroom ($101/441 \approx 23\%$ of threshold).
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Summary}
+%----------------------------------------------------------------------
+
+The divergence of unconstrained gradient ascent on DA utility has a precise
+mathematical cause:
+
+\begin{enumerate}
+    \item \textbf{Proved} (Theorem~\ref{thm:proportionality}, Corollary~\ref{cor:rho}):
+    For the arc-cosine kernel with $\sigma_0^2 = 0$, scaling an image
+    $x^* = c \, x_t$ preserves the posterior correlation exactly at $\rho = 1$,
+    regardless of $c$. The cross-kernel vector scales as $k(cx) = c \, k(x)$,
+    making the posterior covariance structure proportional.
+    For $\sigma_0^2 > 0$, the fractional error converges to a constant
+    $O(\sigma_0^2/v_t) \approx 0.6\%$ (Remark~\ref{rem:sigma0});
+    $\rho^2$ converges to $\approx 0.987$ (not 1.0), giving a residual
+    variance ratio of $\approx 1.3\%$.
+
+    \item \textbf{Proved} (Corollary~\ref{cor:moments}):
+    The posterior mean scales as $\mu(cx) = c \, \mu(x)$ and the posterior
+    variance as $\sigma^2(cx) = c^2 \, \sigma^2(x)$.
+
+    \item \textbf{Proved} (Proposition~\ref{prop:gaussian}, Remark~\ref{rem:gaussian_growth}):
+    Even for Gaussian observations, utility grows as $\log(c)$
+    (unbounded but slow). The key issue is not unique to the Poisson model.
+
+    \item \textbf{Not proved, numerically confirmed} ($\alpha \approx 1.9$):
+    For the Poisson-GP with exponential link, utility grows as
+    $U_{\text{DA}} \sim c^\alpha$ with $\alpha \approx 1.9$ in the
+    Laplace-valid range ($c \leq 10$, $z_{\text{safe}} > 1.5$).
+    This is consistent with the heuristic lower bound $\propto c^2$
+    and much faster than the $\log(c)$ growth in the Gaussian case.
+    The exponential link function amplifies GP variance into
+    firing-rate uncertainty nonlinearly.
+
+    \item \textbf{Numerically confirmed}:
+    After 5000 gradient ascent steps ($\theta = 0.114$ rad, $\mu = 101$),
+    the DA utility of 0.800 is genuine (Laplace approximation valid,
+    $\sum p(r) = 0.984$, $\mu_g = 0.99$ in useful band).
+    The optimizer found a real loophole, not a numerical artifact.
+    Additionally, fixed-angle scaling experiments (test C8) confirm that
+    utility growth with norm is strongly angle-dependent: effective at
+    small angles ($\theta < 0.2$ rad) where conditioning is strong,
+    negligible at large angles ($\theta > 0.6$ rad) where conditioning
+    is weak.
+\end{enumerate}
+
+The root cause is that the arc-cosine kernel is a \emph{positively homogeneous}
+function of its inputs: $K(cx, y) = c \, K(x, y)$ when $\sigma_0^2 = 0$.
+This makes norm and direction completely decoupled in the GP posterior.
+Gradient ascent exploits the norm degree of freedom to increase variance
+(and thus entropy and utility) without sacrificing the conditioning
+benefit provided by directional alignment.
+
+Any practical use of gradient-based image optimization with this kernel
+requires either a norm constraint or a normalized kernel
+$\bar{K}(x,x') = K(x,x')/\sqrt{K(x,x) K(x',x')}$ that depends only on angle.
+
+\end{document}
