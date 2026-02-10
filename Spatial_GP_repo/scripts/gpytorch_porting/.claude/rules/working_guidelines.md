@@ -70,6 +70,23 @@
 - Surprising results ( good and bad ) should be comminucated shortly
 - Make sure you communicate code changes you are doing so they do not pass unnoticed. Especially when edits are accepted automatically.
 
+### 2.7 Verification Signal
+
+**`[?]` appended to a claim = verify carefully against sources**
+
+Response protocol:
+1. Check authoritative sources first (code with line numbers, docs with sections, memory)
+2. State confidence: "Confirmed" / "Partially correct" / "Incorrect" / "Uncertain - no source found"
+3. Cite evidence (file:line, section refs, or "not documented")
+4. Explain more thoroughly than unmarked claims
+
+Example:
+> "K_tilde_b is diagonal in eigenspace [?]"
+
+"Confirmed. `eigenspace_utils.py:45-48` creates `K_tilde_b = diag(eigvals[kept])`. This is why line 73 uses element-wise ops instead of matrix solve."
+
+When sources conflict, flag both explicitly and ask user which is correct.
+
 ---
 
 ## 3. Development Process
@@ -387,10 +404,21 @@ The user is new to git. Provide occasional nudges, but don't make version contro
 - Git is a tool, not the goal
 
 ## 8.4 Git safety
-   - Always run `git branch --show-current` before making commits or 
+   - Always run `git branch --show-current` before making commits or
    - switching branches. Confirm with me before any branch operations.
-   - DO NOT USE MAIN, DO NOT BRANCH FROM MAIN. THE REFERENCE BRANCH IS PIETRO/WORKINGBRANCH . 
+   - DO NOT USE MAIN, DO NOT BRANCH FROM MAIN. THE REFERENCE BRANCH IS PIETRO/WORKINGBRANCH .
    That is where to branch from for all bug fixed and new features
+
+### 8.5 Git Worktrees (Multiple Sessions)
+
+When multiple Claude sessions work on different branches simultaneously, we use **git worktrees** to avoid branch-switching conflicts. Each worktree is a separate directory with its own branch.
+
+- **NEVER use `git checkout` or `git switch`** when multiple worktrees are active — it changes files for ALL sessions sharing that directory
+- Use `git worktree add <path> <branch>` to create a new worktree for a different branch
+- Use `git worktree list` to see all active worktrees
+- Use `git worktree remove <path>` to clean up when done
+- A **SessionStart hook** (`.claude/hooks/worktree-check.sh`) automatically checks worktree status and injects context — Claude should present this to the user at session start
+- `pietro/workingbranch` is the default working branch — no special handling needed when on it (unless multiple worktrees are active)
 
 ---
 
