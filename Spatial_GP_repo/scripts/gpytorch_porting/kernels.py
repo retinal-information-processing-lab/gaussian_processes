@@ -567,6 +567,82 @@ class ArcCosineKernelNormalized(ArcCosineKernel):
         return J / torch.pi
 
 
+class ArcSineKernel(ArcCosineKernel):
+    """Arc-sine kernel (Williams 1998) with full RF structure.
+
+    K_sat(x, x') = (2/pi) * arcsin( (x^T C x' + sigma_0^2)
+                                     / sqrt((1 + v_x)(1 + v_x')) )
+
+    where v_x = x^T C x + sigma_0^2. Derived from an infinite-width
+    single-hidden-layer network with erf activation (same depth as
+    arc-cosine, different nonlinearity).
+
+    K_sat(x,x) saturates smoothly at 1 for large v_x, preventing the
+    quadratic growth of the arc-cosine kernel. The "+1" in the denominator
+    is intrinsic to the erf-network derivation, not a design choice.
+
+    All RF structure (C matrix, masking, parameter bounds) is inherited
+    from ArcCosineKernel. Only autograd gradient mode is supported.
+
+    TEMPORARY: Subclasses ArcCosineKernel for expedience. If this kernel
+    proves useful, the shared C-matrix infrastructure should be factored
+    into a dedicated base class.
+
+    Parameters: Same as ArcCosineKernel. gradient_mode forced to 'autograd'.
+    """
+
+    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
+                 eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
+                 use_mask=True, gradient_mode='autograd', **kwargs):
+        if gradient_mode != 'autograd':
+            warnings.warn(
+                f"ArcSineKernel only supports autograd gradient mode. "
+                f"Ignoring gradient_mode='{gradient_mode}'."
+            )
+        super().__init__(
+            n_px_side=n_px_side, sigma_0=sigma_0, Amp=Amp,
+            eps_0x=eps_0x, eps_0y=eps_0y, beta=beta, rho=rho,
+            use_mask=use_mask, gradient_mode='autograd', **kwargs
+        )
+
+    def forward(self, x1, x2, diag=False, **params):
+        """Compute the arc-sine kernel matrix.
+
+        K_sat(x, x') = (2/pi) * arcsin( (x^T C x' + sigma_0^2)
+                                         / sqrt((1 + v_x)(1 + v_x')) )
+
+        Diagonal: K_sat(x,x) = (2/pi) * arcsin(v_x / (1 + v_x))
+        This is NOT constant (unlike normalized kernel) — it varies
+        with input magnitude but saturates at 1.
+        """
+        sigma_0_sq = self.sigma_0 ** 2
+
+        C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
+        if mask is not None:
+            self._cached_mask = mask
+            x1 = x1[..., mask]
+            x2 = x2[..., mask]
+
+        C = C.to(x1.device, x1.dtype)
+        CX1 = x1 @ C
+        V1 = (CX1 * x1).sum(dim=-1) + sigma_0_sq  # v_x
+
+        if diag:
+            # K_sat(x,x) = (2/pi) * arcsin(v_x / (1 + v_x))
+            arg = V1 / (1.0 + V1)
+            return (2.0 / torch.pi) * torch.arcsin(arg)
+
+        CX2 = x2 @ C
+        V2 = (CX2 * x2).sum(dim=-1) + sigma_0_sq
+
+        C12 = torch.matmul(CX1, x2.transpose(-2, -1)) + sigma_0_sq
+        denom = torch.sqrt((1.0 + V1).unsqueeze(-1) * (1.0 + V2).unsqueeze(-2))
+
+        eps = 1e-7
+        arg = torch.clamp(C12 / denom, -1.0 + eps, 1.0 - eps)
+        return (2.0 / torch.pi) * torch.arcsin(arg)
+
+
 class SimpleArcCosineKernel(Kernel):
     """Arc-cosine kernel for low-dimensional playground inputs (NOT images).
 
