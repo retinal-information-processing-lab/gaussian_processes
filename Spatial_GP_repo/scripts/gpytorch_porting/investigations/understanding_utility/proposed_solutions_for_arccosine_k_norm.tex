@@ -1,0 +1,178 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{bm}
+
+% Macros
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\bz}{\mathbf{z}}
+\newcommand{\bk}{\mathbf{k}}
+\newcommand{\bK}{\mathbf{K}}
+\newcommand{\bC}{\mathbf{C}}
+\newcommand{\bV}{\mathbf{V}}
+\newcommand{\bm}{\mathbf{m}}
+\newcommand{\balpha}{\boldsymbol{\alpha}}
+\newcommand{\blambda}{\boldsymbol{\lambda}}
+\newcommand{\Real}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\text{Var}}
+
+\title{Mathematical Analysis of Gradient Divergence in Distribution-Aware Utility \\ \large Mechanism and Kernel-Based Solutions}
+\author{Independent Review}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{The Divergence Mechanism}
+
+We analyze the behavior of the Distribution-Aware (DA) utility function under gradient ascent when using the first-order Arc-Cosine kernel. We demonstrate that the utility function creates a conflict between geometric alignment (pattern matching) and signal energy (norm scaling), with the latter dominating the optimization landscape.
+
+\subsection{The Kernel and Scale Dependence}
+The first-order Arc-Cosine kernel $K(\bx, \bx')$ is defined as:
+\begin{equation}
+    K(\bx, \bx') = \frac{1}{\pi} \sqrt{v_{\bx} v_{\bx'}} J(\theta)
+\end{equation}
+where:
+\begin{align}
+    v_{\bx} &= \bx^\top \bC \bx + \sigma_0^2 \\
+    \theta &= \cos^{-1}\left( \frac{\bx^\top \bC \bx' + \sigma_0^2}{\sqrt{v_{\bx} v_{\bx'}}} \right) \\
+    J(\theta) &= \sin \theta + (\pi - \theta) \cos \theta
+\end{align}
+Consider a target image $\bx_t$ and a candidate image scaled by a factor $c > 0$: $\bx^* = c \bx_t$.
+
+\subsection{The Role of $\sigma_0^2$: The Alignment Peak}
+The parameter $\sigma_0^2$ plays a dual role. While it acts as a bias variance, its interaction with the scale $c$ determines the geometric alignment.
+
+The cosine similarity between the scaled candidate and the target is:
+\begin{equation}
+    \cos \theta(c) = \frac{c (\bx_t^\top \bC \bx_t) + \sigma_0^2}{\sqrt{\left(c^2 (\bx_t^\top \bC \bx_t) + \sigma_0^2\right) \left(\bx_t^\top \bC \bx_t + \sigma_0^2\right)}}
+\end{equation}
+Defining $q = \bx_t^\top \bC \bx_t$, this simplifies to:
+\begin{equation}
+    \cos \theta(c) = \frac{c q + \sigma_0^2}{\sqrt{(c^2 q + \sigma_0^2)(q + \sigma_0^2)}}
+\end{equation}
+Analysis of this term reveals:
+\begin{enumerate}
+    \item If $\sigma_0^2 = 0$, $\cos \theta(c) = 1$ for all $c$. Scaling does not affect alignment.
+    \item If $\sigma_0^2 > 0$, $\cos \theta(c)$ is strictly maximized at $c=1$.
+\end{enumerate}
+\textbf{Implication:} The "Correlation Gradient" points exactly towards $c=1$. The kernel naturally penalizes scale mismatch because $\sigma_0^2$ breaks the scale invariance. The kernel "wants" the image to match the target in both pattern and intensity.
+
+\subsection{The Dominance of Variance}
+However, the kernel magnitude scales quadratically. For $\bx^* = c \bx_t$:
+\begin{equation}
+    K(\bx^*, \bx^*) = c^2 q + \sigma_0^2 \approx O(c^2)
+\end{equation}
+The Utility $U(\bx^*)$ is composed of a marginal entropy term (variance dependent) and a conditional entropy term (alignment dependent).
+
+\section{Decomposition of Utility}
+
+The Distribution-Aware utility is defined as $U(\bx^*) = H_{\text{marg}}(\bx^*) - H_{\text{cond}}(\bx^* | \blambda(\bx_t))$.
+For a Poisson process with link function $f = \exp(\lambda)$, the entropy scales with the log-variance of the firing rate. We can decompose the utility into a Variance Term and a Correlation Term.
+
+Let $\rho^2(\bx^*, \bx_t)$ be the squared posterior correlation. The utility can be approximated as:
+\begin{equation}
+    U(\bx^*) \approx \underbrace{\frac{1}{2} \sigma^2_{GP}(\bx^*)}_{\text{Variance Term}} + \underbrace{\mathcal{I}(\rho^2)}_{\text{Correlation Term}}
+\end{equation}
+where $\mathcal{I}$ is a function representing Information Gain, which is maximized when $\rho^2 \to 1$.
+
+\subsection{The Optimization Conflict}
+Substituting the scaling behavior:
+\begin{itemize}
+    \item \textbf{Correlation Term:} Maximized at $c=1$ (due to $\sigma_0^2$).
+    \item \textbf{Variance Term:} Scales as $O(c^2)$.
+\end{itemize}
+Since $c^2$ grows unbounded while the correlation term is bounded, the gradient $\nabla_{\bx} U$ is dominated by the variance term for large $c$. The optimizer sacrifices the small penalty of geometric misalignment (moving $c$ away from 1) to gain the massive utility reward of increased variance ($c \to \infty$).
+
+To fix this, we must bound the Variance Term.
+
+\section{Solution 1: The Normalized Arc-Cosine Kernel}
+
+To prevent the variance explosion without changing the feature space features defined by $\bC$, we project the kernel onto the unit sphere in Hilbert space.
+
+\subsection{Definition}
+We define the normalized kernel $\bar{K}$:
+\begin{equation}
+    \bar{K}(\bx, \bx') = \frac{K(\bx, \bx')}{\sqrt{K(\bx, \bx) K(\bx', \bx')}}
+\end{equation}
+For the Order-1 Arc-Cosine kernel, recall that $K(\bx, \bx) = v_{\bx} = \bx^\top \bC \bx + \sigma_0^2$. Substituting this into the definition:
+\begin{equation}
+    \bar{K}(\bx, \bx') = \frac{\frac{1}{\pi} \sqrt{v_{\bx} v_{\bx'}} J(\theta)}{\sqrt{v_{\bx}} \sqrt{v_{\bx'}}} = \frac{1}{\pi} J(\theta)
+\end{equation}
+This effectively removes the magnitude terms $\sqrt{v_{\bx}}$, leaving a kernel that depends \emph{only} on the angle $\theta$.
+
+\subsection{Effect on Posterior Variance}
+The posterior variance using the normalized kernel is:
+\begin{equation}
+    \bar{\sigma}^2(\bx) = \bar{K}(\bx, \bx) + \bar{\bk}(\bx)^\top \tilde{\bK}^{-1} (\bV - \tilde{\bK}) \tilde{\bK}^{-1} \bar{\bk}(\bx)
+\end{equation}
+\begin{enumerate}
+    \item \textbf{Prior Variance:} $\bar{K}(\bx, \bx) = \frac{1}{\pi} J(0) = 1$. The prior variance is constant for all inputs $\bx$, regardless of norm.
+    \item \textbf{Induced Variance:} The vector $\bar{\bk}(\bx)$ contains entries $\bar{K}(\bx, \bz_j)$. Since these are correlation coefficients, every element is bounded: $|\bar{K}(\bx, \bz_j)| \leq 1$.
+    \item \textbf{Boundedness:} Assuming the variational parameters $\tilde{\bK}^{-1} (\bV - \tilde{\bK}) \tilde{\bK}^{-1}$ are fixed, the term $\bar{\bk}^\top (\dots) \bar{\bk}$ is bounded.
+\end{enumerate}
+
+\subsection{Resulting Gradient Dynamics}
+With the variance term $\bar{\sigma}^2(\bx)$ strictly bounded, the utility $U(\bx)$ can no longer increase by inflating $||\bx||$. The optimization relies entirely on the Correlation Term.
+Because $\sigma_0^2 > 0$ is retained inside the angle definition $\theta$, the angle is minimized (and correlation maximized) only when $\bx \to \bx_t$ in both direction and magnitude. The gradient will converge to the target $\bx_t$.
+\section{Invariance of Kernel Magnitude under Scaling}
+
+We formally demonstrate that for the normalized Arc-Cosine kernel $\bar{K}$, scaling an input vector $\bx$ by a scalar $c > 0$ does not result in an increase in the kernel magnitude (prior variance), thereby eliminating the variance-driven utility explosion.
+
+\subsection{Normalized Kernel Definition}
+Recall the definition of the normalized kernel:
+\begin{equation}
+    \bar{K}(\bx, \bx') = \frac{K(\bx, \bx')}{\sqrt{K(\bx, \bx) K(\bx', \bx')}}.
+\end{equation}
+The magnitude of the kernel for a single input $\bx$ (the prior variance) is given by evaluating the kernel at $(\bx, \bx)$:
+\begin{equation}
+    \bar{K}(\bx, \bx) = \frac{K(\bx, \bx)}{\sqrt{K(\bx, \bx) K(\bx, \bx)}} = 1.
+\end{equation}
+This identity holds for any $\bx \in \mathbb{R}^D$ such that $K(\bx, \bx) > 0$.
+
+\subsection{Scaling Analysis}
+Consider a scaled input $\bx^* = c \bx$ with $c > 0$. We evaluate the prior variance at this scaled point:
+\begin{equation}
+    \bar{K}(\bx^*, \bx^*) = \bar{K}(c\bx, c\bx) = 1.
+\end{equation}
+Thus, $\bar{K}(c\bx, c\bx) = \bar{K}(\bx, \bx)$.
+
+\textbf{Conclusion:} The prior variance of the normalized kernel is strictly constant and independent of the input norm $||\bx||$. Unlike the unnormalized kernel where $K(c\bx, c\bx) \approx c^2 K(\bx, \bx)$, the normalized formulation provides no utility gain from signal amplification.
+
+\subsection{Impact on Posterior Variance}
+The posterior variance $\bar{\sigma}^2(\bx)$ is:
+\begin{equation}
+    \bar{\sigma}^2(\bx) = \underbrace{\bar{K}(\bx, \bx)}_{=1} + \bar{\bk}(\bx)^\top \mathbf{W} \bar{\bk}(\bx),
+\end{equation}
+where $\mathbf{W} = \tilde{\bK}^{-1} (\bV - \tilde{\bK}) \tilde{\bK}^{-1}$ depends only on the inducing points.
+Since the cross-kernel vector elements $\bar{\bk}(\bx)_j = \bar{K}(\bx, \bz_j)$ are correlation coefficients bounded in $[-1, 1]$, the entire posterior variance term is bounded. Scaling $\bx \to c\bx$ cannot drive $\bar{\sigma}^2(\bx) \to \infty$.
+\section{Solution 2: The Biologically Plausible Saturation Kernel}
+
+The Arc-Cosine kernel corresponds to infinite networks of ReLU neurons, which do not saturate. Real neurons have a refractory period and maximum firing rates. We model this using the Arc-Sin kernel, corresponding to a Step function (or Error function) nonlinearity.
+
+\subsection{Definition}
+The Arc-Sin kernel $K_{sat}$ is defined as:
+\begin{equation}
+    K_{sat}(\bx, \bx') = \sigma_f^2 \cdot \frac{2}{\pi} \sin^{-1}\left( \frac{\bx^\top \bC \bx' + \sigma_0^2}{\sqrt{(1 + \bx^\top \bC \bx + \sigma_0^2)(1 + \bx'^\top \bC \bx' + \sigma_0^2)}} \right)
+\end{equation}
+Note the additional ``$+1$'' in the denominator (or more generally, a length-scale parameter $\ell^2$), which is characteristic of the Arc-Sin kernel derived from probit/step activations.
+
+\subsection{Saturation Mechanism}
+Unlike the Arc-Cosine kernel where $K(\bx, \bx) \propto ||\bx||^2$, the Arc-Sin kernel is intrinsically bounded.
+As $||\bx|| \to \infty$:
+\begin{equation}
+    \lim_{||\bx|| \to \infty} K_{sat}(\bx, \bx) = \sigma_f^2 \cdot \frac{2}{\pi} \sin^{-1}(1) = \sigma_f^2
+\end{equation}
+The variance saturates to a constant $\sigma_f^2$.
+
+\subsection{Why This Fixes Divergence}
+By enforcing saturation via the kernel definition, we embed the physical constraint that increasing stimulus contrast (norm) beyond a certain point does not yield infinite signal variance.
+
+\begin{enumerate}
+    \item \textbf{Bounded Utility:} The marginal entropy $H_{marg}$ cannot grow indefinitely with norm.
+    \item \textbf{Focus on Structure:} To maximize utility, the optimizer is forced to lower the conditional entropy $H_{cond}$ by finding $\bx^*$ that is highly correlated with the conditioned observation $\bx_t$.
+    \item \textbf{Natural Limits:} This approach does not require normalizing the kernel. Instead, it models a system where ``super-stimuli'' (infinite norm) yield diminishing returns, naturally stopping the gradient ascent.
+\end{enumerate}
+
+\end{document}

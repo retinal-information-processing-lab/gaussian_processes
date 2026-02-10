@@ -2,6 +2,14 @@
 Workbench for exploring utility function behavior.
 Created by Claude.
 
+IMPORTANT: This script fits its OWN model during setup() - it does NOT use a
+pre-trained model. The model is trained fresh each time with M=50, n_train=50
+(hardcoded below) using the UNNORMALIZED ArcCosineKernel.
+
+For fair test_r comparison between kernels, use run_single_mode.py vs
+run_normalized.py with matched parameters. This script is for exploring utility
+behavior patterns, not for model performance evaluation.
+
 Trains a GP model and provides simple helper functions to compute
 kernel values, GP moments, and utilities for any image. Designed for
 interactive exploration and pedagogical use.
@@ -74,6 +82,7 @@ _ADAPTIVE_RMAX_PARAMS = {
 # ---------------------------------------------------------------------------
 N_TRAIN = 50
 M = 50
+SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
 
 
 # ============================================================================
@@ -304,7 +313,7 @@ def eval_da_conditioned(model, likelihood, X_train, x_cond):
 # ============================================================================
 
 def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
-                      n_grid_mu=200, n_grid_sigma2=150):
+                      n_train=None, n_grid_mu=200, n_grid_sigma2=150):
     """Plot entropy heatmap with marginal/conditional scatter for DA utility.
 
     Single panel. Background is H(mu_g, sigma2_g). Each image x* appears
@@ -314,9 +323,12 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
 
     Args:
         model, likelihood: trained model in eval mode.
-        X_candidates: (N, d) images to evaluate.
+        X_candidates: (N, d) images to evaluate. Expected order:
+            [training images, x_cond, pool images (optional)]
         x_cond: (d,) conditioning image.
         save_path: where to save the PNG.
+        n_train: Number of training images. If provided, images beyond
+            n_train+1 are assumed to be pool images (plotted with squares).
         n_grid_mu, n_grid_sigma2: heatmap grid resolution.
     """
     A = likelihood.A.item()
@@ -408,6 +420,16 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     cbar = plt.colorbar(im, ax=ax1, pad=0.02)
     cbar.set_label('H(R | $\\mu_g$, $\\sigma^2_g$)', fontsize=10)
 
+    # Identify image groups for left panel
+    if n_train is None:
+        idx_cond = n_cand - 1
+        idx_train = list(range(idx_cond))
+        idx_pool = []
+    else:
+        idx_train = list(range(n_train))
+        idx_cond = n_train
+        idx_pool = list(range(n_train + 1, n_cand))
+
     # Connecting lines (draw first, behind dots)
     for i in range(n_cand):
         ax1.plot(
@@ -416,23 +438,39 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
             color='gray', linewidth=0.5, alpha=0.4, zorder=3,
         )
 
-    # Marginal dots
+    # Marginal dots - training (circles)
     ax1.scatter(
-        s2_g_marg, mu_g_marg,
+        s2_g_marg[idx_train], mu_g_marg[idx_train],
         s=25, c='tab:blue', edgecolors='white', linewidths=0.3,
         zorder=5, label='marginal',
     )
 
-    # Conditional dots
+    # Marginal dots - pool (squares)
+    if idx_pool:
+        ax1.scatter(
+            s2_g_marg[idx_pool], mu_g_marg[idx_pool],
+            s=30, marker='s', c='tab:blue', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # Conditional dots - training (circles)
     ax1.scatter(
-        s2_g_cond, mu_g_cond,
+        s2_g_cond[idx_train], mu_g_cond[idx_train],
         s=25, c='tab:orange', edgecolors='white', linewidths=0.3,
         zorder=5, label='conditional',
     )
 
-    # x_cond marker (marginal position, last candidate)
+    # Conditional dots - pool (squares)
+    if idx_pool:
+        ax1.scatter(
+            s2_g_cond[idx_pool], mu_g_cond[idx_pool],
+            s=30, marker='s', c='tab:orange', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # x_cond marker (marginal position)
     ax1.scatter(
-        [s2_g_marg[-1]], [mu_g_marg[-1]],
+        [s2_g_marg[idx_cond]], [mu_g_marg[idx_cond]],
         s=80, marker='*', c='red', edgecolors='white', linewidths=0.5,
         zorder=6, label='$x_{cond}$',
     )
@@ -443,27 +481,41 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     ax1.legend(fontsize=9, loc='upper left', framealpha=0.9)
 
     # === Right panel: U_DA vs norm, colored by angle ===
-    idx_cond = n_cand - 1
-    idx_train = list(range(idx_cond))
+    # (Image groups already identified above for left panel)
 
+    # Plot training images (circles)
     sc = ax2.scatter(
         norms[idx_train], U_DA_vals[idx_train],
         s=30, c=angles_rad[idx_train], cmap='plasma',
         vmin=0, vmax=np.pi / 2,
         edgecolors='white', linewidths=0.3, zorder=3,
+        label='train' if idx_pool else None,
     )
+
+    # Plot pool images (squares) if present
+    if idx_pool:
+        ax2.scatter(
+            norms[idx_pool], U_DA_vals[idx_pool],
+            s=40, marker='s', c=angles_rad[idx_pool], cmap='plasma',
+            vmin=0, vmax=np.pi / 2,
+            edgecolors='white', linewidths=0.3, zorder=3,
+            label='pool',
+        )
+
+    # Plot conditioning image (red star)
     ax2.scatter(
         norms[idx_cond], U_DA_vals[idx_cond],
         s=100, marker='*', c='red', edgecolors='white', linewidths=0.5,
         zorder=5, label='$x_{cond}$',
     )
+
     cbar2 = plt.colorbar(sc, ax=ax2, pad=0.02)
     cbar2.set_label('Angle to $x_{cond}$ (rad)', fontsize=10)
 
     ax2.set_xlabel('$||x^*||_C$', fontsize=10)
     ax2.set_ylabel('$H_{marg} - H_{cond}$', fontsize=10)
     ax2.set_title('DA utility vs norm (color = angle)', fontsize=11)
-    ax2.legend(fontsize=9)
+    ax2.legend(fontsize=9, loc='best')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -483,6 +535,11 @@ def demo():
     X_pool = env['X_pool']
     X_train = env['X_train']
     x_target = env['x_target']
+
+    if SIGMA_0 is not None:
+        trained_sigma0 = model.covar_module.sigma_0.item()
+        model.covar_module.sigma_0 = SIGMA_0
+        print(f"\n** sigma_0 changed: {trained_sigma0:.4f} -> {SIGMA_0} (post-training override)")
 
     # === Part 1: A natural image ===
     print("\n" + "=" * 60)
@@ -575,9 +632,19 @@ def demo():
     eval_da_conditioned(model, likelihood, X_train, x_target)
 
     # === Part 7: DA utility landscape + scatter plot ===
-    x_candidates = torch.cat([X_train, x_target.unsqueeze(0)], dim=0)
+    # Add 20 random pool images (not in training) - plotted with square markers
+    n_pool_samples = 20
+    pool_indices = torch.randperm(X_pool.shape[0])[:n_pool_samples]
+    X_pool_sample = X_pool[pool_indices]
+
+    print(f"\nAdding {n_pool_samples} random pool images for landscape plot")
+    print(f"  (plotted with square markers to distinguish from training)")
+
+    # Concatenate: [training images, x_cond, pool samples]
+    x_candidates = torch.cat([X_train, x_target.unsqueeze(0), X_pool_sample], dim=0)
     plot_da_landscape(
         model, likelihood, x_candidates, x_target,
+        n_train=X_train.shape[0],  # Tell plot where training images end
         save_path=_script_dir / 'da_utility_landscape.png',
     )
 

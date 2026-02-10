@@ -1,0 +1,311 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb}
+\usepackage[margin=1in]{geometry}
+
+\title{GP Moments Reference: Before and After Conditioning}
+\author{summary of what happens when evaluating $U_{DA}$ of an rescaled image }
+\date{February 2026}
+
+\begin{document}
+\maketitle
+
+%----------------------------------------------------------------------
+\section{Kernel}
+%----------------------------------------------------------------------
+
+Arc-cosine kernel (order 1):
+\begin{equation}\label{eq:kernel}
+    K(x, y) = \frac{1}{\pi}\,\|x\|_C\;\|y\|_C \cdot J(\theta)
+\end{equation}
+where
+\begin{align}
+    \|x\|_C &= \sqrt{x^\top\! C\, x + \sigma_0^2}
+        &\text{(C-norm, ``amplitude'')} \\[4pt]
+    \cos\theta &= \frac{x^\top\! C\, y + \sigma_0^2}{\|x\|_C\;\|y\|_C}
+        &\text{(``angle'' between $x$ and $y$)} \\[4pt]
+    J(\theta) &= \sin\theta + (\pi - \theta)\cos\theta
+        &\text{(angular factor, monotone decreasing on $[0,\pi]$)}
+\end{align}
+
+\textbf{Self-kernel:} Setting $y = x$ in~\eqref{eq:kernel}:
+the angle is $\theta(x,x) = 0$ (since $\cos\theta = \|x\|_C^2 / \|x\|_C^2 = 1$),
+and $J(0) = \sin 0 + \pi\cos 0 = \pi$, so
+\begin{equation}
+    K(x, x) = \frac{1}{\pi}\,\|x\|_C\;\|x\|_C \cdot \pi = \|x\|_C^2.
+\end{equation}
+The prior variance at any point equals its squared C-norm.
+
+%----------------------------------------------------------------------
+\section{Variational GP Posterior}
+%----------------------------------------------------------------------
+
+We have $M$ inducing points $\{\tilde z_j\}$ with variational parameters
+$q(\tilde\lambda) = \mathcal{N}(m, V)$.
+
+Define the shorthands:
+\begin{align}
+    \tilde K &= K(\tilde Z, \tilde Z)
+        &&\text{($M\!\times\!M$ inducing-point kernel matrix)} \\
+    k(x) &= \bigl[K(x, \tilde z_1),\;\ldots,\;K(x, \tilde z_M)\bigr]^\top
+        &&\text{($M$-vector, cross-kernel to inducing points)} \\
+    W &= \tilde K^{-1}(V - \tilde K)\,\tilde K^{-1}
+        &&\text{(``correction'' matrix, fixed after training)}
+\end{align}
+
+%----------------------------------------------------------------------
+\subsection{Marginal moments at $x^*$}
+%----------------------------------------------------------------------
+
+\begin{align}
+    \mu(x^*) &= k(x^*)^\top \tilde K^{-1}\, m
+        \label{eq:mu} \\[6pt]
+    \sigma^2(x^*) &= \underbrace{K(x^*,x^*)}_{= \|x^*\|_C^2}
+        + \; k(x^*)^\top\, W\, k(x^*)
+        \label{eq:sigma2}
+\end{align}
+The first term is the prior variance; the second is the posterior
+correction (negative when $V \prec \tilde K$, which shrinks the variance).
+
+%----------------------------------------------------------------------
+\subsection{Posterior covariance between $x^*$ and $x_t$}
+%----------------------------------------------------------------------
+
+\begin{equation}\label{eq:cov}
+    \Sigma_q(x^*, x_t) = K(x^*, x_t) + k(x^*)^\top\, W\, k(x_t)
+\end{equation}
+
+Note: $\Sigma_q(x^*, x^*) = \sigma^2(x^*)$ and $\Sigma_q(x_t, x_t) = \sigma^2(x_t)$.
+
+%----------------------------------------------------------------------
+\subsection{Posterior correlation $\rho^2$}
+%----------------------------------------------------------------------
+
+\begin{equation}\label{eq:rho2}
+    \boxed{\;
+    \rho^2(x^*, x_t)
+    = \frac{\Sigma_q(x^*, x_t)^2}
+           {\sigma^2(x^*)\;\sigma^2(x_t)}
+    \;}
+\end{equation}
+
+This is the standard Pearson correlation squared of the joint Gaussian
+$[\lambda(x^*),\;\lambda(x_t)]$ under the variational posterior.
+It takes values in $[0, 1]$ and measures how much knowing
+$\lambda(x_t)$ tells you about $\lambda(x^*)$.
+
+%----------------------------------------------------------------------
+\section{Conditioning: Moments After Observing $\lambda(x_t)$}
+%----------------------------------------------------------------------
+
+Standard Gaussian conditioning on observing $\lambda_t$ at $x_t$:
+
+\begin{align}
+    \mu_{\mathrm{cond}}(x^*)
+        &= \mu(x^*) + \frac{\Sigma_q(x^*, x_t)}{\sigma^2(x_t)}
+            \bigl(\lambda_t - \mu(x_t)\bigr)
+        \label{eq:mu_cond} \\[8pt]
+    \sigma^2_{\mathrm{cond}}(x^*)
+        &= \sigma^2(x^*) - \frac{\Sigma_q(x^*, x_t)^2}{\sigma^2(x_t)}
+        \label{eq:sigma2_cond}
+\end{align}
+
+Using the definition of $\rho^2$, the conditional variance simplifies to:
+\begin{equation}\label{eq:var_reduction}
+    \boxed{\;
+    \sigma^2_{\mathrm{cond}}(x^*)
+    = \sigma^2(x^*)\;\bigl(1 - \rho^2\bigr)
+    \;}
+\end{equation}
+
+So $\rho^2$ is \emph{directly} the fractional variance reduction from
+conditioning. If $\rho^2 = 0.9$, conditioning removes 90\% of the
+variance at $x^*$.
+
+%----------------------------------------------------------------------
+\section{Log-Firing Rate Transform}
+%----------------------------------------------------------------------
+
+The observation model is $r \sim \mathrm{Poisson}(\exp(g))$ where
+$g = A\,\lambda + \lambda_0$ is the log-firing rate. The GP moments
+in $g$-space are:
+
+\begin{align}
+    \mu_g &= A\,\mu + \lambda_0, &
+    \sigma^2_g &= A^2\,\sigma^2
+        &&\text{(marginal)} \\[4pt]
+    \mu_{g,\mathrm{cond}} &= A\,\mu_{\mathrm{cond}} + \lambda_0, &
+    \sigma^2_{g,\mathrm{cond}} &= A^2\,\sigma^2_{\mathrm{cond}}
+        &&\text{(conditional)}
+\end{align}
+
+The variance reduction carries through:
+$\sigma^2_{g,\mathrm{cond}} = \sigma^2_g\,(1 - \rho^2)$.
+
+%----------------------------------------------------------------------
+\section{DA Utility}
+%----------------------------------------------------------------------
+
+The DA utility is the drop in entropy caused by conditioning:
+\begin{equation}\label{eq:uda}
+    U_{\mathrm{DA}}(x^*)
+    = H\!\bigl(\mu_g,\;\sigma^2_g\bigr)
+    - H\!\bigl(\mu_{g,\mathrm{cond}},\;\sigma^2_{g,\mathrm{cond}}\bigr)
+\end{equation}
+where $H(\mu_g, \sigma^2_g) = -\sum_r p(r)\log p(r)$ is the entropy
+of the Poisson--log-normal mixture (computed via Laplace approximation).
+
+Substituting $\sigma^2_{g,\mathrm{cond}} = \sigma^2_g\,(1 - \rho^2)$
+and, when $\lambda_t = \mu(x_t)$ (deterministic mode),
+$\mu_{g,\mathrm{cond}} = \mu_g$:
+\begin{equation}\label{eq:uda_rho}
+    \boxed{\;
+    U_{\mathrm{DA}}(x^*)
+    = H\!\bigl(\mu_g,\;\sigma^2_g\bigr)
+    - H\!\bigl(\mu_g,\;\sigma^2_g\,(1 - \rho^2)\bigr)
+    \;}
+\end{equation}
+
+So the DA utility depends on exactly three quantities:
+\begin{enumerate}
+    \item $\mu_g = A\,\mu(x^*) + \lambda_0$ --- the operating point
+        (where on the $H$ landscape) [NB: this is only fixed in this treatment cause we are dealing with the deterministic case],
+    \item $\sigma^2_g = A^2\,\sigma^2(x^*)$ --- the marginal variance
+        (how much entropy there is to begin with),
+    \item $\rho^2$ --- how much of that variance conditioning removes
+        (the horizontal shift on the landscape).
+\end{enumerate}
+
+Conditioning moves the point from $(\mu_g,\;\sigma^2_g)$ to
+$(\mu_g,\;\sigma^2_g(1-\rho^2))$ --- same $\mu_g$, reduced $\sigma^2_g$.
+The utility is the difference in $H$ between these two points.
+
+
+%----------------------------------------------------------------------
+\section{How Scaling Affects $\rho^2$}
+%----------------------------------------------------------------------
+
+Consider conditioning on $x_t$ and evaluating at $x^* = c\,x_t$
+(same image, scaled by $c > 0$).
+
+\subsection*{Exact result ($\sigma_0^2 = 0$)}
+
+When $\sigma_0^2 = 0$, scaling preserves the angle: $\theta(c\,x_t, z) = \theta(x_t, z)$
+for any $z$, because
+\[
+    \cos\theta(c\,x_t, z)
+    = \frac{c\,x_t^\top C\, z}{\sqrt{c^2 q \cdot v_z}}
+    = \frac{x_t^\top C\, z}{\sqrt{q \cdot v_z}}
+    = \cos\theta(x_t, z),
+    \qquad q \triangleq x_t^\top C\, x_t.
+\]
+Since $J(\theta)$ is unchanged and $\|c\,x_t\|_C = c\,\|x_t\|_C$,
+the cross-kernel to any point scales linearly:
+\begin{equation}
+    K(c\,x_t, z) = c \cdot K(x_t, z)
+    \qquad\Longrightarrow\qquad
+    k(c\,x_t) = c \cdot k(x_t).
+\end{equation}
+
+Substituting into the posterior formulas~\eqref{eq:mu}--\eqref{eq:cov}:
+\begin{align}
+    \mu(c\,x_t) &= c\,\mu(x_t), \\
+    \sigma^2(c\,x_t) &= c^2\,\sigma^2(x_t), \\
+    \Sigma_q(c\,x_t,\; x_t) &= c\,\Sigma_q(x_t, x_t) = c\,\sigma^2(x_t).
+\end{align}
+
+Therefore
+\begin{equation}
+    \rho^2 = \frac{[c\,\sigma^2(x_t)]^2}{c^2\,\sigma^2(x_t) \cdot \sigma^2(x_t)} = 1.
+\end{equation}
+
+Scaling preserves the correlation \emph{exactly}, at any value of $c$. 
+
+NOTE That the posterior moments
+instead keep growing ($\mu_g \propto c$, $\sigma^2_g \propto c^2 \implies H_{marg} \to \inf$) so even if conditioning
+always removes 100\% of the variance, the utility still goes to infinity.
+
+\subsection*{With $\sigma_0^2 > 0$ (our trained model)}
+
+
+The angle is no longer exactly preserved with changing $c$: $\sigma_0^2$ contributes
+a constant offset to both numerator and denominator of $\cos\theta$.
+The fractional error is $O(\sigma_0^2 / \|x_t\|_C^2)$ and does not
+vanish with $c$.
+
+The net effect: $\rho^2$ converges to a constant $\rho^2_\infty < 1$
+as $c \to \infty$, not to~1. Conditioning removes a fixed fraction
+of the variance, not all of it.
+
+Crucially, this does \emph{not} prevent $U_{\mathrm{DA}}$ from diverging.
+The moments still grow: $\mu_g \propto c$, $\sigma^2_g \propto c^2$
+(with small constant fractional corrections). The conditional variance
+$\sigma^2_g(1 - \rho^2_\infty)$ is a fixed fraction of $\sigma^2_g$,
+so it also grows as $c^2$. Since $H$ grows roughly linearly in
+$\sigma^2_g$ for large $\sigma^2_g$:
+\[
+    U_{\mathrm{DA}}
+    = H(\mu_g,\;\sigma^2_g) - H(\mu_g,\;\sigma^2_g(1 - \rho^2_\infty))
+    \;\propto\; \rho^2_\infty \cdot \sigma^2_g
+    \;\propto\; c^2.
+\]
+The $\sigma_0^2$ offset pins the conditional point to a fixed
+\emph{fraction} of $\sigma^2_g$, not to a fixed \emph{value}.
+Both endpoints move outward on the $H$ landscape, and the gap
+between them keeps growing.
+
+\subsection*{For two different images}
+
+When $x^*$ and $x_t$ are \emph{not} parallel (different natural images),
+$\rho^2$ depends on their angle $\theta(x^*, x_t)$.
+At large angles ($\theta \to \pi/2$), the cross-covariance
+$\Sigma_q(x^*, x_t) \to 0$, so $\rho^2 \to 0$
+and conditioning has no effect.
+%----------------------------------------------------------------------
+\section{The Normalized Kernel: What It Fixes and Where It Fails}
+%----------------------------------------------------------------------
+
+The divergence of $U_{\mathrm{DA}}$ with norm comes from the prior
+variance $K(x,x) = \|x\|_C^2$ growing unbounded ( this scales $K$ and therefore the marginal moments \ref{eq:mu}, \ref{eq:sigma2}. A natural fix
+is to normalize the kernel:
+\begin{equation}
+    \bar K(x, y) = \frac{K(x, y)}{\sqrt{K(x,x)\;K(y,y)}}
+    = \frac{\frac{1}{\pi}\,\|x\|_C\,\|y\|_C\,J(\theta)}
+           {\|x\|_C\,\|y\|_C}
+    = \frac{J(\theta)}{\pi}.
+\end{equation}
+
+The norms cancel exactly. $\bar K$ depends only on the angle $\theta$.
+
+\subsection*{What this fixes}
+
+The prior variance becomes constant:
+\begin{equation}
+    \bar K(x, x) = \frac{J(0)}{\pi} = 1
+    \qquad\text{for all $x$.}
+\end{equation}
+The cross-kernel entries $\bar K(x, \tilde z_j) = J(\theta_j)/\pi$
+are bounded in $[0, 1]$. The posterior variance $\bar\sigma^2(x)$
+is therefore bounded regardless of $\|x\|_C$.
+
+With $\bar\sigma^2$ bounded, $\sigma^2_g = A^2\bar\sigma^2$ is
+bounded, and $U_{\mathrm{DA}}$ cannot diverge by scaling.
+The only way to increase utility is to improve $\rho^2$ by finding
+images with small angle to $x_t$. When $\sigma_0^2 > 0$, the angle
+$\theta(c\,x_t, x_t)$ is minimized at $c = 1$, so the gradient
+points towards matching $x_t$ in both direction and magnitude.
+
+\subsection*{Where it fails}
+
+The normalized kernel discards all norm information. But image
+norm carries genuine signal for neural encoding: neurons respond
+differently to high-contrast and low-contrast versions of the
+same pattern. By collapsing all scaled versions to the same
+kernel value, $\bar K$ loses this predictive dimension.
+
+Empirically, training with $\bar K$ on neural data drops test
+correlation by $\sim$25\% compared to the unnormalized kernel.
+The norm is not just an optimization nuisance --- it encodes
+real structure that the GP needs for accurate predictions.
+
+
+\end{document}
