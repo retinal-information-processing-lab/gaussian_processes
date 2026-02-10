@@ -69,6 +69,8 @@ Things to remember having claude check:
 [ ] When a major cleanup is going to be done, one of the things to have claude notice is where it referenced:
 -  Backward compatibility (for what, you sure the old code is not just superseeded?)
 
+[ ] the adaptive r choice is needing too many arguments. messy code
+
 
 ## Understanding of Rules, Skills, Hooks and subagents
 

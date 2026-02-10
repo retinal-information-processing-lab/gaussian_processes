@@ -177,8 +177,8 @@ Use `--gradient-mode MODE` in CLI:
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), utility exploration (`explore_utility_normalized.py`). Key findings: test_r drops ~25%, utility divergence eliminated. |
-| `investigations/understanding_utility/` | Utility exploration with unnormalized kernel (`explore_utility.py` - baseline for comparison) |
+| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), utility exploration (`explore_utility_normalized.py` - trains with normalized kernel, evaluates utility on training + 100 random pool images, creates 2-panel landscape plot with squares for pool images). Key findings: test_r drops ~25%, utility divergence eliminated. |
+| `investigations/understanding_utility/` | Utility exploration with unnormalized kernel (`explore_utility.py` - baseline for comparison, same structure as normalized version) |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`

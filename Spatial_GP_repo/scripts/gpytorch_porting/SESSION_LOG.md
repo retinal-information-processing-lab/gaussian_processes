@@ -1,5 +1,30 @@
 # Session Log
 
+## 2026-02-10: Arc-sine kernel planning session
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-10_arcsine-kernel-implementation.md`
+**Plan**: `.claude/plans/merry-nibbling-sutton.md`
+**Status**: Handed off for implementation
+
+Math-focused planning session for a new kernel based on Williams (1998) arc-sine / erf-network kernel. Same C matrix and RF structure as arc-cosine, but K(x,x) saturates at 1 instead of growing quadratically. Discussed origin (single hidden layer erf network, same depth as arc-cosine), parameter roles (Amp controls saturation rate, not ceiling), saturation concern (v_x >> 1 for PNAS data with current params), and initialization strategy (default Amp=1.0, evaluate empirically). Implementation sandboxed in `investigations/arcsine_kernel/`, no mainline changes.
+
+## 2026-02-10: DA utility gradient ascent investigation (normalized kernel)
+**Handoff**: `investigations/normalized_kernel/HANDOFF_GRADIENT.md`
+**Status**: Continuing
+
+Created `gradient_normalized.py` -- gradient ascent investigation for DA utility with normalized kernel. Tested 3 approaches: additive noise, Gaussian smoothing, synthetic bipartite. Key finding: interpolation monotonicity confirmed in all valid cases, but gradient ascent consistently diverges from target (exploits H_marg via high posterior-variance regions). Next: reproduce with unnormalized kernel in `investigations/understanding_utility/`.
+
+## 2026-02-09: Normalized kernel utility exploration
+**Handoff**: `investigations/normalized_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Created `explore_utility_normalized.py` -- copy of `explore_utility.py` trained with `ArcCosineKernelNormalized`. Confirmed normalized kernel eliminates utility divergence: scaling images 5x causes <5% utility change (vs 38-56x for unnormalized). All norms constant at 1.0. Added 20 random pool images (square markers) to both scripts' landscape plots. M=50 causes all-NaN Cholesky with normalized kernel (use M=100).
+
+## 2026-02-09: Normalized kernel implementation + training validation
+**Handoff**: `investigations/normalized_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Implemented `ArcCosineKernelNormalized` in kernels.py (17/17 validation tests pass). Training on PNAS cell 8 shows 25% test_r drop (0.79 -> 0.59) -- image norm is genuinely informative for neural encoding.
+
 ## 2026-02-09: Clean up explore_utility.py + add DA landscape visualization
 
 **Branch**: `pietro/acquisition-functions`
