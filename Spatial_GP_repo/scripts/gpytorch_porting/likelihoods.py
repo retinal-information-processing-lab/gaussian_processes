@@ -10,6 +10,8 @@ Model: r ~ Poisson(f(x)) where f(x) = exp(A·λ(x) + λ₀)
 - λ₀ is the bias parameter (baseline log-firing rate, learnable)
 """
 
+import warnings
+
 import torch
 import gpytorch
 from gpytorch.likelihoods import Likelihood
@@ -44,6 +46,11 @@ class PoissonLikelihood(Likelihood):
         Bias parameter (unconstrained)
     """
 
+    # Bounds for likelihood parameters (generous — only catch absurd LBFGS overshoots)
+    A_MAX = 10.0         # Typical A ~ 0.01; A > 10 is extreme
+    LAMBDA0_MIN = -50.0
+    LAMBDA0_MAX = 50.0
+
     def __init__(self, A_init=1.0, lambda0_init=0.0):
         super().__init__()
 
@@ -55,8 +62,6 @@ class PoissonLikelihood(Likelihood):
 
         # Use exp/log transform (A = exp(raw_A), matching varGP's logA)
         self.register_constraint('raw_A', Positive(transform=torch.exp, inv_transform=torch.log))
-
-        from gpytorch.constraints import Interval                                                      
 
         self.A = A_init  # Set via property to apply inverse transform
 
@@ -77,6 +82,58 @@ class PoissonLikelihood(Likelihood):
         if not torch.is_tensor(value):
             value = torch.as_tensor(value, dtype=torch.float)
         self.initialize(raw_A=self.raw_A_constraint.inverse_transform(value))
+
+    def params_in_bounds(self):
+        """Check whether all likelihood parameters are within valid bounds.
+
+        READ-ONLY check. Call at the top of LBFGS closures to reject trial
+        steps before expensive computation.
+
+        Bounds: A in (0, A_MAX], lambda0 in [LAMBDA0_MIN, LAMBDA0_MAX].
+
+        Returns
+        -------
+        bool
+            True if all parameters are in bounds.
+        """
+        with torch.no_grad():
+            a_val = self.A.item()
+            if a_val <= 0 or a_val > self.A_MAX:
+                return False
+            l0_val = self.lambda0.item()
+            if l0_val < self.LAMBDA0_MIN or l0_val > self.LAMBDA0_MAX:
+                return False
+        return True
+
+    def clamp_params(self):
+        """Clamp likelihood parameters to valid bounds (projected gradient descent).
+
+        Call after optimizer.step() to enforce parameter bounds.
+        Emits a warning listing which parameters were out of bounds,
+        since this should not happen if the LBFGS bounds guard is working.
+
+        Bounds: A in (0, A_MAX], lambda0 in [LAMBDA0_MIN, LAMBDA0_MAX].
+        """
+        with torch.no_grad():
+            violated = []
+
+            max_raw_A = self.raw_A_constraint.inverse_transform(
+                torch.tensor(self.A_MAX, device=self.raw_A.device, dtype=self.raw_A.dtype)
+            )
+            if self.raw_A.item() > max_raw_A.item():
+                violated.append(f"A={self.A.item():.4g} > {self.A_MAX}")
+            self.raw_A.clamp_(max=max_raw_A.item())
+
+            l0_val = self.lambda0.item()
+            if l0_val < self.LAMBDA0_MIN or l0_val > self.LAMBDA0_MAX:
+                violated.append(f"lambda0={l0_val:.4g} outside [{self.LAMBDA0_MIN}, {self.LAMBDA0_MAX}]")
+            self.lambda0.clamp_(self.LAMBDA0_MIN, self.LAMBDA0_MAX)
+
+            if violated:
+                warnings.warn(
+                    f"clamp_params: parameters escaped bounds — {', '.join(violated)}. "
+                    f"This suggests the optimizer took a step the bounds guard did not catch."
+                )
 
     def expected_log_prob(self, target, input):
         """Expected log probability under the variational distribution.
@@ -170,6 +227,30 @@ def test_likelihood():
 
     assert torch.allclose(log_prob, manual), "Mismatch!"
     print("PASS: PoissonLikelihood test passed!")
+
+    # Test params_in_bounds
+    lik_test = PoissonLikelihood(A_init=0.5, lambda0_init=1.0)
+    assert lik_test.params_in_bounds(), "Fresh likelihood should be in bounds"
+    with torch.no_grad():
+        lik_test.lambda0.fill_(100.0)
+    assert not lik_test.params_in_bounds(), "lambda0=100 should be out of bounds"
+    with torch.no_grad():
+        lik_test.lambda0.fill_(1.0)
+    assert lik_test.params_in_bounds(), "Reset likelihood should be in bounds"
+    print("PASS: params_in_bounds test passed!")
+
+    # Test clamp_params
+    lik_test2 = PoissonLikelihood(A_init=0.5, lambda0_init=1.0)
+    with torch.no_grad():
+        lik_test2.lambda0.fill_(100.0)
+    import warnings as _w
+    with _w.catch_warnings(record=True) as w:
+        _w.simplefilter("always")
+        lik_test2.clamp_params()
+        assert len(w) == 1, f"Expected 1 warning, got {len(w)}"
+        assert "escaped bounds" in str(w[0].message)
+    assert lik_test2.lambda0.item() == PoissonLikelihood.LAMBDA0_MAX
+    print("PASS: clamp_params test passed!")
 
     return True
 

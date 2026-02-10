@@ -63,6 +63,10 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
     def closure():
         optimizer.zero_grad()
 
+        # Reject trial step if kernel parameters are out of bounds
+        if not kernel.params_in_bounds():
+            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+
         # Compute kernels WITH gradients
         K_tilde = kernel(X_tilde, X_tilde).evaluate()
         K = kernel(X, X_tilde).evaluate()
@@ -157,6 +161,17 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float)
     if n_mstep == 0:
         return
 
+    # Analytical gradients are derived for the arc-cosine kernel formula
+    # K = M * J(theta) / pi. Other kernels (e.g. ArcSineKernel) have different
+    # formulas and need their own derivations. Use autograd M-step instead.
+    from kernels import ArcSineKernel
+    if isinstance(kernel, ArcSineKernel):
+        raise TypeError(
+            "mstep_eigenspace_analytical does not support ArcSineKernel — "
+            "the analytical gradient formulas are specific to the arc-cosine kernel. "
+            "Use autograd M-step (use_analytical_mstep=False)."
+        )
+
     # Fixed variational params and eigenspace
     B = state.B
     m_b = state.m_b
@@ -186,29 +201,7 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float)
         optimizer.zero_grad()
 
         # ===== Guardrail 1: Check hyperparameter bounds =====
-        # Return inf to reject LBFGS step if out of bounds
-        try:
-            sigma_0_val = kernel.sigma_0.item()
-            Amp_val = kernel.Amp.item()
-            if sigma_0_val <= 0 or Amp_val <= 0 or Amp_val > kernel.AMP_MAX:
-                return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
-
-            if hasattr(kernel, 'raw_m2log2beta'):
-                raw_beta = kernel.raw_m2log2beta.item()
-                raw_rho = kernel.raw_mlog2rho2.item()
-                if raw_beta < kernel.RAW_BETA_MIN or raw_beta > kernel.RAW_BETA_MAX:
-                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
-                if raw_rho < kernel.RAW_RHO_MIN or raw_rho > kernel.RAW_RHO_MAX:
-                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
-
-            if hasattr(kernel, 'eps_0x'):
-                eps_x = kernel.eps_0x.item()
-                eps_y = kernel.eps_0y.item()
-                if eps_x < kernel.EPS_MIN or eps_x > kernel.EPS_MAX:
-                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
-                if eps_y < kernel.EPS_MIN or eps_y > kernel.EPS_MAX:
-                    return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
-        except Exception:
+        if not kernel.params_in_bounds():
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         # ===== 1. Compute C and dC (includes masking) =====

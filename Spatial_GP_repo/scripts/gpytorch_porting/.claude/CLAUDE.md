@@ -55,7 +55,7 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 3. **Float32 is the default** - float64 is 10x slower and the reference old code used float32. No need to pass `--float32` explicitly.
 
-4. **Jitter architecture** — `model.jitter` (default 1e-4) controls two layers: (a) GPyTorch's `jitter_val` adds it to K_uu before Cholesky, (b) `cholesky_jitter` override in `gpy_training.py` uses the same value as the retry starting point if Cholesky fails. `cholesky_max_tries` (default 3) controls how many retry decades above that. `gpy_model.py:forward()` does NOT add jitter — GPyTorch handles it internally.
+4. **LBFGS closure defense (3 layers)** — All LBFGS closures have three guard layers: (1) `params_in_bounds()` rejects trial steps with out-of-bounds parameters before any computation, (2) NaN/exception guards catch numerical failures even within bounds, (3) `clamp_*()` after `optimizer.step()` is a safety net for drift. Each closure calls `params_in_bounds()` only for the parameters it optimizes: kernel (M-step), likelihood (F-step), or both (default_gpy). See `kernels.py:params_in_bounds()`, `likelihoods.py:params_in_bounds()`. Jitter details in `.claude/rules/jitter.md`.
 
 5. **Avoid .data parameter** - Use `torch.no_grad() + copy()` instead.
 
@@ -121,8 +121,8 @@ Use `--gradient-mode MODE` in CLI:
 ### Shared Components (used by both implementations)
 | File | Purpose |
 |------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized (normalized variant with K_bar(x,x)=1) |
-| `likelihoods.py` | PoissonLikelihood with A, lambda0 |
+| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized, ArcSineKernel. `params_in_bounds()` + `clamp_hyperparameters()` for LBFGS defense. |
+| `likelihoods.py` | PoissonLikelihood with A, lambda0. `params_in_bounds()` + `clamp_params()` for LBFGS defense. Bounds: A_MAX=10, lambda0 in [-50, 50]. |
 | `metrics.py` | Evaluation functions (r², Pearson r, explained variance) |
 | `utils.py` | Shared utilities (lambda0_given_A, compute_f_mean, STA-based RF center) |
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |

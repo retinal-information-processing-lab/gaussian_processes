@@ -67,6 +67,11 @@ def fstep_eigenspace(
     def closure():
         optimizer.zero_grad()
 
+        # Reject trial step if likelihood parameters are out of bounds
+        if not likelihood.params_in_bounds():
+            return torch.tensor(float('inf'), device=likelihood.raw_A.device,
+                                dtype=likelihood.raw_A.dtype)
+
         A = likelihood.A.squeeze()
 
         # Update lambda0 analytically
@@ -95,6 +100,9 @@ def fstep_eigenspace(
         return -log_lik
 
     optimizer.step(closure)
+
+    # Clamp likelihood parameters to valid bounds after step
+    likelihood.clamp_params()
 
     # Final lambda0 update
     with torch.no_grad():

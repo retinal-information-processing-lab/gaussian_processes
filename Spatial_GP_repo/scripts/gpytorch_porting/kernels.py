@@ -273,6 +273,39 @@ class ArcCosineKernel(Kernel):
             raise AttributeError("rho property only available when n_px_side is set")
         return torch.exp(-self.raw_mlog2rho2 / 2) / np.sqrt(2)
 
+    def params_in_bounds(self):
+        """Check whether all kernel hyperparameters are within valid bounds.
+
+        READ-ONLY check. Call at the top of LBFGS closures to reject trial
+        steps before expensive computation. Bounds match clamp_hyperparameters().
+
+        Returns
+        -------
+        bool
+            True if all parameters are in bounds.
+        """
+        with torch.no_grad():
+            if hasattr(self, 'raw_sigma_0'):
+                if self.sigma_0.item() <= 0:
+                    return False
+            if hasattr(self, 'raw_Amp'):
+                if self.Amp.item() <= 0 or self.Amp.item() > self.AMP_MAX:
+                    return False
+            if hasattr(self, 'raw_m2log2beta'):
+                v = self.raw_m2log2beta.item()
+                if v < self.RAW_BETA_MIN or v > self.RAW_BETA_MAX:
+                    return False
+            if hasattr(self, 'raw_mlog2rho2'):
+                v = self.raw_mlog2rho2.item()
+                if v < self.RAW_RHO_MIN or v > self.RAW_RHO_MAX:
+                    return False
+            if hasattr(self, 'eps_0x'):
+                if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
+                    return False
+                if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
+                    return False
+        return True
+
     def clamp_hyperparameters(self):
         """Clamp hyperparameters to valid bounds (projected gradient descent).
 
@@ -858,5 +891,31 @@ def test_kernel_matches_reference():
         return False
 
 
+def test_params_in_bounds():
+    """Test params_in_bounds() for ArcCosineKernel."""
+    kernel = ArcCosineKernel(n_px_side=10, sigma_0=1.0, Amp=1.0)
+    assert kernel.params_in_bounds(), "Fresh kernel should be in bounds"
+
+    # Push Amp above AMP_MAX (Positive() uses softplus: softplus(x) ≈ x for large x)
+    with torch.no_grad():
+        kernel.raw_Amp.fill_(1100.0)  # softplus(1100) ≈ 1100 > AMP_MAX=1000
+    assert not kernel.params_in_bounds(), "Amp >> AMP_MAX should be out of bounds"
+
+    # Reset
+    kernel.Amp = 1.0
+    assert kernel.params_in_bounds(), "Reset kernel should be in bounds"
+
+    # Push raw_m2log2beta out of bounds
+    with torch.no_grad():
+        kernel.raw_m2log2beta.fill_(25.0)  # > RAW_BETA_MAX=20
+    assert not kernel.params_in_bounds(), "raw_m2log2beta=25 should be out of bounds"
+
+    kernel.raw_m2log2beta.data.fill_(0.0)
+    assert kernel.params_in_bounds(), "Reset kernel should be in bounds"
+
+    print("PASS: params_in_bounds test passed!")
+
+
 if __name__ == '__main__':
     test_kernel_matches_reference()
+    test_params_in_bounds()
