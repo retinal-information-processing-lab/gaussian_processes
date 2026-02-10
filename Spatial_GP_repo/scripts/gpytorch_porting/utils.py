@@ -17,14 +17,19 @@ Functions:
 import torch
 
 
-def compute_rf_center_from_sta(X, r, n_px_side, zscore):
+def compute_rf_center_from_sta(X, r, n_px_side, zscore, blur_sigma=3.0):
     """
     Compute receptive field center from spike-triggered average.
 
     The spike-triggered average (STA) is the weighted average of stimuli
     preceding spikes. For images, this reveals which spatial locations
-    drive neural responses. We find the center-of-mass of |STA| to get
-    a robust estimate of the RF center.
+    drive neural responses. We find the peak of the Gaussian-smoothed
+    |STA| to estimate the RF center.
+
+    Uses smoothed argmax rather than center-of-mass because CoM is pulled
+    by diffuse background noise across the full image (e.g., 12.9px off
+    from the STA peak for PNAS cell 8). Gaussian smoothing before argmax
+    reduces noise sensitivity without the CoM bias.
 
     DETERMINISTIC: Same inputs always produce same outputs.
 
@@ -38,6 +43,8 @@ def compute_rf_center_from_sta(X, r, n_px_side, zscore):
                      images where pixel variance varies spatially.
             If False: Use raw pixel values. Simpler but may be biased
                       toward high-variance image regions.
+        blur_sigma: float, Gaussian blur sigma in pixels before argmax
+            (default: 3.0). Algorithmic constant, not an experiment parameter.
 
     Returns:
         eps_0x: RF center x-coordinate in normalized [-1, 1] range
@@ -68,20 +75,28 @@ def compute_rf_center_from_sta(X, r, n_px_side, zscore):
     STA = (r[:, None] * X_norm).sum(dim=0) / r.sum()
     STA_2d = STA.reshape(n_px_side, n_px_side)
 
-    # Step 3: Find center-of-mass of |STA|
-    # More robust than argmax for noisy estimates
+    # Step 3: Find RF center via smoothed argmax of |STA|
     STA_abs = STA_2d.abs()
-    total_mass = STA_abs.sum()
 
-    # Create coordinate grids
-    y_coords = torch.arange(n_px_side, device=X.device, dtype=X.dtype)
-    x_coords = torch.arange(n_px_side, device=X.device, dtype=X.dtype)
+    # Build 2D Gaussian blur kernel
+    kernel_size = int(4 * blur_sigma + 1) | 1  # ensure odd, covers ~4 sigma
+    x_1d = torch.arange(kernel_size, device=X.device, dtype=X.dtype) - kernel_size // 2
+    g_1d = torch.exp(-x_1d**2 / (2 * blur_sigma**2))
+    g_2d = g_1d[:, None] * g_1d[None, :]
+    g_2d = g_2d / g_2d.sum()
 
-    # Weighted average of coordinates
-    # Sum over columns to get row weights, then weight by y-coords
-    eps_pix_y = (STA_abs.sum(dim=1) * y_coords).sum() / total_mass
-    # Sum over rows to get column weights, then weight by x-coords
-    eps_pix_x = (STA_abs.sum(dim=0) * x_coords).sum() / total_mass
+    # Smooth |STA| with Gaussian blur
+    # conv2d expects (batch, channel, H, W) input and (out_ch, in_ch, kH, kW) kernel
+    STA_smooth = torch.nn.functional.conv2d(
+        STA_abs.unsqueeze(0).unsqueeze(0),
+        g_2d.unsqueeze(0).unsqueeze(0),
+        padding=kernel_size // 2
+    ).squeeze()
+
+    # Argmax of smoothed |STA|
+    peak_flat = STA_smooth.argmax()
+    eps_pix_y = (peak_flat // n_px_side).to(X.dtype)
+    eps_pix_x = (peak_flat % n_px_side).to(X.dtype)
 
     # Step 4: Convert pixel coordinates [0, n_px_side-1] to normalized [-1, 1]
     # pixel 0 → -1, pixel (n_px_side-1) → +1

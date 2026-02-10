@@ -1,5 +1,11 @@
 # Session Log
 
+## 2026-02-10: params_in_bounds, LBFGS diagnostics, RF visualization
+**Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Added `params_in_bounds()` to kernel and likelihood, updated all LBFGS closures. STA+RF visualization in run_arcsine.py. Found: initial beta=0.1 covers entire image (sigma=120px), STA CoM is 12.9px off peak. Temp debug counters in gpy_training.py need removal.
+
 ## 2026-02-10: Arc-sine kernel implementation + LBFGS NaN guard fix
 **Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
 **Status**: Continuing
