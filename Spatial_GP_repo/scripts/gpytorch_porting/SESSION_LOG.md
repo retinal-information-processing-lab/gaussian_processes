@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-02-11: Arc-sine utility exploration scripts + LBFGS plan
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-11_arcsine-utility-exploration-lbfgs.md`
+**Plan**: `.claude/plans/merry-nibbling-sutton.md`
+**Status**: Handed off for continuation
+
+Created `explore_utility_arcsine.py` and `gradient_arcsine.py` in `investigations/arcsine_kernel/`. Both verified working. Arc-sine saturation confirmed: sqrt(K(x,x)) clusters near 1.0. User changed N_TRAIN to 300 for better model. LBFGS upgrade for gradient ascent planned and approved but not yet implemented.
+
 ## 2026-02-10: Fix beta viz bug, smoothed argmax RF center, port viz to run_single_mode
 **Branch**: `pietro/arcsine-kernel`
 
