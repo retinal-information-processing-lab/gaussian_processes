@@ -2,6 +2,14 @@
 Utility exploration with NORMALIZED arc-cosine kernel.
 Created by Claude (copy of explore_utility.py with normalized kernel).
 
+IMPORTANT: This script fits its OWN model during setup() - it does NOT use a
+pre-trained model from run_normalized.py or run_single_mode.py. The model is
+trained fresh each time with M=100, n_train=100 (hardcoded below).
+
+For fair test_r comparison between kernels, use run_single_mode.py vs
+run_normalized.py with matched parameters. This script is for exploring utility
+behavior patterns, not for model performance evaluation.
+
 Trains a GP model using ArcCosineKernelNormalized (constant diagonal = 1.0)
 and provides helper functions to explore utility behavior. Tests whether
 normalized kernel eliminates utility divergence toward high-norm images.
@@ -19,6 +27,7 @@ import math
 import torch
 import numpy as np
 from pathlib import Path
+from scipy.ndimage import gaussian_filter
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -73,8 +82,10 @@ _ADAPTIVE_RMAX_PARAMS = {
 # ---------------------------------------------------------------------------
 # Default config
 # ---------------------------------------------------------------------------
-N_TRAIN = 100
+N_TRAIN = 1000
 M = 100
+SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
+
 
 
 # ============================================================================
@@ -84,7 +95,13 @@ M = 100
 def setup():
     """Train model with NORMALIZED kernel and return everything needed for exploration.
 
-    ONLY DIFFERENCE from original: uses ArcCosineKernelNormalized instead of ArcCosineKernel.
+    IMPORTANT: This function trains a NEW model from scratch. It does NOT load a
+    pre-trained model. The trained model uses:
+    - Kernel: ArcCosineKernelNormalized (constant diagonal = 1.0)
+    - Mode: default_gpy
+    - M: 100 inducing points (hardcoded above)
+    - n_train: 100 training images (hardcoded above)
+    - Other params from default_params.json (seed=42, cell=8, etc.)
 
     Returns:
         dict with keys:
@@ -402,6 +419,8 @@ def eval_da_conditioned(model, likelihood, X_train, x_cond):
 # ============================================================================
 
 def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
+                      n_train=None, n_pool=None, synthetic_labels=None,
+                      n_special=0, special_labels=None,
                       n_grid_mu=200, n_grid_sigma2=150):
     """Plot entropy heatmap with marginal/conditional scatter for DA utility.
 
@@ -410,11 +429,22 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     conditional moments (after conditioning on x_cond). Pairs are
     connected by faint lines.
 
+    Synthetic images that fall outside the natural-image axis range are not
+    plotted as scatter points. Instead their moments are shown in a text box.
+
     Args:
         model, likelihood: trained model in eval mode.
-        X_candidates: (N, d) images to evaluate.
+        X_candidates: (N, d) images to evaluate. Expected order:
+            [training, x_cond, pool, synthetic, special]
         x_cond: (d,) conditioning image.
         save_path: where to save the PNG.
+        n_train: Number of training images (circles).
+        n_pool: Number of pool images (squares). If None, all images
+            after x_cond are pool. If provided, images after pool are
+            synthetic (diamonds).
+        synthetic_labels: list of label strings for synthetic images.
+        n_special: Number of special images at the end (green stars).
+        special_labels: list of label strings for special images.
         n_grid_mu, n_grid_sigma2: heatmap grid resolution.
     """
     A = likelihood.A.item()
@@ -438,9 +468,12 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     # x_cond index (last element)
     n_cand = X_candidates.shape[0]
 
-    # --- Determine axis range from data ---
-    all_mu = np.concatenate([mu_g_marg, mu_g_cond])
-    all_s2 = np.concatenate([s2_g_marg, s2_g_cond])
+    # --- Determine axis range from natural images only ---
+    # Exclude synthetic images from range to avoid extreme values blowing up
+    # the heatmap grid. Synthetic markers still plotted (clipped by axes).
+    n_natural = n_cand if (n_train is None or n_pool is None) else n_train + 1 + n_pool
+    all_mu = np.concatenate([mu_g_marg[:n_natural], mu_g_cond[:n_natural]])
+    all_s2 = np.concatenate([s2_g_marg[:n_natural], s2_g_cond[:n_natural]])
     mu_range = all_mu.max() - all_mu.min()
     s2_range = all_s2.max() - all_s2.min()
     pad_mu = max(mu_range * 0.15, 0.1)
@@ -506,62 +539,199 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     cbar = plt.colorbar(im, ax=ax1, pad=0.02)
     cbar.set_label('H(R | $\\mu_g$, $\\sigma^2_g$)', fontsize=10)
 
-    # Connecting lines (draw first, behind dots)
+    # Identify image groups
+    # Order: [training, x_cond, pool, synthetic, special]
+    idx_special = list(range(n_cand - n_special, n_cand)) if n_special > 0 else []
+    n_before_special = n_cand - n_special
+
+    if n_train is None:
+        idx_cond = n_before_special - 1
+        idx_train = list(range(idx_cond))
+        idx_pool = []
+        idx_synthetic = []
+    elif n_pool is None:
+        idx_train = list(range(n_train))
+        idx_cond = n_train
+        idx_pool = list(range(n_train + 1, n_before_special))
+        idx_synthetic = []
+    else:
+        idx_train = list(range(n_train))
+        idx_cond = n_train
+        idx_pool = list(range(n_train + 1, n_train + 1 + n_pool))
+        idx_synthetic = list(range(n_train + 1 + n_pool, n_before_special))
+
+    # Split synthetic into in-range (plotted as diamonds) and outliers (text box)
+    idx_synth_inrange = []
+    idx_synth_outlier = []
+    for i in idx_synthetic:
+        in_range = (mu_g_min <= mu_g_marg[i] <= mu_g_max
+                    and s2_g_min <= s2_g_marg[i] <= s2_g_max
+                    and mu_g_min <= mu_g_cond[i] <= mu_g_max
+                    and s2_g_min <= s2_g_cond[i] <= s2_g_max)
+        if in_range:
+            idx_synth_inrange.append(i)
+        else:
+            idx_synth_outlier.append(i)
+
+    # Connecting lines (draw first, behind dots) — skip outlier synthetic
+    skip_set = set(idx_synth_outlier)
     for i in range(n_cand):
+        if i in skip_set:
+            continue
         ax1.plot(
             [s2_g_marg[i], s2_g_cond[i]],
             [mu_g_marg[i], mu_g_cond[i]],
             color='gray', linewidth=0.5, alpha=0.4, zorder=3,
         )
 
-    # Marginal dots
+    # Marginal dots - training (circles)
     ax1.scatter(
-        s2_g_marg, mu_g_marg,
+        s2_g_marg[idx_train], mu_g_marg[idx_train],
         s=25, c='tab:blue', edgecolors='white', linewidths=0.3,
         zorder=5, label='marginal',
     )
 
-    # Conditional dots
+    # Marginal dots - pool (squares)
+    if idx_pool:
+        ax1.scatter(
+            s2_g_marg[idx_pool], mu_g_marg[idx_pool],
+            s=30, marker='s', c='tab:blue', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # Marginal dots - in-range synthetic (diamonds)
+    if idx_synth_inrange:
+        ax1.scatter(
+            s2_g_marg[idx_synth_inrange], mu_g_marg[idx_synth_inrange],
+            s=40, marker='D', c='tab:blue', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # Conditional dots - training (circles)
     ax1.scatter(
-        s2_g_cond, mu_g_cond,
+        s2_g_cond[idx_train], mu_g_cond[idx_train],
         s=25, c='tab:orange', edgecolors='white', linewidths=0.3,
         zorder=5, label='conditional',
     )
 
-    # x_cond marker (marginal position, last candidate)
+    # Conditional dots - pool (squares)
+    if idx_pool:
+        ax1.scatter(
+            s2_g_cond[idx_pool], mu_g_cond[idx_pool],
+            s=30, marker='s', c='tab:orange', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # Conditional dots - in-range synthetic (diamonds)
+    if idx_synth_inrange:
+        ax1.scatter(
+            s2_g_cond[idx_synth_inrange], mu_g_cond[idx_synth_inrange],
+            s=40, marker='D', c='tab:orange', edgecolors='white', linewidths=0.3,
+            zorder=5,
+        )
+
+    # Text box for outlier synthetic images
+    if idx_synth_outlier:
+        synth_offset = n_train + 1 + n_pool if n_pool is not None else 0
+        lines = ["Synthetic (off-chart):"]
+        for i in idx_synth_outlier:
+            label_idx = i - synth_offset
+            lbl = (synthetic_labels[label_idx] if synthetic_labels
+                   and label_idx < len(synthetic_labels)
+                   else f"synth[{label_idx}]")
+            lines.append(
+                f"  {lbl}: $\\mu_g$={mu_g_marg[i]:.2f}, "
+                f"$\\sigma^2_g$={s2_g_marg[i]:.2f}"
+            )
+        box_text = "\n".join(lines)
+        ax1.text(
+            0.98, 0.98, box_text,
+            transform=ax1.transAxes, fontsize=7,
+            verticalalignment='top', horizontalalignment='right',
+            bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
+                      edgecolor='gray', alpha=0.85),
+            zorder=10,
+        )
+
+    # x_cond marker (marginal position)
     ax1.scatter(
-        [s2_g_marg[-1]], [mu_g_marg[-1]],
+        [s2_g_marg[idx_cond]], [mu_g_marg[idx_cond]],
         s=80, marker='*', c='red', edgecolors='white', linewidths=0.5,
         zorder=6, label='$x_{cond}$',
     )
+
+    # Special images (green stars) — marginal and conditional
+    if idx_special:
+        ax1.scatter(
+            s2_g_marg[idx_special], mu_g_marg[idx_special],
+            s=80, marker='*', c='tab:green', edgecolors='white', linewidths=0.5,
+            zorder=6,
+        )
+        ax1.scatter(
+            s2_g_cond[idx_special], mu_g_cond[idx_special],
+            s=80, marker='*', c='tab:green', edgecolors='white', linewidths=0.5,
+            zorder=6, label='smoothed',
+        )
 
     ax1.set_xlabel('$\\sigma^2_g$ (log-firing rate variance)', fontsize=10)
     ax1.set_ylabel('$\\mu_g$ (log-firing rate mean)', fontsize=10)
     ax1.set_title('H(R) Landscape: conditioning shifts from $x_{cond}$', fontsize=11)
     ax1.legend(fontsize=9, loc='upper left', framealpha=0.9)
 
-    # === Right panel: U_DA vs norm, colored by angle ===
-    idx_cond = n_cand - 1
-    idx_train = list(range(idx_cond))
+    # === Right panel: U_DA vs angle, colored by H_marg ===
+    # (||x||_C = 1.0 for normalized kernel, so norm axis is meaningless)
 
+    # Plot training images (circles)
     sc = ax2.scatter(
-        norms[idx_train], U_DA_vals[idx_train],
+        angles_rad[idx_train], U_DA_vals[idx_train],
         s=30, c=angles_rad[idx_train], cmap='plasma',
         vmin=0, vmax=np.pi / 2,
         edgecolors='white', linewidths=0.3, zorder=3,
+        label='train' if idx_pool else None,
     )
+
+    # Plot pool images (squares) if present
+    if idx_pool:
+        ax2.scatter(
+            angles_rad[idx_pool], U_DA_vals[idx_pool],
+            s=40, marker='s', c=angles_rad[idx_pool], cmap='plasma',
+            vmin=0, vmax=np.pi / 2,
+            edgecolors='white', linewidths=0.3, zorder=3,
+            label='pool',
+        )
+
+    # Plot synthetic images (diamonds) if present
+    if idx_synthetic:
+        ax2.scatter(
+            angles_rad[idx_synthetic], U_DA_vals[idx_synthetic],
+            s=50, marker='D', c=angles_rad[idx_synthetic], cmap='plasma',
+            vmin=0, vmax=np.pi / 2,
+            edgecolors='white', linewidths=0.3, zorder=4,
+            label='synthetic',
+        )
+
+    # Plot special images (green stars)
+    if idx_special:
+        ax2.scatter(
+            angles_rad[idx_special], U_DA_vals[idx_special],
+            s=100, marker='*', c='tab:green', edgecolors='white', linewidths=0.5,
+            zorder=5, label='smoothed',
+        )
+
+    # Plot conditioning image (red star)
     ax2.scatter(
-        norms[idx_cond], U_DA_vals[idx_cond],
+        angles_rad[idx_cond], U_DA_vals[idx_cond],
         s=100, marker='*', c='red', edgecolors='white', linewidths=0.5,
         zorder=5, label='$x_{cond}$',
     )
+
     cbar2 = plt.colorbar(sc, ax=ax2, pad=0.02)
     cbar2.set_label('Angle to $x_{cond}$ (rad)', fontsize=10)
 
-    ax2.set_xlabel('$||x^*||_C$', fontsize=10)
+    ax2.set_xlabel('Angle to $x_{cond}$ (rad)', fontsize=10)
     ax2.set_ylabel('$H_{marg} - H_{cond}$', fontsize=10)
-    ax2.set_title('DA utility vs norm (color = angle)', fontsize=11)
-    ax2.legend(fontsize=9)
+    ax2.set_title('DA utility vs angle ($||x||_C = 1$, fixed)', fontsize=11)
+    ax2.legend(fontsize=9, loc='best')
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -581,6 +751,11 @@ def demo():
     X_pool = env['X_pool']
     X_train = env['X_train']
     x_target = env['x_target']
+
+    if SIGMA_0 is not None:
+        trained_sigma0 = model.covar_module.sigma_0.item()
+        model.covar_module.sigma_0 = SIGMA_0
+        print(f"\n** sigma_0 changed: {trained_sigma0:.4f} -> {SIGMA_0} (post-training override)")
 
     # === Part 1: A natural image ===
     print("\n" + "=" * 60)
@@ -620,6 +795,62 @@ def demo():
     describe(model, likelihood, x_other_scaled, x_ref=x_target,
              label=f"5 * pool[{mid_idx}]")
 
+    # === Create synthetic images ===
+    X_all = torch.cat([X_train, X_pool], dim=0)
+    mean_val = X_all.mean().item()
+    max_val = X_all.max().item()
+    min_val = X_all.min().item()
+    n_pixels = X_train.shape[1]
+    device = X_train.device
+
+    print(f"\nDataset pixel stats: min={min_val:.4f}, max={max_val:.4f}, mean={mean_val:.4f}")
+
+    gray_mean = torch.full((n_pixels,), mean_val, device=device)
+    white_1x = torch.full((n_pixels,), max_val, device=device)
+    white_20x = torch.full((n_pixels,), 20.0 * max_val, device=device)
+    black_1x = torch.full((n_pixels,), min_val, device=device)
+    black_20x = torch.full((n_pixels,), 20.0 * min_val, device=device)
+
+    noise_gen = torch.Generator(device='cpu').manual_seed(0)
+    noise_1x = (torch.rand(n_pixels, generator=noise_gen) * (max_val - min_val) + min_val).to(device)
+    noise_20x = 20.0 * noise_1x
+
+    synthetic_cases = [
+        ("gray (mean)", gray_mean),
+        ("white (max)", white_1x),
+        ("white (20x)", white_20x),
+        ("black (min)", black_1x),
+        ("black (20x)", black_20x),
+        ("noise (1x)", noise_1x),
+        ("noise (20x)", noise_20x),
+    ]
+
+    # === Gaussian-smoothed x_target ===
+    n_px_side = env['config']['n_px_side']
+    sigma_smooth = 3.0
+    x_target_2d = x_target.cpu().numpy().reshape(n_px_side, n_px_side)
+    x_smoothed_2d = gaussian_filter(x_target_2d, sigma=sigma_smooth)
+    x_smoothed = torch.tensor(x_smoothed_2d.reshape(-1), dtype=x_target.dtype,
+                              device=device)
+
+    # Before/after visualization
+    fig_ba, (ax_before, ax_after) = plt.subplots(1, 2, figsize=(5, 2.5))
+    ax_before.imshow(x_target_2d, cmap='gray')
+    ax_before.set_title('x_target (original)', fontsize=9)
+    ax_before.axis('off')
+    ax_after.imshow(x_smoothed_2d, cmap='gray')
+    ax_after.set_title(f'smoothed ($\\sigma$={sigma_smooth})', fontsize=9)
+    ax_after.axis('off')
+    fig_ba.tight_layout()
+    smoothed_fig_path = _script_dir / 'x_target_smoothed.png'
+    fig_ba.savefig(smoothed_fig_path, dpi=150, bbox_inches='tight')
+    plt.close(fig_ba)
+    print(f"Saved before/after: {smoothed_fig_path}")
+
+    special_cases = [
+        ("smoothed x_target", x_smoothed),
+    ]
+
     # === Part 5: Comparison table ===
     print("\n" + "=" * 60)
     print("COMPARISON: Amplitude vs Angle effects")
@@ -630,7 +861,7 @@ def demo():
         ("5 * x_target", x_scaled),
         (f"pool[{mid_idx}]", x_other),
         (f"5 * pool[{mid_idx}]", x_other_scaled),
-    ]
+    ] + synthetic_cases + special_cases
 
     # Batch compute utilities
     x_batch = torch.stack([x for _, x in cases])
@@ -673,10 +904,32 @@ def demo():
     eval_da_conditioned(model, likelihood, X_train, x_target)
 
     # === Part 7: DA utility landscape + scatter plot ===
-    x_candidates = torch.cat([X_train, x_target.unsqueeze(0)], dim=0)
+    # Add random pool images (not in training) - plotted with square markers
+    n_pool_samples = 20
+    pool_indices = torch.randperm(X_pool.shape[0])[:n_pool_samples]
+    X_pool_sample = X_pool[pool_indices]
+
+    # Synthetic images - plotted with diamond markers
+    X_synthetic = torch.stack([x for _, x in synthetic_cases])
+    # Special images - plotted with green stars
+    X_special = torch.stack([x for _, x in special_cases])
+
+    print(f"\nAdding {n_pool_samples} pool images (squares), "
+          f"{len(synthetic_cases)} synthetic (diamonds), "
+          f"{len(special_cases)} special (green stars) for landscape plot")
+
+    # Concatenate: [training, x_cond, pool, synthetic, special]
+    x_candidates = torch.cat([
+        X_train, x_target.unsqueeze(0), X_pool_sample, X_synthetic, X_special
+    ], dim=0)
     plot_da_landscape(
         model, likelihood, x_candidates, x_target,
-        save_path=_script_dir / 'da_utility_landscape_normalized.png',
+        n_train=X_train.shape[0],
+        n_pool=n_pool_samples,
+        synthetic_labels=[lbl for lbl, _ in synthetic_cases],
+        n_special=len(special_cases),
+        special_labels=[lbl for lbl, _ in special_cases],
+        save_path=_script_dir / 'explore_utility_normalized.png',
     )
 
 
