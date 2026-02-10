@@ -95,6 +95,12 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
 
     def closure():
         optimizer.zero_grad()
+        # Reject trial step if parameters are out of bounds
+        kernel = model.covar_module
+        if hasattr(kernel, 'params_in_bounds') and not kernel.params_in_bounds():
+            return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
+        if hasattr(likelihood, 'params_in_bounds') and not likelihood.params_in_bounds():
+            return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
         # Guard: catch kernel NaN/errors during LBFGS line search.
         # Matches the pattern in eigenspace_mstep.py (Guardrails 7-8):
         # return inf so LBFGS rejects the trial step.
@@ -151,11 +157,13 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 loss.backward()
                 optimizer.step()
 
-            # Clamp kernel hyperparameters to physical bounds after each step
+            # Clamp parameters to physical bounds after each step
             # (projected gradient descent — matches eigenspace_mstep.py pattern)
             kernel = model.covar_module
             if hasattr(kernel, 'clamp_hyperparameters'):
                 kernel.clamp_hyperparameters()
+            if hasattr(likelihood, 'clamp_params'):
+                likelihood.clamp_params()
 
             current_loss = loss.item()
             losses.append(current_loss)
