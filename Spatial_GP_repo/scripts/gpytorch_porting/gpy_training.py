@@ -95,10 +95,20 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
 
     def closure():
         optimizer.zero_grad()
-        output = model(train_x)
+        # Guard: catch kernel NaN/errors during LBFGS line search.
+        # Matches the pattern in eigenspace_mstep.py (Guardrails 7-8):
+        # return inf so LBFGS rejects the trial step.
+        try:
+            output = model(train_x)
+        except Exception:
+            # Kernel produced NaN (e.g. all-NaN K_uu) — reject this step
+            return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
         ell = likelihood.expected_log_prob(train_y, output)
         kl = model.variational_strategy.kl_divergence()
         loss = -ell + kl
+        if torch.isnan(loss) or torch.isinf(loss):
+            # NaN/Inf loss (e.g. from overflow in kernel or likelihood) — reject
+            return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
         loss.backward()
         # Store for logging
         last_output[0] = output
@@ -140,6 +150,12 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 loss = -expected_log_lik + kl_div
                 loss.backward()
                 optimizer.step()
+
+            # Clamp kernel hyperparameters to physical bounds after each step
+            # (projected gradient descent — matches eigenspace_mstep.py pattern)
+            kernel = model.covar_module
+            if hasattr(kernel, 'clamp_hyperparameters'):
+                kernel.clamp_hyperparameters()
 
             current_loss = loss.item()
             losses.append(current_loss)

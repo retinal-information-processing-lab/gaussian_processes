@@ -277,6 +277,8 @@ class ArcCosineKernel(Kernel):
         """Clamp hyperparameters to valid bounds (projected gradient descent).
 
         Call this after optimizer.step() to enforce parameter bounds.
+        Emits a warning listing which parameters were out of bounds,
+        since this should not happen if the LBFGS NaN guard is working.
 
         Bounds:
             Amp ∈ (0, 1000] (via raw parameter)
@@ -285,20 +287,41 @@ class ArcCosineKernel(Kernel):
             eps_0x, eps_0y ∈ [-1.0, 1.0] (direct)
         """
         with torch.no_grad():
-            # Clamp Amp at max 1000.0
+            violated = []
+
             if hasattr(self, 'raw_Amp'):
                 max_raw_Amp = self.raw_Amp_constraint.inverse_transform(
                     torch.tensor(self.AMP_MAX, device=self.raw_Amp.device, dtype=self.raw_Amp.dtype)
                 )
+                if self.raw_Amp.item() > max_raw_Amp.item():
+                    violated.append(f"Amp={self.Amp.item():.4g} > {self.AMP_MAX}")
                 self.raw_Amp.clamp_(max=max_raw_Amp.item())
+
             if hasattr(self, 'raw_m2log2beta'):
+                v = self.raw_m2log2beta.item()
+                if v < self.RAW_BETA_MIN or v > self.RAW_BETA_MAX:
+                    violated.append(f"raw_m2log2beta={v:.4g} outside [{self.RAW_BETA_MIN:.2f}, {self.RAW_BETA_MAX:.2f}]")
                 self.raw_m2log2beta.clamp_(self.RAW_BETA_MIN, self.RAW_BETA_MAX)
+
             if hasattr(self, 'raw_mlog2rho2'):
+                v = self.raw_mlog2rho2.item()
+                if v < self.RAW_RHO_MIN or v > self.RAW_RHO_MAX:
+                    violated.append(f"raw_mlog2rho2={v:.4g} outside [{self.RAW_RHO_MIN:.2f}, {self.RAW_RHO_MAX:.2f}]")
                 self.raw_mlog2rho2.clamp_(self.RAW_RHO_MIN, self.RAW_RHO_MAX)
+
             if hasattr(self, 'eps_0x'):
+                if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
+                    violated.append(f"eps_0x={self.eps_0x.item():.4g}")
+                if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
+                    violated.append(f"eps_0y={self.eps_0y.item():.4g}")
                 self.eps_0x.clamp_(self.EPS_MIN, self.EPS_MAX)
-            if hasattr(self, 'eps_0y'):
                 self.eps_0y.clamp_(self.EPS_MIN, self.EPS_MAX)
+
+            if violated:
+                warnings.warn(
+                    f"clamp_hyperparameters: parameters escaped bounds — {', '.join(violated)}. "
+                    f"This suggests the optimizer took a step the NaN guard did not catch."
+                )
 
     def _setup_pixel_coords(self):
         """Setup normalized pixel coordinate grid on [-1, 1] × [-1, 1].

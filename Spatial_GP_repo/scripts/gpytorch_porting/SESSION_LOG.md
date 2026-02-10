@@ -1,5 +1,11 @@
 # Session Log
 
+## 2026-02-10: Arc-sine kernel implementation + LBFGS NaN guard fix
+**Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Implemented ArcSineKernel (kernels.py) and sandboxed runner (run_arcsine.py). Arc-sine at M=100: test_r=0.7653 (only 3% below arc-cosine baseline). At M=50: NaN crash — diagnosed as missing NaN guard in `gpy_training.py` LBFGS closure (same bug as normalized kernel M=50). Root cause: LBFGS line search pushes parameters to extreme values, raw_m2log2beta overflows float32 (exp(186)=inf), kernel degenerates, loss=NaN, gradients=NaN, all params become NaN. Fixed with two-layer guard matching eigenspace_mstep.py pattern: (1) return inf on NaN loss/exception in closure, (2) clamp_hyperparameters() after step with warning. Arc-sine M=50 now works (test_r=0.4623). Arc-cosine M=50 no regression (0.6815 vs 0.6819). Needs full regression test and commit.
+
 ## 2026-02-10: Arc-sine kernel planning session
 **Handoff**: `.claude/handoffs/HANDOFF_2026-02-10_arcsine-kernel-implementation.md`
 **Plan**: `.claude/plans/merry-nibbling-sutton.md`
