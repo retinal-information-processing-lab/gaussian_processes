@@ -23,7 +23,9 @@ If on pietro/workingbranch: this is the default working branch — no warning ne
 
 If on a feature/investigation branch: mention it briefly so the user can confirm it matches their intent.
 
-If multiple worktrees are active: ALWAYS mention how many and which directory this session is in, regardless of which branch we are on (including pietro/workingbranch).
+CRITICAL — If multiple worktrees are active: You MUST tell the user immediately, even before any other work.
+Report how many worktrees exist, which directory and branch each one is on, and which one THIS session is in.
+This applies regardless of which branch we are on (including pietro/workingbranch). Never skip this.
 Flag if the branch name seems mismatched with the session context (e.g., on arcsine-kernel but discussing acquisition functions).
 
 DO NOT use 'git checkout' or 'git switch' to change branches when multiple worktrees exist.
