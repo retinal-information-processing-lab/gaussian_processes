@@ -1,11 +1,20 @@
 # Session Log
 
+## 2026-02-11: RBF utility exploration scripts
+**Branch**: `pietro/rbf-kernel`
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-11_rbf-utility-exploration-scripts.md`
+**Plan**: `.claude/plans/sorted-sniffing-tiger.md`
+**Status**: Implemented
+
+Created `explore_utility_rbf.py` and `gradient_rbf.py` in `investigations/rbf_kernel/`. Adapted from arc-cosine versions in `investigations/understanding_utility/`. Key RBF adaptations: imports from `run_rbf.py`, right panel plots U_DA vs K(x*, x_cond) instead of ||x||_C, no sigma_0 override, added `kernel_distance()` helper. Merged workingbranch to get LBFGS/f_max upgrades; gradient_rbf.py needs rewrite to use LBFGS template.
+
 ## 2026-02-11c: Arc-sine investigation paused
 **Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
 **Status**: Paused — branch `pietro/arcsine-kernel` parked, nothing urgent to merge to workingbranch.
 
 ## 2026-02-11b: LBFGS upgrade, f_max guard, cross-kernel parity
 Implemented LBFGS optimizer in gradient_arcsine.py (replaces plain GD). Investigated norm-driven utility divergence: optimizer exploits firing rate growth (0.49→5.82 spikes), confirmed with DEBUG diagnostics. Added f_max=100.0 firing rate guard to LBFGS closure (returns +inf to reject high-rate steps). Wired f_max through default_params.json, both YAMLs, and config builders. Upgraded gradient_unnormalized.py and gradient_normalized.py with same features (LBFGS, f_max, RF metrics, diagnostics). Fixed explore_utility.py output filename. All three kernel investigation folders now consistent.
+
 ## 2026-02-11: LocalRBFKernel implementation
 **Branch**: `pietro/rbf-kernel` (worktree at `gpytorch_porting_rbf_kernel`)
 **Handoff**: `investigations/rbf_kernel/HANDOFF.md`
