@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-02-11: LocalRBFKernel implementation
+**Branch**: `pietro/rbf-kernel` (worktree at `gpytorch_porting_rbf_kernel`)
+**Handoff**: `investigations/rbf_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Implemented `LocalRBFKernel` in `kernels.py` — stationary RBF kernel using same C matrix as arc-cosine but with log-space lengthscale instead of Amp. Two commits: initial kernel (9ae87b7), lengthscale reparametrization (565717b). test_r=0.7785 on cell 8, M=50 (vs arc-cosine ~0.84). Next: multi-cell validation, M=100 test, RF parameter comparison.
+
 ## 2026-02-11: Arc-sine utility exploration scripts + LBFGS plan
 **Handoff**: `.claude/handoffs/HANDOFF_2026-02-11_arcsine-utility-exploration-lbfgs.md`
 **Plan**: `.claude/plans/merry-nibbling-sutton.md`
