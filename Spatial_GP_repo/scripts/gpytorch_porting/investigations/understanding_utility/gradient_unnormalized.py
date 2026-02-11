@@ -50,7 +50,7 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Model params (M=50, N_TRAIN=50) are set in explore_utility.py
 # ---------------------------------------------------------------------------
 # --- Experiment mode (revertible: set False to restore natural image experiment) ---
-USE_SYNTHETIC = True     # False: bipartite target + noise start. False: natural + smoothing.
+USE_SYNTHETIC = False     # False: bipartite target + noise start. False: natural + smoothing.
 DARK_GRAY = -0.5         # synthetic bipartite: left half pixel value
 LIGHT_GRAY = 0.5         # synthetic bipartite: right half pixel value
 NOISE_AMP = 0.5          # synthetic: random noise amplitude for starting image
@@ -61,11 +61,14 @@ TARGET_INDEX = 0         # which pool image to use as target
 
 SIGMA_0 = None           # Override kernel sigma_0 AFTER training. None = keep trained value.
 
+# --- Pixel bounds (experimental, may be reverted) ---
+USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
+
 N_INTERP = 21            # interpolation points along path
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 50             # outer LBFGS steps
-LR = 5.0                 # LBFGS step size (1.0 standard for quasi-Newton)
+LR = 0.5                 # LBFGS step size (1.0 standard for quasi-Newton)
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
@@ -127,29 +130,67 @@ def rf_proj_coeff(x, target, rf_mask):
     return ((a * b).sum() / denom).item()
 
 
+def _reconstruct_image(x_rf, rf_mask, n_pixels, dtype, device):
+    """Place RF pixel values into full image, zeros elsewhere."""
+    x_full = torch.zeros(n_pixels, dtype=dtype, device=device)
+    x_full[rf_mask] = x_rf
+    return x_full
+
+
 def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
+                    pixel_lo, pixel_hi,
                     n_steps, lr, max_iter, max_eval, history_size):
     """LBFGS gradient ascent maximizing U_DA(x | observe A).
 
-    Uses torch.optim.LBFGS with strong_wolfe line search. Each outer step
-    performs up to max_iter internal iterations (each evaluating the closure).
+    Optimizes RF-masked pixels only (~2,480 out of 11,664). Non-RF pixels
+    are always zero. Uses torch.optim.LBFGS with strong_wolfe line search.
+
+    If pixel_lo/pixel_hi are provided, uses sigmoid reparametrization:
+    the optimizer works in unconstrained z-space, mapped to pixel space
+    via x_rf = lo + (hi - lo) * sigmoid(z). Otherwise optimizes x_rf directly.
 
     Firing rate guard: if predicted firing rate exceeds f_max, closure returns
-    +inf loss so the line search rejects that step (same pattern as model
-    training closures using params_in_bounds()).
+    +inf loss so the line search rejects that step.
 
     Tracks two convergence metrics (RF-masked):
       - pearson_r: structural similarity (1.0 = perfect pattern match)
       - proj_coeff: amplitude along target direction (1.0 = same scale)
 
     Returns:
-        x_final: (n_pixels,) optimized image
+        x_final: (n_pixels,) optimized image (zeros outside RF)
         history: dict with lists of per-step metrics
     """
-    x_opt = x_start.clone().detach().requires_grad_(True)
+    n_pixels = x_start.shape[0]
+    device = x_start.device
+    dtype = x_start.dtype
+
+    # Extract RF pixels from starting image
+    x_rf_init = x_start[rf_mask]  # (n_rf,)
+
+    # Setup optimization variable: sigmoid reparametrization or direct
+    use_sigmoid = pixel_lo is not None and pixel_hi is not None
+    if use_sigmoid:
+        # Inverse sigmoid (logit) to initialize z in unconstrained space
+        eps = 1e-6
+        x_clamped = x_rf_init.clamp(pixel_lo + eps, pixel_hi - eps)
+        sigmoid_val = (x_clamped - pixel_lo) / (pixel_hi - pixel_lo)
+        z_rf = torch.log(sigmoid_val / (1 - sigmoid_val))  # logit
+        z_rf = z_rf.detach().requires_grad_(True)
+        opt_var = z_rf
+
+        def _to_pixel(z):
+            # clamp handles float32 precision: sigmoid(large z) = 1.0 exactly,
+            # but lo + (hi - lo) * 1.0f can overshoot hi by ~1 ULP
+            return (pixel_lo + (pixel_hi - pixel_lo) * torch.sigmoid(z)).clamp(pixel_lo, pixel_hi)
+    else:
+        x_rf = x_rf_init.clone().detach().requires_grad_(True)
+        opt_var = x_rf
+
+        def _to_pixel(z):
+            return z
 
     optimizer = torch.optim.LBFGS(
-        [x_opt],
+        [opt_var],
         lr=lr,
         max_iter=max_iter,
         max_eval=max_eval,
@@ -165,9 +206,11 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
     for step in range(n_steps):
         def closure():
             optimizer.zero_grad()
+            x_rf_pixels = _to_pixel(opt_var)
+            x_full = _reconstruct_image(x_rf_pixels, rf_mask, n_pixels, dtype, device)
             result = distribution_aware_utility(
                 model, likelihood,
-                x_opt.unsqueeze(0),
+                x_full.unsqueeze(0),
                 x_target.unsqueeze(0),
                 r_max=r_max,
                 adaptive_r_max=False,
@@ -176,28 +219,35 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
             # Firing rate guard: reject if predicted rate exceeds f_max
             mu_g = result['mu_g_marg']
             if torch.exp(mu_g).item() > f_max:
-                return torch.tensor(float('inf'), device=x_opt.device)
+                return torch.tensor(float('inf'), device=device)
             loss = -result['utility'].squeeze()  # minimize negative = maximize
             loss.backward()
             return loss
 
         optimizer.step(closure)
 
+        # Verify gradient flow on first step
+        if step == 0:
+            assert opt_var.grad is not None and opt_var.grad.norm() > 0, \
+                "No gradient flow through RF reconstruction"
+
         # Track metrics AFTER optimizer.step() (no grad needed for logging)
         with torch.no_grad():
+            x_rf_pixels = _to_pixel(opt_var)
+            x_full = _reconstruct_image(x_rf_pixels, rf_mask, n_pixels, dtype, device)
             result = distribution_aware_utility(
                 model, likelihood,
-                x_opt.unsqueeze(0),
+                x_full.unsqueeze(0),
                 x_target.unsqueeze(0),
                 r_max=r_max,
                 adaptive_r_max=False,
                 sample_lambda=False,
             )
             utility = result['utility'].item()
-            pr = rf_pearson_r(x_opt, x_target, rf_mask)
-            pc = rf_proj_coeff(x_opt, x_target, rf_mask)
+            pr = rf_pearson_r(x_full, x_target, rf_mask)
+            pc = rf_proj_coeff(x_full, x_target, rf_mask)
 
-        grad_norm = x_opt.grad.norm().item() if x_opt.grad is not None else 0.0
+        grad_norm = opt_var.grad.norm().item() if opt_var.grad is not None else 0.0
 
         history['step'].append(step)
         history['utility'].append(utility)
@@ -214,7 +264,11 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
             print(f"  step {step:4d}: U={utility:.6f}  "
                   f"r={pr:.4f}  proj={pc:.4f}  |grad|={grad_norm:.4e}")
 
-    return x_opt.detach(), history
+    # Return full reconstructed image
+    with torch.no_grad():
+        x_rf_final = _to_pixel(opt_var)
+        x_final = _reconstruct_image(x_rf_final, rf_mask, n_pixels, dtype, device)
+    return x_final.detach(), history
 
 
 def main():
@@ -275,6 +329,14 @@ def main():
             _ = model(X_pool[0].unsqueeze(0))
     rf_mask = kernel._cached_mask.squeeze()
 
+    # Dataset pixel bounds (RF pixels only) — used for sigmoid reparametrization + visualization
+    rf_mask_np = rf_mask.cpu().numpy()
+    X_all = torch.cat([X_pool, env['X_train']], dim=0)
+    all_rf_vals = X_all.cpu().numpy()[:, rf_mask_np]  # (N_all, n_rf_pixels)
+    vmin = float(all_rf_vals.min())
+    vmax = float(all_rf_vals.max())
+    print(f"  Dataset RF pixel range: [{vmin:.3f}, {vmax:.3f}] (from {X_all.shape[0]} images)")
+
     if USE_SYNTHETIC:
         # --- Bipartite target: left=dark, right=light within RF mask ---
         mask_2d = rf_mask.cpu().numpy().reshape(n_px_side, n_px_side)
@@ -315,8 +377,8 @@ def main():
     pixel_dist = (x_perturbed - x_target).norm().item()
     rf_dist = (x_perturbed[rf_mask] - x_target[rf_mask]).norm().item()
     print(f"  pixel_dist={pixel_dist:.4f}, rf_dist={rf_dist:.4f}")
-    print(f"  ||target||={x_target.norm().item():.2f}, "
-          f"||start||={x_perturbed.norm().item():.2f}")
+    print(f"  ||target||_RF={x_target[rf_mask].norm().item():.2f}, "
+          f"||start||_RF={x_perturbed[rf_mask].norm().item():.2f}")
 
     # === Step 3: Interpolation sweep ===
     print("\n" + "=" * 70)
@@ -339,8 +401,11 @@ def main():
     print(f"Step 4: Gradient ascent from {start_label}")
     print("=" * 70)
 
+    pixel_lo = vmin if USE_SIGMOID_BOUNDS else None
+    pixel_hi = vmax if USE_SIGMOID_BOUNDS else None
     x_final, history = gradient_ascent(
         model, likelihood, x_perturbed, x_target, rf_mask, r_max, f_max,
+        pixel_lo, pixel_hi,
         N_STEPS, LR, LBFGS_MAX_ITER, LBFGS_MAX_EVAL, LBFGS_HISTORY_SIZE
     )
 
@@ -349,7 +414,7 @@ def main():
     print(f"  U_DA: {history['utility'][0]:.6f} -> {history['utility'][-1]:.6f}")
     print(f"  Pearson r (RF): {history['pearson_r'][0]:.4f} -> {history['pearson_r'][-1]:.4f}")
     print(f"  Proj coeff (RF): {history['proj_coeff'][0]:.4f} -> {history['proj_coeff'][-1]:.4f}")
-    print(f"  ||final||={x_final.norm().item():.2f}")
+    print(f"  ||final||_RF={x_final[rf_mask].norm().item():.2f}")
 
     # --- DEBUG: firing rate diagnostics (target vs optimized) ---
     print(f"\n  DEBUG: Firing rate diagnostics (f_max={f_max})")
@@ -364,7 +429,7 @@ def main():
             flag = " ** EXCEEDS f_max" if firing_rate > f_max else ""
             print(f"    {label:8s}: lambda_m={mu.item():.4f}, lambda_var={sigma2.item():.4f}, "
                   f"mu_g={mu_g.item():.4f}, firing_rate={firing_rate:.2f}, "
-                  f"H_marg={H:.6f}, ||x||={x_img.norm().item():.2f}{flag}")
+                  f"H_marg={H:.6f}, ||x||_RF={x_img[rf_mask].norm().item():.2f}{flag}")
     # --- END DEBUG ---
 
     # === Step 5: Visualization ===
@@ -390,14 +455,8 @@ def main():
         img[~mask_2d] = gray_val
         return img[r_min:r_max_px+1, c_min:c_max_px+1]
 
-    # vmin/vmax from the ENTIRE natural image dataset (RF pixels only)
-    rf_mask_np = rf_mask.cpu().numpy()
-    X_all = torch.cat([env['X_pool'], env['X_train']], dim=0)
-    all_rf_vals = X_all.cpu().numpy()[:, rf_mask_np]  # (N_all, n_rf_pixels)
-    vmin = float(all_rf_vals.min())
-    vmax = float(all_rf_vals.max())
+    # vmin/vmax already computed in Step 2 (reuse for visualization)
     gray_val = (vmin + vmax) / 2
-    print(f"  Dataset RF pixel range: [{vmin:.3f}, {vmax:.3f}] (from {X_all.shape[0]} images)")
 
     img_target = masked_crop(x_target, gray_val)
     img_perturbed = masked_crop(x_perturbed, gray_val)
