@@ -645,7 +645,7 @@ def demo():
     plot_da_landscape(
         model, likelihood, x_candidates, x_target,
         n_train=X_train.shape[0],  # Tell plot where training images end
-        save_path=_script_dir / 'da_utility_landscape.png',
+        save_path=_script_dir / 'explore_utility.png',
     )
 
 
