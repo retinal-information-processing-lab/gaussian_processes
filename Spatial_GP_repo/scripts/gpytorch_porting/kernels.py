@@ -699,6 +699,169 @@ class ArcSineKernel(ArcCosineKernel):
         return (2.0 / torch.pi) * torch.arcsin(arg)
 
 
+class LocalRBFKernel(ArcCosineKernel):
+    """RBF kernel with receptive field structure (C matrix) and lengthscale.
+
+    k(x, x') = exp(-(x - x')^T C_base (x - x') / (2 l^2))
+
+    where C_base = diag(alpha) @ C_smooth @ diag(alpha) is the RF
+    structure matrix (same as ArcCosineKernel but WITHOUT the Amp factor),
+    and l is a learnable lengthscale stored in log-space.
+
+    This cleanly separates:
+    - C_base: RF structure (center, size, smoothness) — from beta, rho, eps
+    - l: distance sensitivity (how different images must be before K drops)
+
+    This is a STATIONARY kernel: depends only on (x - x'), not absolute
+    values. Consequences:
+    - k(x, x) = 1 for all x (constant prior variance)
+    - No sigma_0 effect (bias cancels in the difference)
+    - All "drive" must come from likelihood (A, lambda0)
+
+    Only autograd gradient mode supported.
+
+    NOTE: sigma_0 and Amp are inherited from ArcCosineKernel but NOT used
+    in forward(). They exist for inheritance convenience. C_base excludes
+    Amp; the lengthscale parameter replaces its role.
+
+    TEMPORARY: Subclasses ArcCosineKernel for expedience (same pattern as
+    ArcSineKernel). If useful, shared C-matrix infrastructure should be
+    factored into a dedicated base class.
+
+    Parameters
+    ----------
+    lengthscale : float
+        Initial lengthscale value (default: 100.0). Stored in log-space
+        as raw_log_lengthscale. Controls kernel sharpness: larger l means
+        more tolerant (flatter kernel), smaller l means more sensitive.
+    Other parameters: Same as ArcCosineKernel. sigma_0 and Amp have no effect.
+    gradient_mode forced to 'autograd'.
+    """
+
+    # Lengthscale bounds
+    LENGTHSCALE_MIN = 0.1
+    LENGTHSCALE_MAX = 100000.0
+    RAW_LS_MIN = np.log(LENGTHSCALE_MIN)   # approx -2.30
+    RAW_LS_MAX = np.log(LENGTHSCALE_MAX)   # approx 11.51
+
+    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
+                 eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
+                 lengthscale=100.0,
+                 use_mask=True, gradient_mode='autograd', **kwargs):
+        if gradient_mode != 'autograd':
+            warnings.warn(
+                f"LocalRBFKernel only supports autograd gradient mode. "
+                f"Ignoring gradient_mode='{gradient_mode}'."
+            )
+        super().__init__(
+            n_px_side=n_px_side, sigma_0=sigma_0, Amp=Amp,
+            eps_0x=eps_0x, eps_0y=eps_0y, beta=beta, rho=rho,
+            use_mask=use_mask, gradient_mode='autograd', **kwargs
+        )
+
+        # Lengthscale in log-space (RBF-specific parameter)
+        raw_log_ls = np.log(lengthscale)
+        self.register_parameter('raw_log_lengthscale',
+            torch.nn.Parameter(torch.tensor([raw_log_ls], dtype=torch.float64)))
+
+    @property
+    def lengthscale(self):
+        """Get the lengthscale l = exp(raw_log_lengthscale)."""
+        return torch.exp(self.raw_log_lengthscale)
+
+    def _compute_C_matrix(self, apply_mask=False):
+        """Compute C_base WITHOUT Amp — lengthscale handles distance scaling.
+
+        C_base = diag(alpha) @ C_smooth @ diag(alpha)
+
+        This is the same RF structure as ArcCosineKernel._compute_C_matrix()
+        but without the Amp multiplication. The lengthscale parameter in
+        forward() replaces Amp's role for the RBF kernel.
+        """
+        beta = torch.exp(self.raw_m2log2beta)
+        rho2 = torch.exp(self.raw_mlog2rho2)
+
+        xcord = self.xcord.to(self.eps_0x.device)
+        ycord = self.ycord.to(self.eps_0y.device)
+
+        mask = None
+        if apply_mask:
+            mask = self.compute_mask()
+            xcord = xcord[mask]
+            ycord = ycord[mask]
+
+        # Locality weights: distance from RF center
+        dist_sq_center = (xcord - self.eps_0x)**2 + (ycord - self.eps_0y)**2
+        alpha = torch.exp(-beta * dist_sq_center)
+
+        # Smoothness kernel: pairwise pixel distances
+        dx = xcord[:, None] - xcord[None, :]
+        dy = ycord[:, None] - ycord[None, :]
+        C_smooth = torch.exp(-rho2 * (dx**2 + dy**2))
+
+        # C_base: NO Amp multiplication — lengthscale handles scaling
+        C = alpha[:, None] * C_smooth * alpha[None, :]
+        C = (C + C.T) / 2
+
+        return C, mask
+
+    def forward(self, x1, x2, diag=False, **params):
+        """Compute the local RBF kernel matrix.
+
+        k(x, x') = exp(-(x - x')^T C_base (x - x') / (2 l^2))
+
+        Expanded quadratic form:
+            (x-y)^T C (x-y) = x^T C x - 2 x^T C y + y^T C y
+
+        Diagonal: k(x, x) = exp(0) = 1 for all x.
+        """
+        C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
+        if mask is not None:
+            self._cached_mask = mask
+            x1 = x1[..., mask]
+            x2 = x2[..., mask]
+
+        C = C.to(x1.device, x1.dtype)
+
+        if diag:
+            return torch.ones(x1.shape[:-1], dtype=x1.dtype, device=x1.device)
+
+        # Quadratic expansion: (x-y)^T C (x-y) = x^T C x - 2 x^T C y + y^T C y
+        X1_C = x1 @ C                                          # (..., n1, n_masked)
+        X2_C = x2 @ C                                          # (..., n2, n_masked)
+        self_x1 = (x1 * X1_C).sum(dim=-1)                      # (..., n1)
+        self_x2 = (x2 * X2_C).sum(dim=-1)                      # (..., n2)
+        cross = torch.matmul(X1_C, x2.transpose(-2, -1))       # (..., n1, n2)
+
+        dist_sq = self_x1.unsqueeze(-1) - 2 * cross + self_x2.unsqueeze(-2)
+        dist_sq = torch.clamp(dist_sq, min=0.0)  # prevent negative from float errors
+
+        ls_sq = self.lengthscale ** 2
+        return torch.exp(-0.5 * dist_sq / ls_sq)
+
+    def params_in_bounds(self):
+        """Check all hyperparameters including lengthscale."""
+        if not super().params_in_bounds():
+            return False
+        with torch.no_grad():
+            v = self.raw_log_lengthscale.item()
+            if v < self.RAW_LS_MIN or v > self.RAW_LS_MAX:
+                return False
+        return True
+
+    def clamp_hyperparameters(self):
+        """Clamp hyperparameters including lengthscale."""
+        super().clamp_hyperparameters()
+        with torch.no_grad():
+            v = self.raw_log_lengthscale.item()
+            if v < self.RAW_LS_MIN or v > self.RAW_LS_MAX:
+                warnings.warn(
+                    f"clamp_hyperparameters: raw_log_lengthscale={v:.4g} "
+                    f"outside [{self.RAW_LS_MIN:.2f}, {self.RAW_LS_MAX:.2f}]"
+                )
+            self.raw_log_lengthscale.clamp_(self.RAW_LS_MIN, self.RAW_LS_MAX)
+
+
 class SimpleArcCosineKernel(Kernel):
     """Arc-cosine kernel for low-dimensional playground inputs (NOT images).
 
