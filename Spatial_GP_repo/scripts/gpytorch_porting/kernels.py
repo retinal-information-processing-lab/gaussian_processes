@@ -699,6 +699,85 @@ class ArcSineKernel(ArcCosineKernel):
         return (2.0 / torch.pi) * torch.arcsin(arg)
 
 
+class LocalRBFKernel(ArcCosineKernel):
+    """RBF kernel with receptive field structure (C matrix).
+
+    k(x, x') = exp(-1/2 (x - x')^T C (x - x'))
+
+    where C = Amp * diag(alpha) @ C_smooth @ diag(alpha) is the same
+    structured covariance matrix used by ArcCosineKernel, encoding RF
+    locality and pixel smoothness.
+
+    This is a STATIONARY kernel: depends only on (x - x'), not absolute
+    values. Consequences:
+    - k(x, x) = 1 for all x (constant prior variance)
+    - No sigma_0 effect (bias cancels in the difference)
+    - All "drive" must come from likelihood (A, lambda0)
+    - Amp controls distance sensitivity (effectively Amp ~ 1/lengthscale^2)
+
+    All RF structure (C matrix, masking, parameter bounds) inherited from
+    ArcCosineKernel. Only autograd gradient mode supported.
+
+    NOTE: sigma_0 is inherited but NOT used in forward(). It exists for
+    inheritance convenience and does not affect the kernel output.
+
+    TEMPORARY: Subclasses ArcCosineKernel for expedience (same pattern as
+    ArcSineKernel). If useful, shared C-matrix infrastructure should be
+    factored into a dedicated base class.
+
+    Parameters: Same as ArcCosineKernel. sigma_0 has no effect.
+    gradient_mode forced to 'autograd'.
+    """
+
+    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
+                 eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
+                 use_mask=True, gradient_mode='autograd', **kwargs):
+        if gradient_mode != 'autograd':
+            warnings.warn(
+                f"LocalRBFKernel only supports autograd gradient mode. "
+                f"Ignoring gradient_mode='{gradient_mode}'."
+            )
+        super().__init__(
+            n_px_side=n_px_side, sigma_0=sigma_0, Amp=Amp,
+            eps_0x=eps_0x, eps_0y=eps_0y, beta=beta, rho=rho,
+            use_mask=use_mask, gradient_mode='autograd', **kwargs
+        )
+
+    def forward(self, x1, x2, diag=False, **params):
+        """Compute the local RBF kernel matrix.
+
+        k(x, x') = exp(-1/2 (x - x')^T C (x - x'))
+
+        Expanded quadratic form for efficiency:
+            (x-y)^T C (x-y) = x^T C x - 2 x^T C y + y^T C y
+
+        Diagonal: k(x, x) = exp(0) = 1 for all x.
+        """
+        C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
+        if mask is not None:
+            self._cached_mask = mask
+            x1 = x1[..., mask]
+            x2 = x2[..., mask]
+
+        C = C.to(x1.device, x1.dtype)
+
+        if diag:
+            # k(x, x) = exp(0) = 1 always (stationary kernel)
+            return torch.ones(x1.shape[:-1], dtype=x1.dtype, device=x1.device)
+
+        # Quadratic expansion: (x-y)^T C (x-y) = x^T C x - 2 x^T C y + y^T C y
+        X1_C = x1 @ C                                          # (..., n1, n_masked)
+        X2_C = x2 @ C                                          # (..., n2, n_masked)
+        self_x1 = (x1 * X1_C).sum(dim=-1)                      # (..., n1)
+        self_x2 = (x2 * X2_C).sum(dim=-1)                      # (..., n2)
+        cross = torch.matmul(X1_C, x2.transpose(-2, -1))       # (..., n1, n2)
+
+        dist_sq = self_x1.unsqueeze(-1) - 2 * cross + self_x2.unsqueeze(-2)
+        dist_sq = torch.clamp(dist_sq, min=0.0)  # prevent negative from float errors
+
+        return torch.exp(-0.5 * dist_sq)
+
+
 class SimpleArcCosineKernel(Kernel):
     """Arc-cosine kernel for low-dimensional playground inputs (NOT images).
 
