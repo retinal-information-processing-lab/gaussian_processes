@@ -166,16 +166,17 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
     for i in range(n_mc):
         x_i = x_samples[i]
 
-        # GP posterior at x_i
-        post_i = model(x_i.unsqueeze(0))
-        mu_i = post_i.mean[0]
-        sigma2_i = post_i.variance[0]
+        # GP posterior at x_i — doesn't depend on x_candidates, so no graph needed.
+        # Wrapping in no_grad prevents O(n_mc) graph accumulation in memory.
+        with torch.no_grad():
+            post_i = model(x_i.unsqueeze(0))
+            mu_i = post_i.mean[0]
+            sigma2_i = post_i.variance[0]
 
-        # Lambda value: sample or use mean (keep as tensor for gradient flow)
-        if sample_lambda:
-            lambda_i = mu_i + sigma2_i.sqrt() * torch.randn(1, dtype=mu_i.dtype, device=mu_i.device)
-        else:
-            lambda_i = mu_i
+            if sample_lambda:
+                lambda_i = mu_i + sigma2_i.sqrt() * torch.randn(1, dtype=mu_i.dtype, device=mu_i.device)
+            else:
+                lambda_i = mu_i
 
         # Conditional moments at all candidates given lambda(x_i)
         mu_cond, sigma2_cond = get_gp_conditional_moments(

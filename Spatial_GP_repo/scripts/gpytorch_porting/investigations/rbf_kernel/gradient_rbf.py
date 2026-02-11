@@ -48,30 +48,37 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Model params (M=50, N_TRAIN=50) are set in explore_utility_rbf.py
 # ---------------------------------------------------------------------------
 # --- Experiment mode (revertible: set False to restore natural image experiment) ---
-USE_SYNTHETIC = True     # True: bipartite target + noise start. False: natural + smoothing.
+USE_SYNTHETIC = False     # True: bipartite target + noise start. False: natural + smoothing.
 DARK_GRAY = -0.5         # synthetic bipartite: left half pixel value
 LIGHT_GRAY = 0.5         # synthetic bipartite: right half pixel value
 NOISE_AMP = 0.5          # synthetic: random noise amplitude for starting image
 
 # --- Natural image experiment params (used when USE_SYNTHETIC = False) ---
-SIGMA_SMOOTH = 1.0       # Gaussian smoothing sigma for perturbation
-TARGET_INDEX = 0         # which pool image to use as target
+SIGMA_SMOOTH = 10.0       # Gaussian smoothing sigma for perturbation
+TARGET_INDEX = 50         # which pool image to use as target
 
 # --- Pixel bounds (experimental, may be reverted) ---
-USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
+USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to [vmin, vmax]
+BOUNDS_MODE = 'target'      # Options: 'dataset' (full RF range), 'target' (target image range),
+                             #          'percentile' (pool percentiles)
+PERCENTILE_LO = 5            # for 'percentile' mode
+PERCENTILE_HI = 95           # for 'percentile' mode
 
+SAMPLE_LAMBDA = False     # True: unbiased MC sampling. False: deterministic mean (biased, old behavior)
 N_INTERP = 21            # interpolation points along path
+N_LAMBDA_SAMPLES = 50 if SAMPLE_LAMBDA else 1  # MC samples; >1 only useful with SAMPLE_LAMBDA=True
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 50             # outer LBFGS steps
-LR = 0.5                 # LBFGS step size (1.0 standard for quasi-Newton)
+LR = 0.1                 # LBFGS step size (1.0 standard for quasi-Newton)
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
 LOG_EVERY = 1            # print every step (LBFGS steps are expensive)
 
 
-def interpolation_sweep(model, likelihood, x_target, x_perturbed, n_points, r_max):
+def interpolation_sweep(model, likelihood, x_target, x_perturbed, n_points, r_max,
+                        n_lambda_samples, sample_lambda):
     """Compute U_DA along the line from x_perturbed (t=0) to x_target (t=1).
 
     Returns:
@@ -80,17 +87,20 @@ def interpolation_sweep(model, likelihood, x_target, x_perturbed, n_points, r_ma
     """
     ts = np.linspace(0, 1, n_points)
     utilities = []
+    x_cond = x_target.unsqueeze(0).expand(n_lambda_samples, -1)
 
     with torch.no_grad():
         for i, t in enumerate(ts):
+            if n_lambda_samples > 1:
+                torch.manual_seed(i)  # reproducible MC at each interpolation point
             x_t = (1 - t) * x_perturbed + t * x_target
             result = distribution_aware_utility(
                 model, likelihood,
                 x_t.unsqueeze(0),
-                x_target.unsqueeze(0),
+                x_cond,
                 r_max=r_max,
                 adaptive_r_max=False,
-                sample_lambda=False,
+                sample_lambda=sample_lambda,
             )
             u = result['utility'].item()
             utilities.append(u)
@@ -135,7 +145,8 @@ def _reconstruct_image(x_rf, rf_mask, n_pixels, dtype, device):
 
 def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
                     pixel_lo, pixel_hi,
-                    n_steps, lr, max_iter, max_eval, history_size):
+                    n_steps, lr, max_iter, max_eval, history_size,
+                    n_lambda_samples, sample_lambda):
     """LBFGS gradient ascent maximizing U_DA(x | observe A).
 
     Optimizes RF-masked pixels only (~2,480 out of 11,664). Non-RF pixels
@@ -162,6 +173,9 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
 
     # Extract RF pixels from starting image
     x_rf_init = x_start[rf_mask]  # (n_rf,)
+
+    # Conditioning tensor: x_target repeated for MC lambda sampling
+    x_cond = x_target.unsqueeze(0).expand(n_lambda_samples, -1)
 
     # Setup optimization variable: sigmoid reparametrization or direct
     use_sigmoid = pixel_lo is not None and pixel_hi is not None
@@ -201,16 +215,18 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
 
     for step in range(n_steps):
         def closure():
+            if n_lambda_samples > 1:
+                torch.manual_seed(step)  # same lambda draws for all line search evals
             optimizer.zero_grad()
             x_rf_pixels = _to_pixel(opt_var)
             x_full = _reconstruct_image(x_rf_pixels, rf_mask, n_pixels, dtype, device)
             result = distribution_aware_utility(
                 model, likelihood,
                 x_full.unsqueeze(0),
-                x_target.unsqueeze(0),
+                x_cond,
                 r_max=r_max,
                 adaptive_r_max=False,
-                sample_lambda=False,
+                sample_lambda=sample_lambda,
             )
             # Firing rate guard: reject if predicted rate exceeds f_max
             mu_g = result['mu_g_marg']
@@ -231,13 +247,15 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
         with torch.no_grad():
             x_rf_pixels = _to_pixel(opt_var)
             x_full = _reconstruct_image(x_rf_pixels, rf_mask, n_pixels, dtype, device)
+            if n_lambda_samples > 1:
+                torch.manual_seed(step + 100000)  # deterministic but different from closure
             result = distribution_aware_utility(
                 model, likelihood,
                 x_full.unsqueeze(0),
-                x_target.unsqueeze(0),
+                x_cond,
                 r_max=r_max,
                 adaptive_r_max=False,
-                sample_lambda=False,
+                sample_lambda=sample_lambda,
             )
             utility = result['utility'].item()
             pr = rf_pearson_r(x_full, x_target, rf_mask)
@@ -283,7 +301,8 @@ def main():
     n_px_side = config['n_px_side']
 
     # --- Test evaluation ---
-    data_path = _gpytorch_dir.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
+    # Absolute path — worktree directory structure doesn't match main repo
+    data_path = Path('/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/notebooks/PNAS_paper_sorted_data.npz')
     data = load_pnas_data(data_path, dtype=torch.float32)
     device = next(model.parameters()).device
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
@@ -317,13 +336,19 @@ def main():
             _ = model(X_pool[0].unsqueeze(0))
     rf_mask = kernel._cached_mask.squeeze()
 
-    # Dataset pixel bounds (RF pixels only) — used for sigmoid reparametrization + visualization
+    # Dataset pixel bounds (RF pixels only)
     rf_mask_np = rf_mask.cpu().numpy()
     X_all = torch.cat([X_pool, env['X_train']], dim=0)
     all_rf_vals = X_all.cpu().numpy()[:, rf_mask_np]  # (N_all, n_rf_pixels)
-    vmin = float(all_rf_vals.min())
-    vmax = float(all_rf_vals.max())
-    print(f"  Dataset RF pixel range: [{vmin:.3f}, {vmax:.3f}] (from {X_all.shape[0]} images)")
+    vmin_dataset = float(all_rf_vals.min())
+    vmax_dataset = float(all_rf_vals.max())
+    print(f"  Dataset RF pixel range: [{vmin_dataset:.3f}, {vmax_dataset:.3f}] (from {X_all.shape[0]} images)")
+    # vmin/vmax for visualization (always dataset range for consistent contrast)
+    vmin = vmin_dataset
+    vmax = vmax_dataset
+    # pixel bounds for optimization (may be overridden by BOUNDS_MODE)
+    bound_lo = vmin_dataset
+    bound_hi = vmax_dataset
 
     if USE_SYNTHETIC:
         # --- Bipartite target: left=dark, right=light within RF mask ---
@@ -368,13 +393,26 @@ def main():
     print(f"  ||target||_RF={x_target[rf_mask].norm().item():.2f}, "
           f"||start||_RF={x_perturbed[rf_mask].norm().item():.2f}")
 
+    # --- Override optimization bounds based on BOUNDS_MODE ---
+    # (visualization vmin/vmax stays at dataset range for consistent contrast)
+    if BOUNDS_MODE == 'target':
+        target_rf_vals = x_target[rf_mask].cpu().numpy()
+        bound_lo = float(target_rf_vals.min())
+        bound_hi = float(target_rf_vals.max())
+        print(f"  Optimization bounds (target): [{bound_lo:.3f}, {bound_hi:.3f}]")
+    elif BOUNDS_MODE == 'percentile':
+        bound_lo = float(np.percentile(all_rf_vals, PERCENTILE_LO))
+        bound_hi = float(np.percentile(all_rf_vals, PERCENTILE_HI))
+        print(f"  Optimization bounds ({PERCENTILE_LO}-{PERCENTILE_HI}th pct): [{bound_lo:.3f}, {bound_hi:.3f}]")
+
     # === Step 3: Interpolation sweep ===
     print("\n" + "=" * 70)
     print(f"Step 3: Interpolation sweep ({start_label} -> target)")
     print("=" * 70)
 
     ts, utilities_interp = interpolation_sweep(
-        model, likelihood, x_target, x_perturbed, N_INTERP, r_max
+        model, likelihood, x_target, x_perturbed, N_INTERP, r_max,
+        N_LAMBDA_SAMPLES, SAMPLE_LAMBDA
     )
 
     # Check monotonicity
@@ -389,12 +427,13 @@ def main():
     print(f"Step 4: Gradient ascent from {start_label}")
     print("=" * 70)
 
-    pixel_lo = vmin if USE_SIGMOID_BOUNDS else None
-    pixel_hi = vmax if USE_SIGMOID_BOUNDS else None
+    pixel_lo = bound_lo if USE_SIGMOID_BOUNDS else None
+    pixel_hi = bound_hi if USE_SIGMOID_BOUNDS else None
     x_final, history = gradient_ascent(
         model, likelihood, x_perturbed, x_target, rf_mask, r_max, f_max,
         pixel_lo, pixel_hi,
-        N_STEPS, LR, LBFGS_MAX_ITER, LBFGS_MAX_EVAL, LBFGS_HISTORY_SIZE
+        N_STEPS, LR, LBFGS_MAX_ITER, LBFGS_MAX_EVAL, LBFGS_HISTORY_SIZE,
+        N_LAMBDA_SAMPLES, SAMPLE_LAMBDA
     )
 
     print(f"\nGradient ascent summary:")
@@ -472,6 +511,32 @@ def main():
     diff_flat = x_final - x_perturbed
     img_diff = masked_crop(diff_flat, 0.0)  # gray_val=0 for difference
 
+    # --- Extract RF center and width from trained kernel ---
+    eps_0x = kernel.eps_0x.item()
+    eps_0y = kernel.eps_0y.item()
+    beta_nat = kernel.beta.item()
+    sigma_rf = beta_nat * np.sqrt(2)  # RF width in normalized coords
+    # Convert normalized [-1, 1] -> pixel coords
+    cx_px = (eps_0x + 1) / 2 * (n_px_side - 1)
+    cy_px = (eps_0y + 1) / 2 * (n_px_side - 1)
+    sigma_px = sigma_rf * (n_px_side - 1) / 2
+    # Offset for cropped images
+    cx_crop = cx_px - c_min
+    cy_crop = cy_px - r_min
+
+    def draw_rf_overlay(ax):
+        """Draw RF center + 1/2-sigma circles on a cropped image axis."""
+        ax.plot(cx_crop, cy_crop, 'r+', markersize=8, markeredgewidth=1.5)
+        circle_1s = plt.Circle((cx_crop, cy_crop), sigma_px, fill=False,
+                               color='red', linewidth=1.5, linestyle='-')
+        circle_2s = plt.Circle((cx_crop, cy_crop), 2 * sigma_px, fill=False,
+                               color='red', linewidth=1, linestyle='--')
+        ax.add_patch(circle_1s)
+        ax.add_patch(circle_2s)
+
+    print(f"  RF params: eps_0=({eps_0x:.3f}, {eps_0y:.3f}), beta={beta_nat:.4f}, "
+          f"sigma_rf={sigma_rf:.4f} norm = {sigma_px:.1f} px")
+
     fig = plt.figure(figsize=(18, 8))
 
     # Top row: 4 images (target, start, final, difference) with colorbars
@@ -495,6 +560,7 @@ def main():
         ax.axis('off')
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.ax.tick_params(labelsize=7)
+        draw_rf_overlay(ax)
         # Add clipping warning on the image if pixels exceed natural range
         if label in clip_warnings:
             w = clip_warnings[label]
@@ -511,6 +577,7 @@ def main():
     ax_diff.axis('off')
     cb_diff = fig.colorbar(im_diff, ax=ax_diff, fraction=0.046, pad=0.04)
     cb_diff.ax.tick_params(labelsize=7)
+    draw_rf_overlay(ax_diff)
 
     # Print difference stats
     diff_rf = diff_flat[rf_mask].detach().cpu().numpy()
@@ -546,6 +613,7 @@ def main():
     ax2r = ax2.twinx()
     ax2r.plot(steps, history['pearson_r'], color=color_d, linewidth=1.5, alpha=0.7)
     ax2r.set_ylabel('Pearson r (RF)', color=color_d)
+    ax2r.set_ylim(0.4, 1.0)
     ax2r.tick_params(axis='y', labelcolor=color_d)
     ax2r.axhline(1.0, color=color_d, linestyle=':', alpha=0.3)
 

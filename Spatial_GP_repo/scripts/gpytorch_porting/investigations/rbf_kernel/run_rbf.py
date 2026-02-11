@@ -336,6 +336,10 @@ def build_config_from_defaults(**overrides):
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
         'f_max': utl['f_max'],
+        'adaptive_r_max': utl['adaptive_r_max'],
+        'adaptive_safety_k': utl['adaptive_safety_k'],
+        'adaptive_max_rmax': utl['adaptive_max_rmax'],
+        'adaptive_min_rmax': utl['adaptive_min_rmax'],
 
         # --- RBF-specific (not in default_params.json) ---
         'lengthscale': 100.0,  # RBF lengthscale, default matches data scale
