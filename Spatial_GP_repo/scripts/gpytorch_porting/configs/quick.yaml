@@ -92,6 +92,7 @@ utility:
   adaptive_safety_k: 3.0        # compute_adaptive_rmax(): std devs for upper tail of log-firing rate
   adaptive_max_rmax: 10000      # compute_adaptive_rmax(): error if needed r_max exceeds this
   adaptive_min_rmax: 200        # compute_adaptive_rmax(): floor (minimum returned r_max)
+  f_max: 100.0                  # WIRED: max predicted firing rate for utility optimization guard
 
 # ===== DATA =====
 data:

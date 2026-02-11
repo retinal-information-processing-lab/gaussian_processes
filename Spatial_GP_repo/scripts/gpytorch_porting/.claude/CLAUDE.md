@@ -128,7 +128,7 @@ Use `--gradient-mode MODE` in CLI:
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
-| `acquisition.py` | Acquisition functions: `standard_utility()`, `distribution_aware_utility()`. Imports from 1D/2D playgrounds and old `utility.py`. Currently default_gpy only. |
+| `acquisition.py` | Acquisition functions: `standard_utility()`, `distribution_aware_utility()`. Zero playground imports — all Laplace/entropy code local in `utils.py`. Both functions return `mu_g_marg` (log-firing rate) for f_max guard. Currently default_gpy only. |
 
 ### Eigenspace Implementation (vargp_direct mode)
 | File | Purpose |
@@ -177,8 +177,9 @@ Use `--gradient-mode MODE` in CLI:
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), utility exploration (`explore_utility_normalized.py` - trains with normalized kernel, evaluates utility on training + 100 random pool images, creates 2-panel landscape plot with squares for pool images). Key findings: test_r drops ~25%, utility divergence eliminated. |
-| `investigations/understanding_utility/` | Utility exploration with unnormalized kernel (`explore_utility.py` - baseline for comparison, same structure as normalized version) |
+| `investigations/understanding_utility/` | Unnormalized arc-cosine kernel: `explore_utility.py` (utility workbench/library), `gradient_unnormalized.py` (LBFGS gradient ascent with f_max guard + RF metrics). Baseline for comparison with other kernels. |
+| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), `explore_utility_normalized.py`, `gradient_normalized.py` (LBFGS + f_max). Key findings: test_r drops ~25%, utility divergence eliminated. |
+| `investigations/arcsine_kernel/` | Arc-sine kernel (Williams 1998): `run_arcsine.py` (training), `explore_utility_arcsine.py`, `gradient_arcsine.py` (LBFGS + f_max). Key finding: kernel saturates at K(x,x)→1, limits but doesn't eliminate norm-driven utility growth. All three gradient scripts share consistent structure: LBFGS optimizer, f_max guard, RF-masked pearson_r/proj_coeff metrics, firing rate diagnostics. |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -200,11 +201,13 @@ Use `--gradient-mode MODE` in CLI:
 **Current implementation:**
 - All dependencies are local (in `utils.py`, no playground imports)
 - Fully differentiable (gradient flow from x* through kernel into utility)
-- Works with both `ArcCosineKernel` and `ArcCosineKernelNormalized`
+- Works with `ArcCosineKernel`, `ArcCosineKernelNormalized`, and `ArcSineKernel`
+- Both functions return `mu_g_marg` (log-firing rate) for f_max firing rate guard
+- `f_max` parameter (default 100.0) wired through `default_params.json` and YAML configs
+- LBFGS gradient-based x* optimization implemented in all three gradient investigation scripts
 
 **Deferred (acquisition functions)**:
 - vargp_direct support (needs augmented matrix approach for distribution-aware utility)
-- Gradient-based x* optimization (door is open — no torch.no_grad() wrapper)
 - Scalability for large candidate pools
 
 ### Normalized Arc-Cosine Kernel - INVESTIGATED (Feb 2026)

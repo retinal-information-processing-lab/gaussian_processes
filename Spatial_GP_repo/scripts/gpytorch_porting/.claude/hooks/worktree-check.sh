@@ -31,4 +31,6 @@ Flag if the branch name seems mismatched with the session context (e.g., on arcs
 DO NOT use 'git checkout' or 'git switch' to change branches when multiple worktrees exist.
 Guide the user through 'git worktree add' instead."
 
-jq -n --arg msg "$MSG" '{"additionalContext": $msg}'
+# Emit JSON without jq — escape newlines and quotes for valid JSON
+ESCAPED_MSG=$(printf '%s' "$MSG" | sed 's/\\/\\\\/g; s/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+printf '{"additionalContext": "%s"}\n' "$ESCAPED_MSG"

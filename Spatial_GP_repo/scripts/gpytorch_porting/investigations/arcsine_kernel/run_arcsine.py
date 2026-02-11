@@ -335,6 +335,7 @@ def build_config_from_defaults(**overrides):
         # --- Utility / acquisition (from utility section) ---
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
+        'f_max': utl['f_max'],
 
         # --- Runtime flags (not configurable via default_params.json) ---
         'mstep_analytical': False,
@@ -437,6 +438,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Utility / acquisition
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
+        'f_max': utl['f_max'],
 
         # Data
         'n_px_side': dat['n_px_side'],

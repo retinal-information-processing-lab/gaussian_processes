@@ -37,7 +37,7 @@ _gpytorch_dir = _script_dir.parent.parent
 sys.path.insert(0, str(_gpytorch_dir))
 
 from explore_utility_normalized import setup
-from acquisition import distribution_aware_utility
+from acquisition import distribution_aware_utility, get_gp_marginal_moments, compute_H
 from run_single_mode import load_pnas_data
 from gpy_training import predict
 from metrics import compute_pearson_correlation, compute_explained_variance
@@ -59,9 +59,14 @@ TARGET_INDEX = 0         # which pool image to use as target
 SIGMA_0 = None           # Override kernel sigma_0 AFTER training. None = keep trained value.
 
 N_INTERP = 21            # interpolation points along path
-N_STEPS = 5000           # gradient ascent steps
-LR = 5.5                 # learning rate for plain gradient ascent
-LOG_EVERY = 50           # print interval for gradient ascent
+
+# --- LBFGS optimizer parameters ---
+N_STEPS = 50             # outer LBFGS steps
+LR = 1.0                 # LBFGS step size (1.0 standard for quasi-Newton)
+LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
+LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
+LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
+LOG_EVERY = 1            # print every step (LBFGS steps are expensive)
 
 
 def interpolation_sweep(model, likelihood, x_target, x_perturbed, n_points, r_max):
@@ -92,56 +97,119 @@ def interpolation_sweep(model, likelihood, x_target, x_perturbed, n_points, r_ma
     return ts, np.array(utilities)
 
 
-def gradient_ascent(model, likelihood, x_start, x_target, r_max, n_steps, lr):
-    """Gradient ascent maximizing U_DA(x | observe A).
+def rf_pearson_r(x, target, rf_mask):
+    """Pearson correlation between x and target within RF mask."""
+    a = x[rf_mask]
+    b = target[rf_mask]
+    a_c = a - a.mean()
+    b_c = b - b.mean()
+    num = (a_c * b_c).sum()
+    denom = a_c.norm() * b_c.norm()
+    if denom < 1e-12:
+        return 0.0
+    return (num / denom).item()
+
+
+def rf_proj_coeff(x, target, rf_mask):
+    """Projection coefficient: scalar s minimizing ||x - s*target|| within RF.
+
+    s = dot(x, target) / dot(target, target).
+    s=1 means same amplitude, s>1 means amplified, s<0 means inverted.
+    """
+    a = x[rf_mask]
+    b = target[rf_mask]
+    denom = (b * b).sum()
+    if denom < 1e-12:
+        return 0.0
+    return ((a * b).sum() / denom).item()
+
+
+def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
+                    n_steps, lr, max_iter, max_eval, history_size):
+    """LBFGS gradient ascent maximizing U_DA(x | observe A).
+
+    Uses torch.optim.LBFGS with strong_wolfe line search. Each outer step
+    performs up to max_iter internal iterations (each evaluating the closure).
+
+    Firing rate guard: if predicted firing rate exceeds f_max, closure returns
+    +inf loss so the line search rejects that step (same pattern as model
+    training closures using params_in_bounds()).
+
+    Tracks two convergence metrics (RF-masked):
+      - pearson_r: structural similarity (1.0 = perfect pattern match)
+      - proj_coeff: amplitude along target direction (1.0 = same scale)
 
     Returns:
         x_final: (n_pixels,) optimized image
         history: dict with lists of per-step metrics
     """
     x_opt = x_start.clone().detach().requires_grad_(True)
-    initial_dist = (x_start - x_target).norm().item()
+
+    optimizer = torch.optim.LBFGS(
+        [x_opt],
+        lr=lr,
+        max_iter=max_iter,
+        max_eval=max_eval,
+        history_size=history_size,
+        line_search_fn='strong_wolfe',
+    )
 
     history = {
-        'step': [], 'utility': [], 'dist': [],
-        'frac_dist': [], 'grad_norm': [],
+        'step': [], 'utility': [], 'grad_norm': [],
+        'pearson_r': [], 'proj_coeff': [],
     }
 
     for step in range(n_steps):
-        result = distribution_aware_utility(
-            model, likelihood,
-            x_opt.unsqueeze(0),
-            x_target.unsqueeze(0),
-            r_max=r_max,
-            adaptive_r_max=False,
-            sample_lambda=False,
-        )
-        utility = result['utility'].squeeze()
-        utility.backward()
+        def closure():
+            optimizer.zero_grad()
+            result = distribution_aware_utility(
+                model, likelihood,
+                x_opt.unsqueeze(0),
+                x_target.unsqueeze(0),
+                r_max=r_max,
+                adaptive_r_max=False,
+                sample_lambda=False,
+            )
+            # Firing rate guard: reject if predicted rate exceeds f_max
+            mu_g = result['mu_g_marg']
+            if torch.exp(mu_g).item() > f_max:
+                return torch.tensor(float('inf'), device=x_opt.device)
+            loss = -result['utility'].squeeze()  # minimize negative = maximize
+            loss.backward()
+            return loss
 
-        grad_norm = x_opt.grad.norm().item()
-        dist = (x_opt.detach() - x_target).norm().item()
-        frac_dist = dist / initial_dist
+        optimizer.step(closure)
+
+        # Track metrics AFTER optimizer.step() (no grad needed for logging)
+        with torch.no_grad():
+            result = distribution_aware_utility(
+                model, likelihood,
+                x_opt.unsqueeze(0),
+                x_target.unsqueeze(0),
+                r_max=r_max,
+                adaptive_r_max=False,
+                sample_lambda=False,
+            )
+            utility = result['utility'].item()
+            pr = rf_pearson_r(x_opt, x_target, rf_mask)
+            pc = rf_proj_coeff(x_opt, x_target, rf_mask)
+
+        grad_norm = x_opt.grad.norm().item() if x_opt.grad is not None else 0.0
 
         history['step'].append(step)
-        history['utility'].append(utility.item())
-        history['dist'].append(dist)
-        history['frac_dist'].append(frac_dist)
+        history['utility'].append(utility)
         history['grad_norm'].append(grad_norm)
+        history['pearson_r'].append(pr)
+        history['proj_coeff'].append(pc)
 
         # NaN check
-        if np.isnan(utility.item()) or np.isnan(grad_norm):
+        if np.isnan(utility) or np.isnan(grad_norm):
             print(f"  step {step}: NaN detected - stopping")
             break
 
         if step % LOG_EVERY == 0 or step == n_steps - 1:
-            print(f"  step {step:4d}: U={utility.item():.6f}  "
-                  f"frac_dist={frac_dist:.4f}  |grad|={grad_norm:.4e}")
-
-        # Gradient step
-        with torch.no_grad():
-            x_opt += lr * x_opt.grad
-        x_opt.grad = None
+            print(f"  step {step:4d}: U={utility:.6f}  "
+                  f"r={pr:.4f}  proj={pc:.4f}  |grad|={grad_norm:.4e}")
 
     return x_opt.detach(), history
 
@@ -158,6 +226,7 @@ def main():
     X_pool = env['X_pool']
     config = env['config']
     r_max = config['r_max']
+    f_max = config['f_max']
     n_px_side = config['n_px_side']
 
     # --- Optional sigma_0 override ---
@@ -221,10 +290,6 @@ def main():
         # --- Noise starting image within RF mask ---
         torch.manual_seed(config['seed'])
         x_perturbed = NOISE_AMP * torch.randn(n_pixels, dtype=dtype, device=device)
-
-        # make xperturbed a scaled down versinon of the target
-        # x_perturbed = 0.5 * x_target 
-
         x_perturbed[~rf_mask] = 0.0
 
         start_label = "noise"
@@ -272,15 +337,32 @@ def main():
     print("=" * 70)
 
     x_final, history = gradient_ascent(
-        model, likelihood, x_perturbed, x_target, r_max, N_STEPS, LR
+        model, likelihood, x_perturbed, x_target, rf_mask, r_max, f_max,
+        N_STEPS, LR, LBFGS_MAX_ITER, LBFGS_MAX_EVAL, LBFGS_HISTORY_SIZE
     )
 
     print(f"\nGradient ascent summary:")
     print(f"  Steps: {len(history['step'])}")
     print(f"  U_DA: {history['utility'][0]:.6f} -> {history['utility'][-1]:.6f}")
-    print(f"  frac_dist: {history['frac_dist'][0]:.4f} -> {history['frac_dist'][-1]:.4f}")
-    print(f"  Converged toward target: {history['frac_dist'][-1] < history['frac_dist'][0]}")
+    print(f"  Pearson r (RF): {history['pearson_r'][0]:.4f} -> {history['pearson_r'][-1]:.4f}")
+    print(f"  Proj coeff (RF): {history['proj_coeff'][0]:.4f} -> {history['proj_coeff'][-1]:.4f}")
     print(f"  ||final||={x_final.norm().item():.2f}")
+
+    # --- DEBUG: firing rate diagnostics (target vs optimized) ---
+    print(f"\n  DEBUG: Firing rate diagnostics (f_max={f_max})")
+    A = likelihood.A.squeeze()
+    lam0 = likelihood.lambda0.squeeze()
+    with torch.no_grad():
+        for label, x_img in [('target', x_target), ('start', x_perturbed), ('final', x_final)]:
+            mu, sigma2 = get_gp_marginal_moments(model, x_img.unsqueeze(0))
+            mu_g = A * mu + lam0
+            firing_rate = torch.exp(mu_g).item()
+            H = compute_H(mu, sigma2, r_max=r_max, a=A, lambda0=lam0).item()
+            flag = " ** EXCEEDS f_max" if firing_rate > f_max else ""
+            print(f"    {label:8s}: lambda_m={mu.item():.4f}, lambda_var={sigma2.item():.4f}, "
+                  f"mu_g={mu_g.item():.4f}, firing_rate={firing_rate:.2f}, "
+                  f"H_marg={H:.6f}, ||x||={x_img.norm().item():.2f}{flag}")
+    # --- END DEBUG ---
 
     # === Step 5: Visualization ===
     print("\n" + "=" * 70)
@@ -345,10 +427,17 @@ def main():
 
     # Top row: 4 images (target, start, final, difference) with colorbars
     images = [img_target, img_perturbed, img_final]
+    u_target = utilities_interp[-1]
+    u_start = utilities_interp[0]
+    u_final = history['utility'][-1]
     if USE_SYNTHETIC:
-        titles = ['Target (bipartite)', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target (bipartite)\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     else:
-        titles = ['Target A', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target A\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     labels = ['Target', 'Start', 'Final']
     for i, (img, title, label) in enumerate(zip(images, titles, labels)):
         ax = fig.add_subplot(2, 4, i + 1)
@@ -401,20 +490,18 @@ def main():
     color_d = 'tab:red'
 
     ax2.plot(steps, history['utility'], color=color_u, linewidth=1.5, label='U_DA')
-    ax2.axhline(utilities_interp[-1], color=color_u, linestyle='--', alpha=0.5,
-                label=f'U_DA(A|A) = {utilities_interp[-1]:.4f}')
     ax2.set_xlabel('Step')
     ax2.set_ylabel('U_DA', color=color_u)
     ax2.tick_params(axis='y', labelcolor=color_u)
     ax2.legend(loc='center left')
 
     ax2r = ax2.twinx()
-    ax2r.plot(steps, history['frac_dist'], color=color_d, linewidth=1.5, alpha=0.7)
-    ax2r.set_ylabel('Fractional distance to A', color=color_d)
+    ax2r.plot(steps, history['pearson_r'], color=color_d, linewidth=1.5, alpha=0.7)
+    ax2r.set_ylabel('Pearson r (RF)', color=color_d)
     ax2r.tick_params(axis='y', labelcolor=color_d)
     ax2r.axhline(1.0, color=color_d, linestyle=':', alpha=0.3)
 
-    ax2.set_title('Gradient ascent convergence')
+    ax2.set_title('LBFGS gradient ascent convergence')
     ax2.grid(True, alpha=0.3)
 
     title_str = (
@@ -428,7 +515,7 @@ def main():
     fig.suptitle(title_str, fontsize=11)
     fig.tight_layout()
 
-    out_path = _script_dir / 'gradient_ascent_normalized.png'
+    out_path = _script_dir / 'gradient_normalized.png'
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f"Saved: {out_path}")
     plt.close(fig)

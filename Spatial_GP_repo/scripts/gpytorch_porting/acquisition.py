@@ -89,7 +89,7 @@ def standard_utility(model, likelihood, x_candidates, r_max, adaptive_r_max,
 
     utility = nd_utility_new(mu_g, sigma2_g, r_max=r_max)
 
-    return {'utility': utility}
+    return {'utility': utility, 'mu_g': mu_g}
 
 
 def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
@@ -145,9 +145,10 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
 
     # Step 1: Marginal entropy at all candidates
     mu_marg, sigma2_marg = get_gp_marginal_moments(model, x_candidates)
+    # Compute unconditionally (needed for f_max guard even when adaptive_r_max=False)
+    mu_g_marg = A * mu_marg + lambda0
 
     if adaptive_r_max:
-        mu_g_marg = A * mu_marg + lambda0
         sigma2_g_marg = A ** 2 * sigma2_marg
         r_max_marg = compute_adaptive_rmax(mu_g_marg, sigma2_g_marg,
                                            safety_k=adaptive_safety_k,
@@ -205,4 +206,5 @@ def distribution_aware_utility(model, likelihood, x_candidates, x_samples,
         'utility': H_marg - H_cond,
         'H_marg': H_marg,
         'H_cond': H_cond,
+        'mu_g_marg': mu_g_marg,
     }

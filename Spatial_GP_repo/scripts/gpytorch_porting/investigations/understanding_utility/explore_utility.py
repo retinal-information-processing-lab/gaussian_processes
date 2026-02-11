@@ -80,7 +80,7 @@ _ADAPTIVE_RMAX_PARAMS = {
 # ---------------------------------------------------------------------------
 # Default config
 # ---------------------------------------------------------------------------
-N_TRAIN = 50
+N_TRAIN = 70
 M = 50
 SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
 
@@ -645,7 +645,7 @@ def demo():
     plot_da_landscape(
         model, likelihood, x_candidates, x_target,
         n_train=X_train.shape[0],  # Tell plot where training images end
-        save_path=_script_dir / 'da_utility_landscape.png',
+        save_path=_script_dir / 'explore_utility.png',
     )
 
 
