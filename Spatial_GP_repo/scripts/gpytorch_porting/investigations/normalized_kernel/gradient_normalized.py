@@ -427,10 +427,17 @@ def main():
 
     # Top row: 4 images (target, start, final, difference) with colorbars
     images = [img_target, img_perturbed, img_final]
+    u_target = utilities_interp[-1]
+    u_start = utilities_interp[0]
+    u_final = history['utility'][-1]
     if USE_SYNTHETIC:
-        titles = ['Target (bipartite)', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target (bipartite)\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     else:
-        titles = ['Target A', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target A\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     labels = ['Target', 'Start', 'Final']
     for i, (img, title, label) in enumerate(zip(images, titles, labels)):
         ax = fig.add_subplot(2, 4, i + 1)
@@ -483,8 +490,6 @@ def main():
     color_d = 'tab:red'
 
     ax2.plot(steps, history['utility'], color=color_u, linewidth=1.5, label='U_DA')
-    ax2.axhline(utilities_interp[-1], color=color_u, linestyle='--', alpha=0.5,
-                label=f'U_DA(A|A) = {utilities_interp[-1]:.4f}')
     ax2.set_xlabel('Step')
     ax2.set_ylabel('U_DA', color=color_u)
     ax2.tick_params(axis='y', labelcolor=color_u)

@@ -50,7 +50,7 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Model params (M=50, N_TRAIN=50) are set in explore_utility.py
 # ---------------------------------------------------------------------------
 # --- Experiment mode (revertible: set False to restore natural image experiment) ---
-USE_SYNTHETIC = True     # True: bipartite target + noise start. False: natural + smoothing.
+USE_SYNTHETIC = True     # False: bipartite target + noise start. False: natural + smoothing.
 DARK_GRAY = -0.5         # synthetic bipartite: left half pixel value
 LIGHT_GRAY = 0.5         # synthetic bipartite: right half pixel value
 NOISE_AMP = 0.5          # synthetic: random noise amplitude for starting image
@@ -59,13 +59,13 @@ NOISE_AMP = 0.5          # synthetic: random noise amplitude for starting image
 SIGMA_SMOOTH = 1.0       # Gaussian smoothing sigma for perturbation
 TARGET_INDEX = 0         # which pool image to use as target
 
-SIGMA_0 = 1000           # Override kernel sigma_0 AFTER training. None = keep trained value.
+SIGMA_0 = None           # Override kernel sigma_0 AFTER training. None = keep trained value.
 
 N_INTERP = 21            # interpolation points along path
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 50             # outer LBFGS steps
-LR = 1.0                 # LBFGS step size (1.0 standard for quasi-Newton)
+LR = 5.0                 # LBFGS step size (1.0 standard for quasi-Newton)
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
@@ -429,10 +429,17 @@ def main():
 
     # Top row: 4 images (target, start, final, difference) with colorbars
     images = [img_target, img_perturbed, img_final]
+    u_target = utilities_interp[-1]
+    u_start = utilities_interp[0]
+    u_final = history['utility'][-1]
     if USE_SYNTHETIC:
-        titles = ['Target (bipartite)', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target (bipartite)\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     else:
-        titles = ['Target A', f'Start ({start_label})', 'Final (grad ascent)']
+        titles = [f'Target A\nU_DA={u_target:.4f}',
+                  f'Start ({start_label})\nU_DA={u_start:.4f}',
+                  f'Final (grad ascent)\nU_DA={u_final:.4f}']
     labels = ['Target', 'Start', 'Final']
     for i, (img, title, label) in enumerate(zip(images, titles, labels)):
         ax = fig.add_subplot(2, 4, i + 1)
@@ -484,8 +491,6 @@ def main():
     color_d = 'tab:red'
 
     ax2.plot(steps, history['utility'], color=color_u, linewidth=1.5, label='U_DA')
-    ax2.axhline(utilities_interp[-1], color=color_u, linestyle='--', alpha=0.5,
-                label=f'U_DA(A|A) = {utilities_interp[-1]:.4f}')
     ax2.set_xlabel('Step')
     ax2.set_ylabel('U_DA', color=color_u)
     ax2.tick_params(axis='y', labelcolor=color_u)
