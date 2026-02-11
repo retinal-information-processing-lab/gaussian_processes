@@ -106,6 +106,43 @@ def compute_rf_center_from_sta(X, r, n_px_side, zscore, blur_sigma=3.0):
     return eps_0x.item(), eps_0y.item()
 
 
+def apply_rf_center_bounds(kernel, eps_0x, eps_0y, config):
+    """Apply RF center bounds if enabled in config.
+
+    Constrains the RF center (eps_0x, eps_0y) to stay within
+    n_sigma_rf_bounds * sigma_rf of the initial STA estimate,
+    where sigma_rf = beta * sqrt(2).
+
+    Warns if n_samples_sta is low (< 100), since the STA-based
+    center may be imprecise and tight bounds could lock in a bad estimate.
+
+    Args:
+        kernel: ArcCosineKernel (or subclass) with set_center_bounds method
+        eps_0x: Initial RF center x (normalized coords)
+        eps_0y: Initial RF center y (normalized coords)
+        config: Flat config dict with keys: bound_rf_center, n_sigma_rf_bounds,
+                beta, n_samples_sta
+    """
+    import warnings
+    import math
+
+    if not config['bound_rf_center']:
+        return
+
+    n_sigma = config['n_sigma_rf_bounds']
+    sigma_rf = config['beta'] * math.sqrt(2)
+    radius = n_sigma * sigma_rf
+
+    n_samples_sta = config['n_samples_sta']
+    if n_samples_sta is not None and n_samples_sta < 100:
+        warnings.warn(
+            f"bound_rf_center=True but n_samples_sta={n_samples_sta} (< 100). "
+            f"STA-based RF center may be imprecise — bounds may constrain to wrong location."
+        )
+
+    kernel.set_center_bounds(eps_0x, eps_0y, radius)
+
+
 def lambda0_given_A(
     A: torch.Tensor,
     r: torch.Tensor,

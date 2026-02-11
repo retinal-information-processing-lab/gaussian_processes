@@ -300,10 +300,18 @@ class ArcCosineKernel(Kernel):
                 if v < self.RAW_RHO_MIN or v > self.RAW_RHO_MAX:
                     return False
             if hasattr(self, 'eps_0x'):
-                if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
-                    return False
-                if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
-                    return False
+                if hasattr(self, '_eps_x_min'):
+                    # Tight bounds set via set_center_bounds()
+                    if self.eps_0x.item() < self._eps_x_min or self.eps_0x.item() > self._eps_x_max:
+                        return False
+                    if self.eps_0y.item() < self._eps_y_min or self.eps_0y.item() > self._eps_y_max:
+                        return False
+                else:
+                    # Default: full image bounds
+                    if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
+                        return False
+                    if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
+                        return False
         return True
 
     def clamp_hyperparameters(self):
@@ -343,18 +351,46 @@ class ArcCosineKernel(Kernel):
                 self.raw_mlog2rho2.clamp_(self.RAW_RHO_MIN, self.RAW_RHO_MAX)
 
             if hasattr(self, 'eps_0x'):
-                if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
-                    violated.append(f"eps_0x={self.eps_0x.item():.4g}")
-                if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
-                    violated.append(f"eps_0y={self.eps_0y.item():.4g}")
-                self.eps_0x.clamp_(self.EPS_MIN, self.EPS_MAX)
-                self.eps_0y.clamp_(self.EPS_MIN, self.EPS_MAX)
+                if hasattr(self, '_eps_x_min'):
+                    # Tight bounds set via set_center_bounds()
+                    if self.eps_0x.item() < self._eps_x_min or self.eps_0x.item() > self._eps_x_max:
+                        violated.append(f"eps_0x={self.eps_0x.item():.4g} outside [{self._eps_x_min:.3f}, {self._eps_x_max:.3f}]")
+                    if self.eps_0y.item() < self._eps_y_min or self.eps_0y.item() > self._eps_y_max:
+                        violated.append(f"eps_0y={self.eps_0y.item():.4g} outside [{self._eps_y_min:.3f}, {self._eps_y_max:.3f}]")
+                    self.eps_0x.clamp_(self._eps_x_min, self._eps_x_max)
+                    self.eps_0y.clamp_(self._eps_y_min, self._eps_y_max)
+                else:
+                    # Default: full image bounds
+                    if self.eps_0x.item() < self.EPS_MIN or self.eps_0x.item() > self.EPS_MAX:
+                        violated.append(f"eps_0x={self.eps_0x.item():.4g}")
+                    if self.eps_0y.item() < self.EPS_MIN or self.eps_0y.item() > self.EPS_MAX:
+                        violated.append(f"eps_0y={self.eps_0y.item():.4g}")
+                    self.eps_0x.clamp_(self.EPS_MIN, self.EPS_MAX)
+                    self.eps_0y.clamp_(self.EPS_MIN, self.EPS_MAX)
 
             if violated:
                 warnings.warn(
                     f"clamp_hyperparameters: parameters escaped bounds — {', '.join(violated)}. "
                     f"This suggests the optimizer took a step the NaN guard did not catch."
                 )
+
+    def set_center_bounds(self, center_x, center_y, radius):
+        """EXPERIMENTAL: Constrain RF center to stay within radius of initial estimate.
+
+        Sets per-axis bounds used by params_in_bounds() and clamp_hyperparameters().
+        Bounds are clamped to [EPS_MIN, EPS_MAX] so they never exceed the image.
+
+        Args:
+            center_x: Initial RF center x (normalized coords)
+            center_y: Initial RF center y (normalized coords)
+            radius: Allowed deviation from center (normalized coords)
+        """
+        self._eps_x_min = max(self.EPS_MIN, center_x - radius)
+        self._eps_x_max = min(self.EPS_MAX, center_x + radius)
+        self._eps_y_min = max(self.EPS_MIN, center_y - radius)
+        self._eps_y_max = min(self.EPS_MAX, center_y + radius)
+        print(f"  RF center bounds set: x=[{self._eps_x_min:.3f}, {self._eps_x_max:.3f}], "
+              f"y=[{self._eps_y_min:.3f}, {self._eps_y_max:.3f}] (radius={radius:.3f})")
 
     def _setup_pixel_coords(self):
         """Setup normalized pixel coordinate grid on [-1, 1] × [-1, 1].

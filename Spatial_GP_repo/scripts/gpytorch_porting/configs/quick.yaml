@@ -26,6 +26,8 @@ kernel:
   eps_0y: null              # null = compute from STA
   gradient_mode: autograd
   use_mask: true
+  bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
+  n_sigma_rf_bounds: 3.0     # allowed deviation in units of sigma_rf = beta * sqrt(2)
 
 # ===== KERNEL BOUNDS =====
 # HARDCODED in kernels.py (class attributes). Listed here for documentation.

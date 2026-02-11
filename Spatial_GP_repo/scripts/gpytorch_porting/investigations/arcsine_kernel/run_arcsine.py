@@ -299,6 +299,8 @@ def build_config_from_defaults(**overrides):
         'eps_0y': None,                   # (default_params.json has 0.0 as placeholder)
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
+        'bound_rf_center': ker['bound_rf_center'],
+        'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
 
         # --- Likelihood (from link_function section) ---
         'A_init': lik['A_init'],
@@ -404,6 +406,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'eps_0y': ker['eps_0y'],
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
+        'bound_rf_center': ker['bound_rf_center'],
+        'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
 
         # Likelihood
         'A_init': lik['A_init'],
@@ -932,6 +936,8 @@ def run_single_config(config):
         )
         kernel = base_kernel
         kernel.Amp = config['Amp']
+        from utils import apply_rf_center_bounds
+        apply_rf_center_bounds(kernel, eps_0x, eps_0y, config)
 
         model = VariationalGPModel(
             inducing_points, kernel, jitter=jitter,
@@ -1155,6 +1161,16 @@ def main():
     parser.add_argument('--mstep-analytical', action='store_true',
                         help='Use analytical gradients for M-step in vargp_direct mode (faster, matches varGP)')
 
+    # RF center bounds
+    ker_defaults = defaults['kernel']
+    parser.add_argument('--bound-rf-center', action='store_true',
+                        default=ker_defaults['bound_rf_center'], dest='bound_rf_center',
+                        help=f'Constrain RF center to STA neighborhood (default: {ker_defaults["bound_rf_center"]})')
+    parser.add_argument('--no-bound-rf-center', action='store_false', dest='bound_rf_center',
+                        help='Disable RF center bounds (allow full [-1, 1] range)')
+    parser.add_argument('--n-sigma-rf-bounds', type=float, default=ker_defaults['n_sigma_rf_bounds'],
+                        help=f'Allowed RF center deviation in sigma_rf units (default: {ker_defaults["n_sigma_rf_bounds"]})')
+
     # Performance options
     parser.add_argument('--use-cache', action='store_true', default=defaults['model']['use_cache'],
                         help=f'Use kernel caching in E-step (default: {defaults["model"]["use_cache"]}, 11.7x fewer kernel calls)')
@@ -1230,6 +1246,8 @@ def main():
         eps_0y=eps_0y,
         gradient_mode=args.gradient_mode,
         use_mask=args.use_mask,
+        bound_rf_center=args.bound_rf_center,
+        n_sigma_rf_bounds=args.n_sigma_rf_bounds,
         A_init=args.A_init,
         lambda0_init=args.lambda0_init,
         n_estep=args.n_estep,
