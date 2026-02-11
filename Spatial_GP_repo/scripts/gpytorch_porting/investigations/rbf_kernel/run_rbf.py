@@ -337,6 +337,9 @@ def build_config_from_defaults(**overrides):
         'r_max': utl['r_max'],
         'f_max': utl['f_max'],
 
+        # --- RBF-specific (not in default_params.json) ---
+        'lengthscale': 100.0,  # RBF lengthscale, default matches data scale
+
         # --- Runtime flags (not configurable via default_params.json) ---
         'mstep_analytical': False,
         'unwhitened_variational_dist': False,
@@ -473,6 +476,7 @@ def _validate_model_params(model, likelihood, results):
         'final_rho': kernel.rho.item(),
         'final_eps_0x': kernel.eps_0x.item(),
         'final_eps_0y': kernel.eps_0y.item(),
+        'final_lengthscale': kernel.lengthscale.item(),
     }
     for key, model_val in checks.items():
         dict_val = results[key]
@@ -631,6 +635,7 @@ def run_single_config(config):
             rho=config['rho'],
             eps_0x=eps_0x,
             eps_0y=eps_0y,
+            lengthscale=config['lengthscale'],
             use_mask=config['use_mask'],
             jitter=jitter,
         ).to(device=device, dtype=dtype)
@@ -814,6 +819,7 @@ def run_single_config(config):
         final_Amp = theta_final['Amp'].item() if hasattr(theta_final['Amp'], 'item') else float(theta_final['Amp'])
         final_eps_0x = theta_final['eps_0x'].item() if hasattr(theta_final['eps_0x'], 'item') else float(theta_final['eps_0x'])
         final_eps_0y = theta_final['eps_0y'].item() if hasattr(theta_final['eps_0y'], 'item') else float(theta_final['eps_0y'])
+        final_lengthscale = None  # vargp_old doesn't have lengthscale
         time_estep = None
         time_mstep = None
 
@@ -829,6 +835,7 @@ def run_single_config(config):
             eps_0y=eps_0y,
             beta=config['beta'],
             rho=config['rho'],
+            lengthscale=config['lengthscale'],
             use_mask=config['use_mask'],
             gradient_mode=config['gradient_mode']
         )
@@ -913,6 +920,7 @@ def run_single_config(config):
         final_rho = kernel.rho.item()
         final_eps_0x = kernel.eps_0x.item()
         final_eps_0y = kernel.eps_0y.item()
+        final_lengthscale = kernel.lengthscale.item()
         time_estep = time_estep_total
         time_mstep = time_mstep_total
 
@@ -927,11 +935,11 @@ def run_single_config(config):
             eps_0y=eps_0y,
             beta=config['beta'],
             rho=config['rho'],
+            lengthscale=config['lengthscale'],
             use_mask=config['use_mask'],
             gradient_mode=config['gradient_mode']
         )
         kernel = base_kernel
-        kernel.Amp = config['Amp']
 
         model = VariationalGPModel(
             inducing_points, kernel, jitter=jitter,
@@ -1010,6 +1018,7 @@ def run_single_config(config):
         final_rho = kernel.rho.item()
         final_eps_0x = kernel.eps_0x.item()
         final_eps_0y = kernel.eps_0y.item()
+        final_lengthscale = kernel.lengthscale.item()
         time_estep = None
         time_mstep = None
 
@@ -1018,20 +1027,24 @@ def run_single_config(config):
             C_trained, mask_trained = kernel._compute_C_matrix(apply_mask=kernel.use_mask)
             C_trained = C_trained.to(X_train.device, X_train.dtype)
             x_masked = X_train[:, mask_trained] if mask_trained is not None else X_train
-            # Pairwise C-weighted distances
+            ls = kernel.lengthscale.item()
+            ls_sq = ls ** 2
+            # Pairwise C-weighted distances (scaled by lengthscale)
             X_C = x_masked @ C_trained
             self_terms = (x_masked * X_C).sum(dim=-1)
             cross = X_C @ x_masked.T
-            dist_sq = self_terms[:, None] - 2 * cross + self_terms[None, :]
-            dist_sq = torch.clamp(dist_sq, min=0.0)
-            K_rbf = torch.exp(-0.5 * dist_sq)
+            dist_sq_raw = self_terms[:, None] - 2 * cross + self_terms[None, :]
+            dist_sq_raw = torch.clamp(dist_sq_raw, min=0.0)
+            dist_sq_scaled = dist_sq_raw / ls_sq
+            K_rbf = torch.exp(-0.5 * dist_sq_scaled)
             # Off-diagonal statistics
             n = K_rbf.shape[0]
             mask_offdiag = ~torch.eye(n, dtype=torch.bool, device=K_rbf.device)
             K_off = K_rbf[mask_offdiag]
-            dist_off = dist_sq[mask_offdiag]
+            dist_off = dist_sq_scaled[mask_offdiag]
             print(f"\n  Local RBF kernel diagnostics (training images):")
-            print(f"    dist_sq: min={dist_off.min().item():.3f}, median={dist_off.median().item():.3f}, max={dist_off.max().item():.3f}")
+            print(f"    lengthscale: {ls:.3f}")
+            print(f"    dist_sq/l^2: min={dist_off.min().item():.3f}, median={dist_off.median().item():.3f}, max={dist_off.max().item():.3f}")
             print(f"    K(x,y): min={K_off.min().item():.6f}, median={K_off.median().item():.6f}, max={K_off.max().item():.6f}")
             print(f"    K(x,x) = 1.0 (stationary kernel, constant diagonal)")
 
@@ -1093,6 +1106,7 @@ def run_single_config(config):
         'final_eps_0x': final_eps_0x,
         'final_eps_0y': final_eps_0y,
         'final_sigma_0': final_sigma_0,
+        'final_lengthscale': final_lengthscale,
         'gradient_mode': gradient_mode if mode != 'vargp_old' else None,
         'n_iterations_run': final_iteration,
         'stopped_early': stopped_early,
@@ -1151,6 +1165,10 @@ def main():
     parser.add_argument('--rho', type=float, default=defaults['kernel']['rho'], help=f'Smoothness (default: {defaults["kernel"]["rho"]})')
     parser.add_argument('--eps-0x', type=float, default=defaults['kernel']['eps_0x'], help=f'RF center x (default: {defaults["kernel"]["eps_0x"]})')
     parser.add_argument('--eps-0y', type=float, default=defaults['kernel']['eps_0y'], help=f'RF center y (default: {defaults["kernel"]["eps_0y"]})')
+
+    # RBF-specific parameters
+    parser.add_argument('--lengthscale', type=float, default=100.0,
+                        help='RBF lengthscale (default: 100.0). Controls kernel sharpness.')
 
     # Link function parameters
     parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
@@ -1238,6 +1256,7 @@ def main():
         rho=args.rho,
         eps_0x=eps_0x,
         eps_0y=eps_0y,
+        lengthscale=args.lengthscale,
         gradient_mode=args.gradient_mode,
         use_mask=args.use_mask,
         A_init=args.A_init,
@@ -1321,6 +1340,7 @@ def main():
             'final_eps_0x': round(result['final_eps_0x'], 6),
             'final_eps_0y': round(result['final_eps_0y'], 6),
             'final_sigma_0': round(result['final_sigma_0'], 6),
+            'final_lengthscale': round(result['final_lengthscale'], 6) if result.get('final_lengthscale') is not None else None,
         }
 
         json_path = Path(args.json_append)
