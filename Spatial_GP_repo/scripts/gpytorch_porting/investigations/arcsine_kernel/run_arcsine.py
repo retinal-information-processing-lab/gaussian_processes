@@ -82,8 +82,20 @@ def load_pnas_data(data_path, dtype=torch.float64):
     }
 
 
-def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reliability, output_path=None):
-    """Plot actual vs predicted firing rates.
+def _compute_sta_2d(X, r, n_px_side):
+    """Compute z-scored STA image as numpy 2D array."""
+    X_mean = X.mean(dim=0, keepdim=True)
+    X_std = X.std(dim=0, keepdim=True)
+    X_norm = (X - X_mean) / (X_std + 1e-8)
+    STA = (r[:, None] * X_norm).sum(dim=0) / r.sum()
+    return STA.reshape(n_px_side, n_px_side).cpu().numpy()
+
+
+def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reliability,
+             STA_init_2d=None, STA_train_2d=None,
+             init_eps_0x=None, init_eps_0y=None, init_beta=None,
+             kernel=None, n_px_side=108, output_path=None):
+    """Plot actual vs predicted firing rates, with optional STA + RF visualization.
 
     Args:
         r_test_mean: Mean actual firing rates, shape (n_images,)
@@ -93,6 +105,12 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
         test_corr: Pearson correlation on test set
         explained_var: Explained variance value
         reliability: Cell reliability
+        STA_init_2d: Initial STA image (n_px_side, n_px_side) numpy array, or None
+        STA_train_2d: Training-set STA image (n_px_side, n_px_side) numpy array, or None
+        init_eps_0x, init_eps_0y: Initial RF center in normalized [-1, 1] coords
+        init_beta: Initial beta value for RF width
+        kernel: Trained kernel object (for extracting final RF params), or None
+        n_px_side: Image side length for coordinate conversion
         output_path: If provided, save figure to this path instead of showing
     """
     r_actual = r_test_mean.cpu().numpy()
@@ -103,12 +121,18 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
     r_sorted = r_actual[sort_idx]
     f_sorted = f_predicted[sort_idx]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    has_sta = STA_init_2d is not None and STA_train_2d is not None
+    nrows = 2 if has_sta else 1
+    fig, axes = plt.subplots(nrows, 2, figsize=(14, 5 * nrows))
+    if nrows == 1:
+        ax1, ax2 = axes
+    else:
+        (ax1, ax2), (ax3, ax4) = axes
 
     n_images = len(r_actual)
     x = np.arange(n_images)
 
-    # Left subplot: original order
+    # Top-left: original order
     for xi in x:
         ax1.axvline(xi, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)
     ax1.plot(x, r_actual, 'k-', linewidth=1.5, label='Actual (mean of 30 reps)')
@@ -119,7 +143,7 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
 
-    # Right subplot: sorted by actual firing rate
+    # Top-right: sorted by actual firing rate
     for xi in x:
         ax2.axvline(xi, color='gray', linestyle=':', linewidth=0.5, alpha=0.5)
     ax2.plot(x, r_sorted, 'k-', linewidth=1.5, label='Actual (mean of 30 reps)')
@@ -138,6 +162,57 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
     ax2.text(0.02, 0.98, metrics_text, transform=ax2.transAxes, fontsize=10,
              verticalalignment='top', fontfamily='monospace',
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # Bottom row: STA visualizations
+    if has_sta:
+        def _draw_rf_overlay(ax, eps_0x, eps_0y, beta, label_prefix=''):
+            """Draw RF center dot + 1/2-sigma circles on an imshow axis."""
+            cx = (eps_0x + 1) / 2 * (n_px_side - 1)
+            cy = (eps_0y + 1) / 2 * (n_px_side - 1)
+            sigma_rf = beta * np.sqrt(2)
+            sigma_px = sigma_rf * (n_px_side - 1) / 2
+
+            ax.plot(cx, cy, 'ko', markersize=6)
+            circle_1s = plt.Circle((cx, cy), sigma_px, fill=False,
+                                   color='black', linewidth=1.5, label=f'1sig ({sigma_px:.0f}px)')
+            circle_2s = plt.Circle((cx, cy), 2 * sigma_px, fill=False,
+                                   color='black', linewidth=1, linestyle='--', label=f'2sig ({2*sigma_px:.0f}px)')
+            ax.add_patch(circle_1s)
+            ax.add_patch(circle_2s)
+            ax.legend(loc='upper right', fontsize=8)
+
+            param_text = f'{label_prefix}beta={beta:.3f}\neps=({eps_0x:.3f}, {eps_0y:.3f})'
+            ax.text(0.02, 0.98, param_text, transform=ax.transAxes, fontsize=8,
+                    verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        # Bottom-left: Initial STA + initial RF
+        vmax = max(abs(STA_init_2d.min()), abs(STA_init_2d.max()))
+        ax3.imshow(STA_init_2d, cmap='RdBu_r', origin='lower', vmin=-vmax, vmax=vmax)
+        ax3.set_title('Initial STA + initial RF')
+        ax3.set_xlabel('x (pixels)')
+        ax3.set_ylabel('y (pixels)')
+
+        if init_eps_0x is not None and init_beta is not None:
+            _draw_rf_overlay(ax3, init_eps_0x, init_eps_0y, init_beta, label_prefix='init ')
+            ax3.set_xlim(0, n_px_side - 1)
+            ax3.set_ylim(0, n_px_side - 1)
+
+        # Bottom-right: Training STA + trained RF overlay
+        vmax_tr = max(abs(STA_train_2d.min()), abs(STA_train_2d.max()))
+        ax4.imshow(STA_train_2d, cmap='RdBu_r', origin='lower', vmin=-vmax_tr, vmax=vmax_tr)
+        ax4.set_title('Training STA + trained RF')
+        ax4.set_xlabel('x (pixels)')
+        ax4.set_ylabel('y (pixels)')
+
+        if kernel is not None and hasattr(kernel, 'eps_0x'):
+            import torch as _torch
+            eps_0x = kernel.eps_0x.item()
+            eps_0y = kernel.eps_0y.item()
+            beta = kernel.beta.item()
+            _draw_rf_overlay(ax4, eps_0x, eps_0y, beta, label_prefix='final ')
+            ax4.set_xlim(0, n_px_side - 1)
+            ax4.set_ylim(0, n_px_side - 1)
 
     fig.suptitle(f'Cell {cellid} - M={ntilde}', fontsize=12, fontweight='bold')
     plt.tight_layout()
@@ -260,6 +335,7 @@ def build_config_from_defaults(**overrides):
         # --- Utility / acquisition (from utility section) ---
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
+        'f_max': utl['f_max'],
 
         # --- Runtime flags (not configurable via default_params.json) ---
         'mstep_analytical': False,
@@ -362,6 +438,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Utility / acquisition
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
+        'f_max': utl['f_max'],
 
         # Data
         'n_px_side': dat['n_px_side'],
@@ -515,6 +592,9 @@ def run_single_config(config):
     eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
         X_sta, r_sta, n_px_side, zscore=True
     )
+
+    # Compute STA image for visualization (same zscore logic as compute_rf_center_from_sta)
+    STA_init_2d = _compute_sta_2d(X_sta, r_sta, n_px_side)
 
     # Use STA-computed center if config has None (null in YAML)
     eps_0x = config['eps_0x'] if config['eps_0x'] is not None else eps_0x_sta
@@ -1013,6 +1093,11 @@ def run_single_config(config):
         '_model': model,
         '_likelihood': likelihood,
         '_indices_train': indices_train,
+        '_STA_init_2d': STA_init_2d,
+        '_STA_train_2d': _compute_sta_2d(X[indices_train], r[indices_train], n_px_side),
+        '_init_eps_0x': eps_0x,
+        '_init_eps_0y': eps_0y,
+        '_init_beta': config['beta'],
     }
 
     # Validate that scalar params in dict match model/likelihood objects
@@ -1184,9 +1269,17 @@ def main():
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.plot or save_path:
+        model_obj = result.get('_model')
         plot_fit(result['_r_test_mean'], result['_predictions']['f_pred'],
                  args.cell, args.ntilde,
                  result['test_r'], result['explained_var'], result['reliability'],
+                 STA_init_2d=result.get('_STA_init_2d'),
+                 STA_train_2d=result.get('_STA_train_2d'),
+                 init_eps_0x=result.get('_init_eps_0x'),
+                 init_eps_0y=result.get('_init_eps_0y'),
+                 init_beta=result.get('_init_beta'),
+                 kernel=model_obj.covar_module if model_obj is not None else None,
+                 n_px_side=result.get('n_px_side', 108),
                  output_path=save_path)
 
     # Write JSON if requested

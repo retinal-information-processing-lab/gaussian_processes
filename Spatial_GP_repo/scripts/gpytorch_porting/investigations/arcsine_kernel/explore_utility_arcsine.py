@@ -1,14 +1,14 @@
 """
-Workbench for exploring utility function behavior.
+Workbench for exploring utility function behavior with the ARC-SINE kernel.
 Created by Claude.
 
 IMPORTANT: This script fits its OWN model during setup() - it does NOT use a
 pre-trained model. The model is trained fresh each time with M=50, n_train=50
-(hardcoded below) using the UNNORMALIZED ArcCosineKernel.
+(hardcoded below) using ArcSineKernel (Williams 1998).
 
-For fair test_r comparison between kernels, use run_single_mode.py vs
-run_normalized.py with matched parameters. This script is for exploring utility
-behavior patterns, not for model performance evaluation.
+For fair test_r comparison between kernels, use run_arcsine.py with matched
+parameters. This script is for exploring utility behavior patterns, not for
+model performance evaluation.
 
 Trains a GP model and provides simple helper functions to compute
 kernel values, GP moments, and utilities for any image. Designed for
@@ -17,12 +17,17 @@ interactive exploration and pedagogical use.
 Uses standard_utility() and distribution_aware_utility() from acquisition.py
 (single source of truth for acquisition functions).
 
+The arc-sine kernel K(x,x) saturates at 1 for large inputs (unlike arc-cosine
+which grows quadratically). This means kernel_norm = sqrt(K(x,x)) is bounded
+by 1, so the right panel of the landscape plot will show a compressed x-axis
+compared to the arc-cosine version.
+
 Usage:
     # Run directly for a demo:
-    python investigations/understanding_utility/explore_utility.py
+    python investigations/arcsine_kernel/explore_utility_arcsine.py
 
     # Or import in a script/REPL:
-    from explore_utility import setup, kernel_angle, describe, ...
+    from explore_utility_arcsine import setup, kernel_angle, describe, ...
 """
 
 import sys
@@ -64,7 +69,7 @@ _spec_acq.loader.exec_module(_acquisition)
 standard_utility = _acquisition.standard_utility
 distribution_aware_utility = _acquisition.distribution_aware_utility
 
-from run_single_mode import run_single_config, build_config_from_defaults
+from run_arcsine import run_single_config, build_config_from_defaults, load_pnas_data
 
 # ---------------------------------------------------------------------------
 # Adaptive r_max params from default_params.json
@@ -81,6 +86,7 @@ _ADAPTIVE_RMAX_PARAMS = {
 # Default config
 # ---------------------------------------------------------------------------
 N_TRAIN = 70
+
 M = 50
 SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
 
@@ -90,7 +96,7 @@ SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. N
 # ============================================================================
 
 def setup():
-    """Train model and return everything needed for exploration.
+    """Train model with ArcSineKernel and return everything needed for exploration.
 
     Returns:
         dict with keys:
@@ -145,7 +151,7 @@ def setup():
 # ============================================================================
 
 def kernel_value(model, x1, x2):
-    """K(x1, x2) — scalar kernel value between two images."""
+    """K(x1, x2) -- scalar kernel value between two images."""
     with torch.no_grad():
         return model.covar_module(
             x1.unsqueeze(0), x2.unsqueeze(0)
@@ -153,7 +159,12 @@ def kernel_value(model, x1, x2):
 
 
 def kernel_norm(model, x):
-    """||x||_C = sqrt(K(x, x)) — the C-weighted norm."""
+    """sqrt(K(x, x)) -- the kernel self-value square root.
+
+    For the arc-sine kernel, K(x,x) = (2/pi)*arcsin(v/(1+v)) where
+    v = x^T C x + sigma_0^2. This saturates at 1 for large v, so
+    kernel_norm is bounded by 1.
+    """
     return math.sqrt(kernel_value(model, x, x))
 
 
@@ -161,9 +172,6 @@ def kernel_angle(model, x1, x2):
     """Angle between x1 and x2 in kernel space (radians).
 
     Computes arccos(K(x1,x2) / sqrt(K(x1,x1)*K(x2,x2))).
-    For the arc-cosine kernel this equals arccos(J(theta)/pi),
-    which approximates the geometric C-space angle theta well
-    for small angles (error O(theta^4)).
     """
     k11 = kernel_value(model, x1, x1)
     k22 = kernel_value(model, x2, x2)
@@ -221,7 +229,7 @@ def describe(model, likelihood, x, x_ref=None, label="image"):
     u_std = u_std_result['utility'].item()
 
     print(f"\n  --- {label} ---")
-    print(f"  ||x||_C = {norm:.2f}")
+    print(f"  sqrt(K(x,x)) = {norm:.4f}")
     print(f"  GP:  mu = {mu:.4f},  sigma2 = {sigma2:.4f}")
     print(f"  Log-firing:  mean = {logf_mean:.4f},  var = {logf_var:.4f}")
     print(f"  U_std = {u_std:.6f}")
@@ -290,10 +298,10 @@ def eval_da_conditioned(model, likelihood, X_train, x_cond):
     # Sort by DA utility descending
     sorted_idx = utilities.argsort(descending=True)
 
-    print(f"\n  ||x_cond||_C = {norm_cond:.2f}")
+    print(f"\n  sqrt(K(x_cond,x_cond)) = {norm_cond:.4f}")
     print(f"\n  {'rank':>4}  {'image':>10}  {'U_DA':>10}  {'H_marg':>10}  "
-          f"{'H_cond':>10}  {'||x*||_C':>8}  {'ratio':>6}  {'angle(rad)':>10}  {'angle(deg)':>10}")
-    print("  " + "-" * 93)
+          f"{'H_cond':>10}  {'sqrt(Kxx)':>9}  {'ratio':>6}  {'angle(rad)':>10}  {'angle(deg)':>10}")
+    print("  " + "-" * 98)
 
     for rank, idx in enumerate(sorted_idx):
         idx_val = idx.item()
@@ -301,7 +309,7 @@ def eval_da_conditioned(model, likelihood, X_train, x_cond):
         ratio = norms[idx_val] / norm_cond
         print(f"  {rank+1:>4}  {label:>10}  {utilities[idx_val].item():10.6f}  "
               f"{h_margs[idx_val].item():10.4f}  {h_conds[idx_val].item():10.4f}  "
-              f"{norms[idx_val]:8.2f}  {ratio:6.2f}  "
+              f"{norms[idx_val]:9.4f}  {ratio:6.2f}  "
               f"{angles[idx_val]:10.4f}  {math.degrees(angles[idx_val]):10.1f}")
 
     print(f"\n  Total images evaluated: {x_candidates.shape[0]} "
@@ -481,7 +489,6 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     ax1.legend(fontsize=9, loc='upper left', framealpha=0.9)
 
     # === Right panel: U_DA vs norm, colored by angle ===
-    # (Image groups already identified above for left panel)
 
     # Plot training images (circles)
     sc = ax2.scatter(
@@ -512,9 +519,9 @@ def plot_da_landscape(model, likelihood, X_candidates, x_cond, save_path,
     cbar2 = plt.colorbar(sc, ax=ax2, pad=0.02)
     cbar2.set_label('Angle to $x_{cond}$ (rad)', fontsize=10)
 
-    ax2.set_xlabel('$||x^*||_C$', fontsize=10)
+    ax2.set_xlabel('$\\sqrt{K(x^*,x^*)}$', fontsize=10)
     ax2.set_ylabel('$H_{marg} - H_{cond}$', fontsize=10)
-    ax2.set_title('DA utility vs norm (color = angle)', fontsize=11)
+    ax2.set_title('DA utility vs kernel self-value (color = angle)', fontsize=11)
     ax2.legend(fontsize=9, loc='best')
 
     plt.tight_layout()
@@ -581,7 +588,7 @@ def demo():
 
     # === Part 5: Comparison table ===
     print("\n" + "=" * 60)
-    print("COMPARISON: Amplitude vs Angle effects")
+    print("COMPARISON: Amplitude vs Angle effects (Arc-Sine Kernel)")
     print("=" * 60)
 
     cases = [
@@ -608,8 +615,8 @@ def demo():
             **_ADAPTIVE_RMAX_PARAMS
         )
 
-    print(f"\n  {'Image':>25}  {'||x||_C':>8}  {'angle':>8}  {'U_std':>10}  {'U_DA':>10}")
-    print("  " + "-" * 65)
+    print(f"\n  {'Image':>25}  {'sqrt(Kxx)':>9}  {'angle':>8}  {'U_std':>10}  {'U_DA':>10}")
+    print("  " + "-" * 70)
 
     for i, (label, x) in enumerate(cases):
         norm = kernel_norm(model, x)
@@ -617,15 +624,17 @@ def demo():
         u_std = std_result['utility'][i].item()
         u_da = da_result['utility'][i].item()
 
-        print(f"  {label:>25}  {norm:8.1f}  {angle:8.4f}  {u_std:10.6f}  {u_da:10.6f}")
+        print(f"  {label:>25}  {norm:9.4f}  {angle:8.4f}  {u_std:10.6f}  {u_da:10.6f}")
 
     print(f"""
-  Key observations:
-  - Scaling UP (same direction): ||x||_C grows, angle stays ~0,
-    conditioning stays strong, DA utility grows.
+  Key observations (arc-sine kernel):
+  - K(x,x) saturates at 1 for large inputs (erf activation).
+  - Scaling UP (same direction): sqrt(K(x,x)) should increase but saturate,
+    so utility should also saturate rather than diverge.
+  - Compare with arc-cosine: sqrt(K(x,x)) grows unboundedly with scaling,
+    causing utility to diverge.
   - Different direction: angle is large, conditioning is weak,
     DA utility is small regardless of amplitude.
-  - Standard utility grows with amplitude for ALL images (no angle dependence).
 """)
 
     # === Part 6: DA utility conditioned on one image ===
@@ -645,7 +654,7 @@ def demo():
     plot_da_landscape(
         model, likelihood, x_candidates, x_target,
         n_train=X_train.shape[0],  # Tell plot where training images end
-        save_path=_script_dir / 'explore_utility.png',
+        save_path=_script_dir / 'explore_utility_arcsine.png',
     )
 
 

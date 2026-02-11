@@ -1,5 +1,5 @@
 """
-Gradient ascent investigation for DA utility with normalized arc-cosine kernel.
+Gradient ascent investigation for DA utility with arc-sine kernel (Williams 1998).
 Created by Claude.
 
 Validates that DA utility peaks at the conditioning target: when we observe
@@ -7,17 +7,17 @@ image A, the query x* = A should have the highest DA utility. Specifically:
 1. Interpolation: U_DA increases monotonically from A_smoothed to A
 2. Gradient ascent: starting from A_smoothed, maximizes U_DA(x | observe A)
 
-Uses ArcCosineKernelNormalized (K(x,x) = 1) which eliminates norm-driven utility
-divergence, making gradient-based optimization well-behaved.
+Uses ArcSineKernel which saturates at K(x,x) = 1 for large inputs,
+preventing norm-driven utility divergence (compared to arc-cosine).
 
 Perturbation uses Gaussian smoothing (sigma=3.0) to create a visibly different
 but structurally similar version of the target image.
 
-Model training reuses setup() from explore_utility_normalized.py (M=100, N_TRAIN=100).
+Model training reuses setup() from explore_utility_arcsine.py (M=50, N_TRAIN=50).
 All other params from default_params.json via build_config_from_defaults().
 
 Usage:
-    python investigations/normalized_kernel/gradient_normalized.py
+    python investigations/arcsine_kernel/gradient_arcsine.py
 """
 
 import sys
@@ -36,24 +36,24 @@ _script_dir = Path(__file__).resolve().parent
 _gpytorch_dir = _script_dir.parent.parent
 sys.path.insert(0, str(_gpytorch_dir))
 
-from explore_utility_normalized import setup
+from explore_utility_arcsine import setup
 from acquisition import distribution_aware_utility, get_gp_marginal_moments, compute_H
-from run_single_mode import load_pnas_data
+from run_arcsine import load_pnas_data
 from gpy_training import predict
 from metrics import compute_pearson_correlation, compute_explained_variance
 
 # ---------------------------------------------------------------------------
 # Investigation parameters (visible, explicit)
-# Model params (M=100, N_TRAIN=100) are set in explore_utility_normalized.py
+# Model params (M=50, N_TRAIN=50) are set in explore_utility_arcsine.py
 # ---------------------------------------------------------------------------
 # --- Experiment mode (revertible: set False to restore natural image experiment) ---
 USE_SYNTHETIC = True     # True: bipartite target + noise start. False: natural + smoothing.
-DARK_GRAY = -0.5         # synthetic bipartite: left half pixel value
-LIGHT_GRAY = 0.5         # synthetic bipartite: right half pixel value
+DARK_GRAY = 0.2         # synthetic bipartite: left half pixel value
+LIGHT_GRAY = -0.2         # synthetic bipartite: right half pixel value
 NOISE_AMP = 0.5          # synthetic: random noise amplitude for starting image
 
 # --- Natural image experiment params (used when USE_SYNTHETIC = False) ---
-SIGMA_SMOOTH = 1.0       # Gaussian smoothing sigma for perturbation
+SIGMA_SMOOTH = 3.0       # Gaussian smoothing sigma for perturbation
 TARGET_INDEX = 0         # which pool image to use as target
 
 SIGMA_0 = None           # Override kernel sigma_0 AFTER training. None = keep trained value.
@@ -62,7 +62,7 @@ N_INTERP = 21            # interpolation points along path
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 50             # outer LBFGS steps
-LR = 1.0                 # LBFGS step size (1.0 standard for quasi-Newton)
+LR = 0.1                 # LBFGS step size (1.0 standard for quasi-Newton)
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
@@ -215,9 +215,9 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
 
 
 def main():
-    # === Step 1: Train model with normalized kernel ===
+    # === Step 1: Train model with arc-sine kernel ===
     print("=" * 70)
-    print("Step 1: Training model with ArcCosineKernelNormalized")
+    print("Step 1: Training model with ArcSineKernel")
     print("=" * 70)
 
     env = setup()
@@ -290,6 +290,7 @@ def main():
         # --- Noise starting image within RF mask ---
         torch.manual_seed(config['seed'])
         x_perturbed = NOISE_AMP * torch.randn(n_pixels, dtype=dtype, device=device)
+
         x_perturbed[~rf_mask] = 0.0
 
         start_label = "noise"
@@ -355,8 +356,9 @@ def main():
     with torch.no_grad():
         for label, x_img in [('target', x_target), ('start', x_perturbed), ('final', x_final)]:
             mu, sigma2 = get_gp_marginal_moments(model, x_img.unsqueeze(0))
-            mu_g = A * mu + lam0
-            firing_rate = torch.exp(mu_g).item()
+            mu_g = A * mu + lam0                # log-firing rate mean
+            sigma2_g = A**2 * sigma2            # log-firing rate variance
+            firing_rate = torch.exp(mu_g).item()  # expected spike count
             H = compute_H(mu, sigma2, r_max=r_max, a=A, lambda0=lam0).item()
             flag = " ** EXCEEDS f_max" if firing_rate > f_max else ""
             print(f"    {label:8s}: lambda_m={mu.item():.4f}, lambda_var={sigma2.item():.4f}, "
@@ -423,6 +425,33 @@ def main():
     diff_flat = x_final - x_perturbed
     img_diff = masked_crop(diff_flat, 0.0)  # gray_val=0 for difference
 
+    # --- Extract RF center and width from trained kernel ---
+    kernel = model.covar_module
+    eps_0x = kernel.eps_0x.item()
+    eps_0y = kernel.eps_0y.item()
+    beta_nat = kernel.beta.item()
+    sigma_rf = beta_nat * np.sqrt(2)  # RF width in normalized coords
+    # Convert normalized [-1, 1] -> pixel coords
+    cx_px = (eps_0x + 1) / 2 * (n_px_side - 1)
+    cy_px = (eps_0y + 1) / 2 * (n_px_side - 1)
+    sigma_px = sigma_rf * (n_px_side - 1) / 2
+    # Offset for cropped images
+    cx_crop = cx_px - c_min
+    cy_crop = cy_px - r_min
+
+    def draw_rf_overlay(ax):
+        """Draw RF center + 1/2-sigma circles on a cropped image axis."""
+        ax.plot(cx_crop, cy_crop, 'r+', markersize=8, markeredgewidth=1.5)
+        circle_1s = plt.Circle((cx_crop, cy_crop), sigma_px, fill=False,
+                               color='red', linewidth=1.5, linestyle='-')
+        circle_2s = plt.Circle((cx_crop, cy_crop), 2 * sigma_px, fill=False,
+                               color='red', linewidth=1, linestyle='--')
+        ax.add_patch(circle_1s)
+        ax.add_patch(circle_2s)
+
+    print(f"  RF params: eps_0=({eps_0x:.3f}, {eps_0y:.3f}), beta={beta_nat:.4f}, "
+          f"sigma_rf={sigma_rf:.4f} norm = {sigma_px:.1f} px")
+
     fig = plt.figure(figsize=(18, 8))
 
     # Top row: 4 images (target, start, final, difference) with colorbars
@@ -446,6 +475,7 @@ def main():
         ax.axis('off')
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.ax.tick_params(labelsize=7)
+        draw_rf_overlay(ax)
         # Add clipping warning on the image if pixels exceed natural range
         if label in clip_warnings:
             w = clip_warnings[label]
@@ -463,6 +493,7 @@ def main():
     ax_diff.axis('off')
     cb_diff = fig.colorbar(im_diff, ax=ax_diff, fraction=0.046, pad=0.04)
     cb_diff.ax.tick_params(labelsize=7)
+    draw_rf_overlay(ax_diff)
 
     # Print difference stats
     diff_rf = diff_flat[rf_mask].detach().cpu().numpy()
@@ -487,25 +518,33 @@ def main():
     ax2 = fig.add_subplot(2, 2, 4)
     steps = history['step']
     color_u = 'tab:blue'
-    color_d = 'tab:red'
+    color_r = 'tab:green'
+    color_p = 'tab:red'
 
     ax2.plot(steps, history['utility'], color=color_u, linewidth=1.5, label='U_DA')
     ax2.set_xlabel('Step')
     ax2.set_ylabel('U_DA', color=color_u)
     ax2.tick_params(axis='y', labelcolor=color_u)
-    ax2.legend(loc='center left')
 
     ax2r = ax2.twinx()
-    ax2r.plot(steps, history['pearson_r'], color=color_d, linewidth=1.5, alpha=0.7)
-    ax2r.set_ylabel('Pearson r (RF)', color=color_d)
-    ax2r.tick_params(axis='y', labelcolor=color_d)
-    ax2r.axhline(1.0, color=color_d, linestyle=':', alpha=0.3)
+    ax2r.plot(steps, history['pearson_r'], color=color_r, linewidth=1.5,
+              alpha=0.7, label='Pearson r (RF)')
+    ax2r.plot(steps, history['proj_coeff'], color=color_p, linewidth=1.5,
+              alpha=0.7, linestyle='--', label='Proj coeff (RF)')
+    ax2r.axhline(1.0, color='gray', linestyle=':', alpha=0.3)
+    ax2r.set_ylabel('Structure / Amplitude')
+    ax2r.tick_params(axis='y')
+
+    # Combine legends from both axes
+    lines1, labels1 = ax2.get_legend_handles_labels()
+    lines2, labels2 = ax2r.get_legend_handles_labels()
+    ax2.legend(lines1 + lines2, labels1 + labels2, loc='center left', fontsize=8)
 
     ax2.set_title('LBFGS gradient ascent convergence')
     ax2.grid(True, alpha=0.3)
 
     title_str = (
-        f'DA Utility - Normalized Kernel '
+        f'DA Utility - Arc-Sine Kernel '
         f'(M={config["M"]}, n_train={config["n_train"]}, '
         f'seed={config["seed"]}, cell={config["cell"]})  '
         f'test_r={test_r:.3f}, reliability={reliability:.3f}'
@@ -515,7 +554,7 @@ def main():
     fig.suptitle(title_str, fontsize=11)
     fig.tight_layout()
 
-    out_path = _script_dir / 'gradient_normalized.png'
+    out_path = _script_dir / 'gradient_arcsine.png'
     fig.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f"Saved: {out_path}")
     plt.close(fig)

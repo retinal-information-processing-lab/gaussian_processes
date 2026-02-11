@@ -67,6 +67,7 @@
     "adaptive_r_max": false,
     "adaptive_safety_k": 3.0,
     "adaptive_max_rmax": 10000,
-    "adaptive_min_rmax": 200
+    "adaptive_min_rmax": 200,
+    "f_max": 100.0
   }
 }

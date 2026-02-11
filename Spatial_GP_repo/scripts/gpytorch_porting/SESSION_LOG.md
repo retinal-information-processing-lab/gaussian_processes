@@ -1,5 +1,35 @@
 # Session Log
 
+## 2026-02-11b: LBFGS upgrade, f_max guard, cross-kernel parity
+Implemented LBFGS optimizer in gradient_arcsine.py (replaces plain GD). Investigated norm-driven utility divergence: optimizer exploits firing rate growth (0.49→5.82 spikes), confirmed with DEBUG diagnostics. Added f_max=100.0 firing rate guard to LBFGS closure (returns +inf to reject high-rate steps). Wired f_max through default_params.json, both YAMLs, and config builders. Upgraded gradient_unnormalized.py and gradient_normalized.py with same features (LBFGS, f_max, RF metrics, diagnostics). Fixed explore_utility.py output filename. All three kernel investigation folders now consistent.
+
+## 2026-02-11: Arc-sine utility exploration scripts + LBFGS plan
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-11_arcsine-utility-exploration-lbfgs.md`
+**Plan**: `.claude/plans/merry-nibbling-sutton.md`
+**Status**: Handed off for continuation
+
+Created `explore_utility_arcsine.py` and `gradient_arcsine.py` in `investigations/arcsine_kernel/`. Both verified working. Arc-sine saturation confirmed: sqrt(K(x,x)) clusters near 1.0. User changed N_TRAIN to 300 for better model. LBFGS upgrade for gradient ascent planned and approved but not yet implemented.
+
+## 2026-02-10: Fix beta viz bug, smoothed argmax RF center, port viz to run_single_mode
+**Branch**: `pietro/arcsine-kernel`
+
+**Accomplished:**
+- Corrected previous session's wrong beta analysis: sigma=7.6px not 120px (parameterization confusion)
+- Fixed RF sigma formula in visualization: `beta*sqrt(2)` not `sqrt(1/(2*beta))`
+- Replaced CoM with smoothed argmax in `utils.py:compute_rf_center_from_sta()` (12.9px error → 0px)
+- Removed DEBUG closure counters from gpy_training.py
+- Ported STA+RF 2x2 visualization to `run_single_mode.py` (both default_gpy and vargp_direct)
+
+**Documentation updated:** HANDOFF.md (corrected beta section), MEMORY.md (added beta parameterization notes)
+
+**Known issues:** Arc-sine M=100 test_r regression (0.765→0.545), LBFGS stuck pattern at M=50
+
+## 2026-02-10: params_in_bounds, LBFGS diagnostics, RF visualization
+**Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Added `params_in_bounds()` to kernel and likelihood, updated all LBFGS closures. STA+RF visualization in run_arcsine.py. Found: initial beta=0.1 covers entire image (sigma=120px — CORRECTED in next session: actually 7.6px), STA CoM is 12.9px off peak. Temp debug counters in gpy_training.py need removal.
+
 ## 2026-02-10: Arc-sine kernel implementation + LBFGS NaN guard fix
 **Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
 **Status**: Continuing
