@@ -1,5 +1,9 @@
 # Session Log
 
+## 2026-02-11c: Arc-sine investigation paused
+**Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
+**Status**: Paused — branch `pietro/arcsine-kernel` parked, nothing urgent to merge to workingbranch.
+
 ## 2026-02-11b: LBFGS upgrade, f_max guard, cross-kernel parity
 Implemented LBFGS optimizer in gradient_arcsine.py (replaces plain GD). Investigated norm-driven utility divergence: optimizer exploits firing rate growth (0.49→5.82 spikes), confirmed with DEBUG diagnostics. Added f_max=100.0 firing rate guard to LBFGS closure (returns +inf to reject high-rate steps). Wired f_max through default_params.json, both YAMLs, and config builders. Upgraded gradient_unnormalized.py and gradient_normalized.py with same features (LBFGS, f_max, RF metrics, diagnostics). Fixed explore_utility.py output filename. All three kernel investigation folders now consistent.
 
