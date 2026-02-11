@@ -37,7 +37,7 @@ _gpytorch_dir = _script_dir.parent.parent
 sys.path.insert(0, str(_gpytorch_dir))
 
 from explore_utility_arcsine import setup
-from acquisition import distribution_aware_utility
+from acquisition import distribution_aware_utility, get_gp_marginal_moments, compute_H
 from run_arcsine import load_pnas_data
 from gpy_training import predict
 from metrics import compute_pearson_correlation, compute_explained_variance
@@ -124,12 +124,16 @@ def rf_proj_coeff(x, target, rf_mask):
     return ((a * b).sum() / denom).item()
 
 
-def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max,
+def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
                     n_steps, lr, max_iter, max_eval, history_size):
     """LBFGS gradient ascent maximizing U_DA(x | observe A).
 
     Uses torch.optim.LBFGS with strong_wolfe line search. Each outer step
     performs up to max_iter internal iterations (each evaluating the closure).
+
+    Firing rate guard: if predicted firing rate exceeds f_max, closure returns
+    +inf loss so the line search rejects that step (same pattern as model
+    training closures using params_in_bounds()).
 
     Tracks two convergence metrics (RF-masked):
       - pearson_r: structural similarity (1.0 = perfect pattern match)
@@ -166,6 +170,10 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max,
                 adaptive_r_max=False,
                 sample_lambda=False,
             )
+            # Firing rate guard: reject if predicted rate exceeds f_max
+            mu_g = result['mu_g_marg']
+            if torch.exp(mu_g).item() > f_max:
+                return torch.tensor(float('inf'), device=x_opt.device)
             loss = -result['utility'].squeeze()  # minimize negative = maximize
             loss.backward()
             return loss
@@ -218,6 +226,7 @@ def main():
     X_pool = env['X_pool']
     config = env['config']
     r_max = config['r_max']
+    f_max = config['f_max']
     n_px_side = config['n_px_side']
 
     # --- Optional sigma_0 override ---
@@ -329,7 +338,7 @@ def main():
     print("=" * 70)
 
     x_final, history = gradient_ascent(
-        model, likelihood, x_perturbed, x_target, rf_mask, r_max,
+        model, likelihood, x_perturbed, x_target, rf_mask, r_max, f_max,
         N_STEPS, LR, LBFGS_MAX_ITER, LBFGS_MAX_EVAL, LBFGS_HISTORY_SIZE
     )
 
@@ -339,6 +348,23 @@ def main():
     print(f"  Pearson r (RF): {history['pearson_r'][0]:.4f} -> {history['pearson_r'][-1]:.4f}")
     print(f"  Proj coeff (RF): {history['proj_coeff'][0]:.4f} -> {history['proj_coeff'][-1]:.4f}")
     print(f"  ||final||={x_final.norm().item():.2f}")
+
+    # --- DEBUG: firing rate diagnostics (target vs optimized) ---
+    print(f"\n  DEBUG: Firing rate diagnostics (f_max={f_max})")
+    A = likelihood.A.squeeze()
+    lam0 = likelihood.lambda0.squeeze()
+    with torch.no_grad():
+        for label, x_img in [('target', x_target), ('start', x_perturbed), ('final', x_final)]:
+            mu, sigma2 = get_gp_marginal_moments(model, x_img.unsqueeze(0))
+            mu_g = A * mu + lam0                # log-firing rate mean
+            sigma2_g = A**2 * sigma2            # log-firing rate variance
+            firing_rate = torch.exp(mu_g).item()  # expected spike count
+            H = compute_H(mu, sigma2, r_max=r_max, a=A, lambda0=lam0).item()
+            flag = " ** EXCEEDS f_max" if firing_rate > f_max else ""
+            print(f"    {label:8s}: lambda_m={mu.item():.4f}, lambda_var={sigma2.item():.4f}, "
+                  f"mu_g={mu_g.item():.4f}, firing_rate={firing_rate:.2f}, "
+                  f"H_marg={H:.6f}, ||x||={x_img.norm().item():.2f}{flag}")
+    # --- END DEBUG ---
 
     # === Step 5: Visualization ===
     print("\n" + "=" * 70)
