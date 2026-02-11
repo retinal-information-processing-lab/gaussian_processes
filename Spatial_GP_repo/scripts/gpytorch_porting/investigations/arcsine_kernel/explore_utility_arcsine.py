@@ -85,7 +85,7 @@ _ADAPTIVE_RMAX_PARAMS = {
 # ---------------------------------------------------------------------------
 # Default config
 # ---------------------------------------------------------------------------
-N_TRAIN = 100
+N_TRAIN = 70
 
 M = 50
 SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
