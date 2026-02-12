@@ -933,8 +933,9 @@ def run_single_config(config):
     # =========================================================================
     elif mode == 'default_gpy':
         base_kernel = LocalRBFKernel(
-            sigma_0=config['sigma_0'],
             n_px_side=n_px_side,
+            sigma_0=config['sigma_0'],
+            Amp=config['Amp'],
             eps_0x=eps_0x,
             eps_0y=eps_0y,
             beta=config['beta'],

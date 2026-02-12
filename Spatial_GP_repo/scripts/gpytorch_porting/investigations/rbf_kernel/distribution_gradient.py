@@ -48,7 +48,7 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Investigation parameters (visible, explicit)
 # Model params (M=50, N_TRAIN=50) are set in explore_utility_rbf.py¡
 # ---------------------------------------------------------------------------
-N_SAMPLE = 500            # number of conditioning images from pool
+N_SAMPLE = 100            # number of conditioning images from pool
 NOISE_AMP = 0.01         # amplitude of starting noise on top of mean gray
 SAMPLE_LAMBDA = False    # True: stochastic lambda samples; False: deterministic (mean)
 
@@ -57,7 +57,7 @@ USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to datas
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 2             # outer LBFGS steps
-LR = 0.01                 # LBFGS step size
+LR = 5.1                 # LBFGS step size
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
@@ -314,7 +314,21 @@ def main():
 
     correlations = np.array(correlations)
     best_idx = np.argmax(correlations)
-    print(f"  Best match: pool[{best_idx}] with Pearson r = {correlations[best_idx]:.4f}")
+
+    # DA utility of the best-match pool image (for comparison with optimized)
+    with torch.no_grad():
+        best_result = distribution_aware_utility(
+            model, likelihood,
+            x_samples[best_idx].unsqueeze(0),
+            x_samples,
+            r_max=None, adaptive_r_max=True, sample_lambda=SAMPLE_LAMBDA,
+            adaptive_safety_k=config['adaptive_safety_k'],
+            adaptive_max_rmax=config['adaptive_max_rmax'],
+            adaptive_min_rmax=config['adaptive_min_rmax'],
+        )
+        u_best = best_result['utility'].item()
+
+    print(f"  Best match: pool[{best_idx}] with Pearson r = {correlations[best_idx]:.4f}, U_DA = {u_best:.6f}")
     print(f"  Correlation range: [{correlations.min():.4f}, {correlations.max():.4f}]")
     print(f"  Mean correlation: {correlations.mean():.4f}")
 
@@ -376,9 +390,9 @@ def main():
     # Top row: 4 images
     images = [img_start, img_final, img_best, img_diff]
     titles = [
-        f'Start (mean gray + noise)',
+        f'Start (mean gray + noise)\nU_DA={history["utility"][0]:.4f}',
         f'Final (grad ascent)\nU_DA={history["utility"][-1]:.4f}',
-        f'Best match (pool[{best_idx}])\nr={correlations[best_idx]:.4f}',
+        f'Best match (pool[{best_idx}])\nr={correlations[best_idx]:.4f}, U_DA={u_best:.4f}',
         'Final - Start',
     ]
     cmaps = ['gray', 'gray', 'gray', 'RdBu_r']

@@ -58,8 +58,8 @@ SIGMA_SMOOTH = 10.0       # Gaussian smoothing sigma for perturbation
 TARGET_INDEX = 50         # which pool image to use as target
 
 # --- Pixel bounds (experimental, may be reverted) ---
-USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to [vmin, vmax]
-BOUNDS_MODE = 'target'      # Options: 'dataset' (full RF range), 'target' (target image range),
+USE_SIGMOID_BOUNDS = False   # sigmoid reparametrization: pixels bounded to [vmin, vmax]
+BOUNDS_MODE = 'dataset'      # Options: 'dataset' (full RF range), 'target' (target image range),
                              #          'percentile' (pool percentiles)
 PERCENTILE_LO = 5            # for 'percentile' mode
 PERCENTILE_HI = 95           # for 'percentile' mode
@@ -69,8 +69,8 @@ N_INTERP = 21            # interpolation points along path
 N_LAMBDA_SAMPLES = 50 if SAMPLE_LAMBDA else 1  # MC samples; >1 only useful with SAMPLE_LAMBDA=True
 
 # --- LBFGS optimizer parameters ---
-N_STEPS = 50             # outer LBFGS steps
-LR = 0.1                 # LBFGS step size (1.0 standard for quasi-Newton)
+N_STEPS = 4             # outer LBFGS steps
+LR = 1                 # LBFGS step size (1.0 standard for quasi-Newton)
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
 LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
@@ -213,6 +213,7 @@ def gradient_ascent(model, likelihood, x_start, x_target, rf_mask, r_max, f_max,
         'pearson_r': [], 'proj_coeff': [],
     }
 
+
     for step in range(n_steps):
         def closure():
             if n_lambda_samples > 1:
@@ -299,6 +300,16 @@ def main():
     r_max = config['r_max']
     f_max = config['f_max']
     n_px_side = config['n_px_side']
+
+    # --- Expose kernel rho for manual override before inference ---
+    # rho is a read-only property; actual param is raw_mlog2rho2
+    # Transform: raw = -log(2 * rho^2), rho = exp(-raw/2) / sqrt(2)
+    kernel = model.covar_module
+    print(f"  Kernel rho (trained): {kernel.rho.item():.6f}")
+    # Uncomment to override:
+    # RHO = kernel.rho.item() / 2
+    # with torch.no_grad():
+    #     kernel.raw_mlog2rho2.fill_(-np.log(2 * RHO**2))
 
     # --- Test evaluation ---
     # Absolute path — worktree directory structure doesn't match main repo
@@ -555,7 +566,8 @@ def main():
     labels = ['Target', 'Start', 'Final']
     for i, (img, title, label) in enumerate(zip(images, titles, labels)):
         ax = fig.add_subplot(2, 4, i + 1)
-        im = ax.imshow(img, cmap='gray', vmin=vmin, vmax=vmax, aspect='equal')
+        # im = ax.imshow(img, cmap='gray', vmin=vmin, vmax=vmax, aspect='equal')
+        im = ax.imshow(img, cmap='gray', aspect='equal')    
         ax.set_title(title, fontsize=10)
         ax.axis('off')
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
