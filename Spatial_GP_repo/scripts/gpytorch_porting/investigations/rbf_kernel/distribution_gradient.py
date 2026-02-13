@@ -39,7 +39,8 @@ sys.path.insert(0, str(_gpytorch_dir))
 
 from explore_utility_rbf import setup
 from gradient_rbf import _reconstruct_image
-from acquisition import distribution_aware_utility, get_gp_marginal_moments, compute_H, compute_adaptive_rmax
+from acquisition import (distribution_aware_utility, get_gp_marginal_moments,
+                         get_gp_conditional_moments, compute_H, compute_adaptive_rmax)
 from run_rbf import load_pnas_data
 from gpy_training import predict
 from metrics import compute_pearson_correlation, compute_explained_variance
@@ -49,14 +50,14 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Model params (M=50, N_TRAIN=50) are set in explore_utility_rbf.py¡
 # ---------------------------------------------------------------------------
 N_SAMPLE = 100            # number of conditioning images from pool
-NOISE_AMP = 0.01         # amplitude of starting noise on top of mean gray
+NOISE_AMP = 1.         # amplitude of starting noise on top of mean gray
 SAMPLE_LAMBDA = False    # True: stochastic lambda samples; False: deterministic (mean)
 
 # --- Pixel bounds ---
-USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
+USE_SIGMOID_BOUNDS = False   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
 
 # --- LBFGS optimizer parameters ---
-N_STEPS = 2             # outer LBFGS steps
+N_STEPS = 3             # outer LBFGS steps
 LR = 5.1                 # LBFGS step size
 LBFGS_MAX_ITER = 20      # max iterations per LBFGS step (line search evals)
 LBFGS_MAX_EVAL = 25      # max function evaluations per LBFGS step
@@ -124,29 +125,78 @@ def gradient_ascent_da(model, likelihood, x_start, x_samples, rf_mask,
         'step': [], 'utility': [], 'H_marg': [], 'H_cond': [], 'grad_norm': [],
     }
 
+    A_val = likelihood.A.squeeze().detach()
+    lam0_val = likelihood.lambda0.squeeze().detach()
+    n_mc = x_samples.shape[0]
+
     for step in range(n_steps):
         def closure():
             optimizer.zero_grad()
             x_rf_pixels = _to_pixel(opt_var)
             x_full = _reconstruct_image(x_rf_pixels, rf_mask, n_pixels, dtype, device)
-            result = distribution_aware_utility(
-                model, likelihood,
-                x_full.unsqueeze(0),
-                x_samples,
-                r_max=None,
-                adaptive_r_max=True,
-                sample_lambda=sample_lambda,
-                adaptive_safety_k=adaptive_safety_k,
-                adaptive_max_rmax=adaptive_max_rmax,
-                adaptive_min_rmax=adaptive_min_rmax,
-            )
+            x_query = x_full.unsqueeze(0)
+
+            # --- H_marg (one small graph) ---
+            mu_marg, sigma2_marg = get_gp_marginal_moments(model, x_query)
+            mu_g_marg = A_val * mu_marg + lam0_val
+
             # Firing rate guard
-            mu_g = result['mu_g_marg']
-            if torch.exp(mu_g).item() > f_max:
+            if torch.exp(mu_g_marg).item() > f_max:
                 return torch.tensor(float('inf'), device=device)
-            loss = -result['utility'].squeeze()
-            loss.backward()
-            return loss
+
+            with torch.no_grad():
+                r_max_marg = compute_adaptive_rmax(
+                    mu_g_marg, A_val ** 2 * sigma2_marg,
+                    safety_k=adaptive_safety_k,
+                    max_rmax=adaptive_max_rmax,
+                    min_rmax=adaptive_min_rmax)
+
+            H_marg = compute_H(mu_marg, sigma2_marg, r_max=r_max_marg,
+                               a=A_val, lambda0=lam0_val)
+            h_marg_val = H_marg.item()
+
+            # Per-sample backward: loss = -utility = -H_marg + E[H_cond]
+            # Accumulate d(loss)/dx = -d(H_marg)/dx + d(H_cond)/dx
+            (-H_marg).squeeze().backward()  # -d(H_marg)/dx, frees graph
+
+            # H_cond: one backward per MC sample (O(1) memory).
+            # Rebuild x_query each time — previous backward freed its graph.
+            h_cond_sum = 0.0
+            for i in range(n_mc):
+                x_i = x_samples[i]
+                with torch.no_grad():
+                    post_i = model(x_i.unsqueeze(0))
+                    mu_i = post_i.mean[0]
+                    if sample_lambda:
+                        lambda_i = mu_i + post_i.variance[0].sqrt() * torch.randn(
+                            1, dtype=mu_i.dtype, device=mu_i.device)
+                    else:
+                        lambda_i = mu_i
+
+                # Fresh x_query graph for this sample's backward
+                x_rf_pixels_i = _to_pixel(opt_var)
+                x_full_i = _reconstruct_image(x_rf_pixels_i, rf_mask, n_pixels, dtype, device)
+                x_query_i = x_full_i.unsqueeze(0)
+
+                mu_cond, sigma2_cond = get_gp_conditional_moments(
+                    model, x_query_i, x_i, lambda_i)
+
+                with torch.no_grad():
+                    r_max_cond = compute_adaptive_rmax(
+                        A_val * mu_cond + lam0_val, A_val ** 2 * sigma2_cond,
+                        safety_k=adaptive_safety_k,
+                        max_rmax=adaptive_max_rmax,
+                        min_rmax=adaptive_min_rmax)
+
+                H_cond_i = compute_H(mu_cond, sigma2_cond, r_max=r_max_cond,
+                                     a=A_val, lambda0=lam0_val)
+                h_cond_sum += H_cond_i.item()
+
+                (H_cond_i.squeeze() / n_mc).backward()  # +d(H_cond)/dx, frees graph
+
+            # Return scalar loss for LBFGS line search
+            loss_val = -(h_marg_val - h_cond_sum / n_mc)
+            return torch.tensor(loss_val, device=device)
 
         optimizer.step(closure)
 
