@@ -463,6 +463,14 @@ class DirectVGPModel:
         # Compute initial eigenspace
         self._state = _compute_initial_eigenspace(kernel, X_train, X_tilde, eigval_tol)
 
+    def eval(self):
+        """No-op for compatibility with code that calls model.eval()."""
+        return self
+
+    def train(self, mode=True):
+        """No-op for compatibility with code that calls model.train()."""
+        return self
+
     def update_variational_params(self, m_b: torch.Tensor, V_b: torch.Tensor) -> None:
         """Update variational parameters after E-step.
 
