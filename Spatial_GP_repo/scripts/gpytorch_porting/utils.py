@@ -302,6 +302,10 @@ def get_gp_marginal_moments(model, x_star):
     Returns:
         mu: (N,) posterior means at x_star.
         sigma2: (N,) posterior variances at x_star.
+
+    TODO: model.eval() assumes an nn.Module. DirectVGPModel uses no-op
+        eval()/train() shims to satisfy this. Refactor to either use a
+        proper protocol/ABC or guard the call with hasattr.
     """
     model.eval()
     posterior = model(x_star)

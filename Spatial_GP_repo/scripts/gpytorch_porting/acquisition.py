@@ -51,6 +51,10 @@ def standard_utility(model, likelihood, x_candidates, r_max, adaptive_r_max,
     Works with any model that returns .mean and .variance (both default_gpy
     and vargp_direct).
 
+    TODO: Calls get_gp_marginal_moments() which assumes model.eval() exists
+        (nn.Module interface). DirectVGPModel uses no-op shims for this.
+        Refactor to use a proper model protocol or remove the eval() call.
+
     Args:
         model: Trained GP model. Must be in eval mode.
         likelihood: PoissonLikelihood with .A and .lambda0 attributes.
