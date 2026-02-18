@@ -297,7 +297,7 @@ def predict_eigenspace(model, X_test: torch.Tensor) -> Dict:
 
     with torch.no_grad():
         # Compute cross-kernel to inducing points
-        K_test = kernel(X_test, X_tilde).evaluate()  # (N_test, M)
+        K_test = kernel(X_test, X_tilde).to_dense()  # (N_test, M)
         Kvec_test = kernel(X_test, diag=True)  # (N_test,)
 
         # Project to eigenspace

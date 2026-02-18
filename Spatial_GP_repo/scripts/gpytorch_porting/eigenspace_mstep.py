@@ -68,8 +68,8 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         # Compute kernels WITH gradients
-        K_tilde = kernel(X_tilde, X_tilde).evaluate()
-        K = kernel(X, X_tilde).evaluate()
+        K_tilde = kernel(X_tilde, X_tilde).to_dense()
+        K = kernel(X, X_tilde).to_dense()
         Kvec = kernel(X, diag=True)
 
         # Project into FIXED eigenspace (use state.B)

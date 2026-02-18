@@ -108,8 +108,8 @@ def _compute_eigenspace_quantities(
     # Step 1: Compute kernel matrices using GPyTorch kernel
     # -------------------------------------------------------------------------
     with torch.no_grad():
-        K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M) inducing kernel
-        K = kernel(X_train, X_tilde).evaluate()        # (N, M) cross-kernel
+        K_tilde = kernel(X_tilde, X_tilde).to_dense()  # (M, M) inducing kernel
+        K = kernel(X_train, X_tilde).to_dense()        # (N, M) cross-kernel
         Kvec = kernel(X_train, diag=True)              # (N,) diagonal k(x_i, x_i)
 
     # Get mask if kernel uses masking
@@ -340,7 +340,7 @@ class EigenspacePosterior:
         # Test points: compute fresh
         with torch.no_grad():
             # Cross-kernel to inducing points
-            K_query = self._kernel(self._X_query, self._X_tilde).evaluate()  # (N_query, M)
+            K_query = self._kernel(self._X_query, self._X_tilde).to_dense()  # (N_query, M)
             Kvec_query = self._kernel(self._X_query, diag=True)  # (N_query,)
 
             # Project to eigenspace
