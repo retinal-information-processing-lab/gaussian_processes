@@ -116,12 +116,30 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
+## Kernel Selection
+
+Use `--kernel-type TYPE` in CLI (default: `arc_cosine` from `default_params.json`):
+
+| Type | Class | Key property |
+|------|-------|-------------|
+| `arc_cosine` | `ArcCosineKernel` | K(x,x) ~ ||x||^2. Default, best test_r. |
+| `arc_sine` | `ArcSineKernel` | K(x,x) saturates at 1 (erf activation). |
+| `rbf` | `LocalRBFKernel` | K(x,x) = 1 (stationary). Extra `--lengthscale` param. |
+
+All kernels share the same RF structure (C matrix with beta, rho, eps_0). Factory: `create_kernel()` in `kernels.py`.
+
+Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
+
+**Restrictions**: `vargp_old` mode requires `arc_cosine`. Analytical gradients (`vjp`, `jacobian`) require `arc_cosine`.
+
+---
+
 ## File Map
 
 ### Shared Components (used by both implementations)
 | File | Purpose |
 |------|---------|
-| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized, ArcSineKernel. `params_in_bounds()` + `clamp_hyperparameters()` for LBFGS defense. |
+| `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized, ArcSineKernel, LocalRBFKernel. `create_kernel()` factory, `KERNEL_TYPES`. `params_in_bounds()` + `clamp_hyperparameters()` for LBFGS defense. |
 | `likelihoods.py` | PoissonLikelihood with A, lambda0. `params_in_bounds()` + `clamp_params()` for LBFGS defense. Bounds: A_MAX=10, lambda0 in [-50, 50]. |
 | `metrics.py` | Evaluation functions (r², Pearson r, explained variance) |
 | `utils.py` | Shared utilities (lambda0_given_A, compute_f_mean, STA-based RF center) |
@@ -177,9 +195,8 @@ Use `--gradient-mode MODE` in CLI:
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/understanding_utility/` | Unnormalized arc-cosine kernel: `explore_utility.py` (utility workbench/library), `gradient_unnormalized.py` (LBFGS gradient ascent with f_max guard + RF metrics). Baseline for comparison with other kernels. |
-| `investigations/normalized_kernel/` | Normalized arc-cosine kernel: validation (`validate_kernel.py`), training (`run_normalized.py`), `explore_utility_normalized.py`, `gradient_normalized.py` (LBFGS + f_max). Key findings: test_r drops ~25%, utility divergence eliminated. |
-| `investigations/arcsine_kernel/` | Arc-sine kernel (Williams 1998): `run_arcsine.py` (training), `explore_utility_arcsine.py`, `gradient_arcsine.py` (LBFGS + f_max). Key finding: kernel saturates at K(x,x)→1, limits but doesn't eliminate norm-driven utility growth. All three gradient scripts share consistent structure: LBFGS optimizer, f_max guard, RF-masked pearson_r/proj_coeff metrics, firing rate diagnostics. |
+| `investigations/utility/` | Unified utility investigation scripts for all kernel types. `explore_utility.py` (utility workbench with `--kernel-type`), `gradient.py` (LBFGS gradient ascent with `--kernel-type`), `HANDOFF.md` (consolidated findings). |
+| `investigations/understanding_utility/` | Reference material: `entropy_landscape.py` + docs, `test_compute_H_MC.py`, math TeX docs, `key_facts.md`, `HANDOFF.md`. Per-kernel explore/gradient scripts deleted (superseded by `utility/`). |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -201,34 +218,22 @@ Use `--gradient-mode MODE` in CLI:
 **Current implementation:**
 - All dependencies are local (in `utils.py`, no playground imports)
 - Fully differentiable (gradient flow from x* through kernel into utility)
-- Works with `ArcCosineKernel`, `ArcCosineKernelNormalized`, and `ArcSineKernel`
+- Works with `ArcCosineKernel`, `ArcCosineKernelNormalized`, `ArcSineKernel`, and `LocalRBFKernel`
 - Both functions return `mu_g_marg` (log-firing rate) for f_max firing rate guard
 - `f_max` parameter (default 100.0) wired through `default_params.json` and YAML configs
-- LBFGS gradient-based x* optimization implemented in all three gradient investigation scripts
+- LBFGS gradient-based x* optimization in unified `investigations/utility/gradient.py` (supports all kernel types via `--kernel-type`)
 
 **Deferred (acquisition functions)**:
 - vargp_direct support (needs augmented matrix approach for distribution-aware utility)
 - Scalability for large candidate pools
 
 ### Normalized Arc-Cosine Kernel - INVESTIGATED (Feb 2026)
-`ArcCosineKernelNormalized` class in `kernels.py:493-557` implements K_bar(x,y) = J(theta)/pi with constant diagonal = 1.0.
+`ArcCosineKernelNormalized` class in `kernels.py` implements K_bar(x,y) = J(theta)/pi with constant diagonal = 1.0. NOT included in `KERNEL_TYPES` or `create_kernel()` — deprecated for active use.
 
-**Investigation**: `investigations/normalized_kernel/` contains validation suite (17/17 tests pass) and training scripts.
-
-**Key finding** (PNAS cell 8, M=100, seed=42):
-- Unnormalized test_r: 0.791
-- Normalized test_r: 0.594 (~25% drop)
-- **Conclusion**: Image norm (magnitude of x^T C x) carries genuine signal for neural encoding, not just a utility optimization nuisance.
-
-**Utility behavior** (Feb 2026):
-- Created `investigations/normalized_kernel/explore_utility_normalized.py` (copy of `explore_utility.py` with normalized kernel)
-- **Result**: Normalized kernel eliminates norm-driven utility divergence
-  - Unnormalized: scaling image by 5x increases utility 38-56x (||x||_C grows 25.9→129.2)
-  - Normalized: scaling by 5x keeps utility stable (||x||_C constant at 1.0)
-- Utilities now depend on angular structure (RF alignment), not magnitude
-- Both kernels work with `acquisition.py` functions (default_gpy mode only)
-
-**Status**: Normalized kernel validated for utility optimization. Available for gradient-based stimulus search if needed.
+**Investigation folder deleted** (Feb 2026, retrievable from git). Key findings preserved:
+- test_r drops ~25% (0.79 -> 0.59) — image norm is genuinely informative for neural encoding
+- Eliminates norm-driven utility divergence (scaling by 5x keeps utility stable)
+- Not a practical solution due to accuracy loss
 
 ### Multi-Cell Validation - DEFERRED
 Cell 8 and 10 validation sufficient for initial implementation.
