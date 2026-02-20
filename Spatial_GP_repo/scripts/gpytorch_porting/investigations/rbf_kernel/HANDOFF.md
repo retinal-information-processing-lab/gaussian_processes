@@ -1,154 +1,166 @@
-# Investigation: LocalRBFKernel with C Matrix
+# Investigation: RBF Kernel - Multi-Image DA Utility Optimization
 
 **Branch**: `pietro/rbf-kernel`
-**Date**: 2026-02-11
+**Date**: 2026-02-12
 **Status**: Continuing
 **Location**: `investigations/rbf_kernel/`
-**Worktree**: `/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/gpytorch_porting_rbf_kernel`
+**Worktree**: `/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting_rbf/Spatial_GP_repo/scripts/gpytorch_porting`
 
 ---
 
 ## Problem Statement
 
-Compare a stationary RBF kernel against the existing non-stationary arc-cosine kernel for modeling neural responses to visual stimuli. The RBF kernel uses the **same C matrix** (receptive field structure) as the arc-cosine kernel, enabling an apples-to-apples comparison of kernel families while keeping the spatial structure identical.
+Gradient ascent on DA utility with the RBF kernel causes pixel saturation — even with sigmoid bounds (dataset range), pixels hit the limits. Two approaches being explored:
 
-The scientific question: how much does stationarity (constant k(x,x) = 1) hurt, given that the arc-cosine kernel's norm-dependent diagonal carries genuine signal about stimulus contrast?
+1. **Multi-image conditioning**: Condition on N_SAMPLE (~50-200) pool images instead of 1 target. The DA utility itself becomes the regularizer.
+2. **Tighter pixel bounds**: Constrain pixels to target image range or pool percentiles.
 
-## Implementation — Complete
+Additionally, when using multiple lambda samples (`SAMPLE_LAMBDA=True, N_LAMBDA_SAMPLES=250`), the original code OOMs due to computation graph accumulation. A per-sample backward approach was implemented but has a remaining bug.
 
-### Kernel class: `LocalRBFKernel` in `kernels.py`
+## What Was Done This Session
 
-**Formula**:
-```
-k(x, x') = exp(-(x - x')^T C_base (x - x') / (2 l^2))
-```
+### 1. Created distribution_gradient.py (committed c1b19c0)
+- **What**: New script for LBFGS gradient ascent on DA utility conditioned on N_SAMPLE pool images
+- **Key design**: Imports `setup()` from `explore_utility_rbf`, `_reconstruct_image()` from `gradient_rbf`. Starting image = uniform gray at mean RF intensity of sampled images + small noise.
+- **Result**: With N_SAMPLE=50, the optimizer converges immediately (U_DA: 0.0693 -> 0.0694, then flat). Gradient norm ~1.3e-5. The 50 conditioning images' gradients cancel each other out.
+- **Verdict**: Inconclusive — the flat landscape could be due to genuinely canceling gradients or due to the model's low test_r (0.25).
 
-**C_base** (RF structure, NO Amp):
-```
-C_base = diag(alpha) @ C_smooth @ diag(alpha)
+### 2. Added BOUNDS_MODE to gradient_rbf.py (committed c1b19c0)
+- **What**: Added `BOUNDS_MODE` parameter ('dataset', 'target', 'percentile') with `PERCENTILE_LO`/`PERCENTILE_HI`. Overrides vmin/vmax after x_target is defined.
+- **Status**: Complete, ~15 lines of code.
 
-alpha_i     = exp(-beta_raw * ||pixel_i - center||^2)
-C_smooth_ij = exp(-rho_raw * ||pixel_i - pixel_j||^2)
-```
+### 3. Fixed OOM in acquisition.py (committed c1b19c0)
+- **What**: Wrapped `model(x_i.unsqueeze(0))` calls inside `distribution_aware_utility()`'s MC loop in `torch.no_grad()`.
+- **Why**: Each `model(x_i)` built a computation graph for the conditioning image. With N_SAMPLE=100+, all graphs accumulated in memory before `backward()`. These graphs contributed zero gradient to x* (the query being optimized).
+- **Status**: Complete. Memory for conditioning images is now O(1) instead of O(N_SAMPLE).
 
-where `beta_raw = exp(raw_m2log2beta)`, `rho_raw = exp(raw_mlog2rho2)`.
+### 4. Wired adaptive r_max into run_rbf.py (committed d24637b)
+- **What**: Added `adaptive_r_max`, `adaptive_safety_k`, `adaptive_max_rmax`, `adaptive_min_rmax` from `default_params.json` into `run_rbf.build_config_from_defaults()`. Was missing, causing KeyError.
 
-**Design**: Subclasses `ArcCosineKernel` (same pattern as `ArcSineKernel`). Overrides:
-- `_compute_C_matrix()` — drops the `self.Amp *` multiplication
-- `forward()` — RBF formula with `/ self.lengthscale**2`
-- `params_in_bounds()` — adds lengthscale bounds check
-- `clamp_hyperparameters()` — adds lengthscale clamping
-
-### Hyperparameter table
-
-| Param | Role | Raw storage | Transform | Bounds | Optimized? |
-|-------|------|-------------|-----------|--------|------------|
-| l | Distance sensitivity | `raw_log_lengthscale` | l = exp(raw) | [0.1, 100000] | Yes (LBFGS) |
-| beta | RF size | `raw_m2log2beta` | beta = exp(-raw/2)/2 | [0.01, 1.0] | Yes (LBFGS) |
-| rho | Pixel smoothness | `raw_mlog2rho2` | rho = exp(-raw/2)/sqrt(2) | [0.01, 0.5] | Yes (LBFGS) |
-| eps_0x/y | RF center | direct | none | [-1, 1] | Yes (LBFGS) |
-| sigma_0 | (inherited, unused) | `raw_sigma_0` | softplus | >0 | No (zero grad) |
-| Amp | (inherited, unused) | `raw_Amp` | softplus | (0, 1000] | No (zero grad) |
-
-### Investigation script: `investigations/rbf_kernel/run_rbf.py`
-
-Copy of `run_arcsine.py` with kernel swapped to `LocalRBFKernel`. Supports `--lengthscale` CLI arg (default 100.0, RBF-specific, not in `default_params.json`). Uses absolute path to PNAS data (worktree doesn't have notebooks/ symlink).
-
-## What Was Tried
-
-### Attempt 1: Amp as lengthscale (initial commit 9ae87b7)
-- **What**: Used inherited Amp parameter directly in `(x-y)^T C (x-y)` (C includes Amp)
-- **Result**: Amp=1.0 (arc-cosine default) gives dist_sq ~ O(10^4), all kernel values = 0. Manual Amp=0.001 gave test_r=0.554, Amp=0.0001 gave test_r=0.580.
-- **Interpretation**: Amp controls distance scale exponentially in the RBF exponent (vs angular structure in arc-cosine). Default initialization is catastrophically wrong. Manual tuning required.
-- **Verdict**: Dead end — replaced by lengthscale reparametrization.
-
-### Attempt 2: Log-space lengthscale (commit 565717b)
-- **What**: Removed Amp from C_base, added new `raw_log_lengthscale` parameter with l = exp(raw). Default l=100.
-- **Result**: test_r=0.7785 (M=50, cell 8, seed 42). Lengthscale learned from 100 -> 17.1. Loss 391 (best so far). A=1.123, lambda0=0.236.
-- **Interpretation**: Log-space lets LBFGS navigate scale freely. Major improvement over manual Amp tuning.
-- **Verdict**: Promising — current implementation. Continue from here.
+### 5. Per-sample backward approach (UNCOMMITTED — HAS BUG)
+- **What**: Replaced the single big `loss.backward()` with per-sample backward in both `gradient_rbf.py` and `distribution_gradient.py`. Since loss = -utility = -H_marg + E[H_cond], we accumulate d(loss)/dx via `(-H_marg).backward()` then `(H_cond_i / n_mc).backward()` per sample, freeing each graph immediately. Memory O(1) per sample.
+- **Bug identified**: `A_val = likelihood.A.squeeze()` and `lam0_val = likelihood.lambda0.squeeze()` have `grad_fn` (they're derived from Parameters). `H_marg.backward()` traverses through A_val/lam0_val's grad_fn and frees their saved tensors. Then `H_cond_i.backward()` tries to traverse the same A_val/lam0_val nodes -> RuntimeError "backward through the graph a second time".
+- **Fix identified but not applied**: `.detach()` on A_val and lam0_val (we're not optimizing likelihood params, only image pixels). This was about to be applied when context ran out.
+- **Verdict**: The per-sample backward approach is correct in principle. Two fixes needed: (a) detach A_val/lam0_val, (b) recompute x_query fresh per MC sample (already done). After these two fixes, both scripts should work with large N_LAMBDA_SAMPLES.
 
 ## Key Findings
 
-1. CONFIRMED: The RBF kernel with C matrix works and trains successfully with `default_gpy` mode. test_r=0.7785 on PNAS cell 8, M=50, seed=42.
+1. CONFIRMED: With 50 conditioning images, DA utility gradient is essentially zero at natural images. Utility barely moves (0.0693 -> 0.0694). The averaging across diverse conditioning images cancels out directional gradients. The landscape is flat.
 
-2. CONFIRMED: Stationarity hurts but less than expected. test_r=0.78 vs arc-cosine ~0.84 is a ~7% drop. The normalized arc-cosine kernel (also constant diagonal) showed a ~25% drop (0.79 -> 0.59), so the RBF kernel recovers much of the performance through its different distance metric.
+2. CONFIRMED: `distribution_aware_utility()` accumulated O(N_SAMPLE) computation graphs in the MC loop, causing OOM with N>=100. Fixed by wrapping conditioning-image model() calls in `torch.no_grad()` (acquisition.py).
 
-3. CONFIRMED: Amp=1.0 is catastrophically wrong for the RBF kernel. C-weighted pairwise distances with Amp=1 are O(10^4), giving exp(-5000) = 0 for all pairs. The lengthscale reparametrization completely solves this.
+3. CONFIRMED: Per-sample backward requires fresh `x_query` per MC iteration because `H_marg.backward()` frees the graph from `opt_var` -> `x_query`. Fixed by recomputing `_to_pixel(opt_var)` + `_reconstruct_image()` each iteration (cheap ops).
 
-4. CONFIRMED: sigma_0 has no effect on the RBF kernel (bias cancels in x-y differences for stationary kernels). Amp also has no effect after the reparametrization (excluded from C_base). Both inherited, both have zero gradient.
+4. CONFIRMED (BUG): `A_val = likelihood.A.squeeze()` retains `grad_fn` (SqueezeBackward). When shared across multiple `backward()` calls, the second backward fails because the first freed A_val's saved tensors. Fix: `.detach()` since we only optimize image pixels, not likelihood parameters.
 
-5. CONFIRMED: Lengthscale gradient is non-zero (tested: grad=1.44 on synthetic data). LBFGS successfully optimizes it from init=100 to final=17.1 on real data.
-
-6. HYPOTHESIS: M=100 with the RBF kernel may have K_uu conditioning issues. One test (Amp=0.001, M=100) showed worse results than M=50 (test_r=0.485 vs 0.554, stuck at loss 455). Not investigated further after the reparametrization. Worth retesting with the lengthscale version.
+5. HYPOTHESIS: The per-sample backward approach should scale to N_LAMBDA_SAMPLES=250+ once both fixes (detach A_val/lam0_val + fresh x_query) are applied.
 
 ## Why This Was Stopped
 
-Context running out. Implementation is solid. Next steps are further evaluation and comparison.
+Context ran out. The A_val/lam0_val detach fix was identified and about to be applied to both scripts when the session ended.
 
 ## Things Noticed But Not Acted Upon
 
-1. The `default_params.json` in this worktree was missing `f_max` key (added in a later arcsine branch commit). Fixed by adding it manually. The worktree may be behind on other `default_params.json` changes too.
+1. `explore_utility_rbf.py` has N_TRAIN changed from 50 to 150 by the user (uncommitted in a previous session, now committed). The gradient scripts still use setup() which reads N_TRAIN from explore_utility_rbf.py.
 
-2. The data path in `run_rbf.py` uses an absolute path (`/home/.../Spatial_GP_repo/notebooks/PNAS_paper_sorted_data.npz`) because the worktree lacks the notebooks directory. This is fragile if the main repo moves.
+2. The model's test_r is only 0.2531 with RBF kernel (M=50, N_TRAIN=50). This is much lower than arc-cosine (~0.78). Could contribute to the flat utility landscape with multi-image conditioning.
 
-3. The kernel early-stops quickly (30 iterations). Might benefit from longer runs or disabling early stopping to see if performance improves.
-
-4. Only tested on cell 8, M=50, seed=42. No multi-cell or multi-seed validation yet.
-
-5. The `kernel.Amp = config['Amp']` line was removed from the default_gpy kernel creation in `run_rbf.py` (since Amp is unused). If someone compares parameters between run_rbf.py and run_arcsine.py, this difference could be confusing.
+3. User has been experimenting with many parameter combinations across both scripts. Current uncommitted state reflects latest experiments (see Uncommitted Changes).
 
 ## Uncommitted Changes
 
-Working tree is clean. Only untracked files are generated plots:
 ```
-Untracked: investigations/rbf_kernel/imgs/  (generated plots, safe to ignore)
+On branch pietro/rbf-kernel
+
+Modified (not staged):
+  .claude/rules/working_guidelines.md          # Minor additions
+  SESSION_LOG.md                                # Updated log entry
+  investigations/rbf_kernel/HANDOFF.md          # This file
+  investigations/rbf_kernel/distribution_gradient.py  # Per-sample backward + user param tweaks
+  investigations/rbf_kernel/gradient_rbf.py     # Per-sample backward + BOUNDS_MODE + user param tweaks
+
+Untracked:
+  investigations/rbf_kernel/distribution_gradient.png  # Generated plot (regenerable)
+  investigations/rbf_kernel/explore_utility_rbf.png    # Generated plot (regenerable)
+  investigations/rbf_kernel/imgs/                       # User-generated images
 ```
 
-## Files Created
+Key uncommitted code changes in gradient_rbf.py and distribution_gradient.py:
+- Per-sample backward closures (replacing single loss.backward())
+- Fresh x_query recomputation per MC sample
+- **BUG**: A_val/lam0_val NOT yet detached (fix identified, not applied)
+- User parameter tweaks (USE_SYNTHETIC=True, BOUNDS_MODE='percentile', LR=0.1, N_LAMBDA_SAMPLES=250, etc.)
+
+## Files Created This Session
 
 | File | Purpose | Keep/Delete |
 |------|---------|-------------|
-| `kernels.py` (modified) | Added `LocalRBFKernel` class (~140 lines) after `ArcSineKernel` | Keep |
-| `investigations/rbf_kernel/run_rbf.py` | Investigation script, copy of run_arcsine.py with RBF kernel | Keep |
-| `investigations/rbf_kernel/imgs/` | Generated plots from training runs | Optional (regenerable) |
-| `default_params.json` (modified) | Added `f_max: 100` to utility section | Keep |
-| `investigations/rbf_kernel/HANDOFF.md` | This file | Keep |
+| `investigations/rbf_kernel/distribution_gradient.py` | Multi-image DA utility LBFGS optimization | Keep |
+| `investigations/rbf_kernel/distribution_gradient.png` | Generated plot from first run (N=50, flat result) | Optional (regenerable) |
 
 ## If Someone Revisits This
 
-**Most promising next steps (in order):**
-1. Run M=100 with the new lengthscale reparametrization (the M=100 failure was with old Amp approach)
-2. Test on multiple cells (cell 10 is the other standard) and seeds for robustness
-3. Compare training dynamics: does the RBF kernel converge to a different RF (beta, rho, center) than arc-cosine?
-4. Try wrapping in `ScaleKernel` for a learnable output variance (currently fixed at 1)
+**Immediate next step (do this first):**
+1. Apply the `.detach()` fix to A_val/lam0_val in BOTH `gradient_rbf.py` and `distribution_gradient.py`. Lines are:
+   ```python
+   A_val = likelihood.A.squeeze().detach()
+   lam0_val = likelihood.lambda0.squeeze().detach()
+   ```
+2. Test with `SAMPLE_LAMBDA=False` (n_lambda_samples=1) first — should run without error.
+3. Then test with `SAMPLE_LAMBDA=True, N_LAMBDA_SAMPLES=250` — should not OOM.
+
+**Then continue exploration:**
+- Run distribution_gradient.py with the gray-start and see if optimizer finds anything interesting
+- Try different N_SAMPLE values (5, 10, 50, 200) to see how the landscape changes
+- Compare single-target (gradient_rbf.py) vs multi-image (distribution_gradient.py) results
 
 **Do NOT retry:**
-- Using Amp directly as the distance scale parameter (commits before 565717b). Dead end — log-space lengthscale is strictly better.
-- Disabling masking (use_mask=False). C matrix would be 11664x11664, too large.
+- Single big `loss.backward()` with large N_SAMPLE/N_LAMBDA_SAMPLES — guaranteed OOM.
+- Using `distribution_aware_utility()` directly in the gradient closure — it builds O(N) graphs.
 
-**Context to keep in mind:**
-- The kernel is `default_gpy` mode only. `vargp_direct` would need augmented matrix work.
-- The lengthscale default (100.0) is hardcoded in `run_rbf.py` and the kernel class, NOT in `default_params.json`. This is intentional (RBF-specific param).
+**Key architecture of the per-sample backward:**
+```
+closure():
+    # loss = -utility = -H_marg + E[H_cond]
+    # Accumulate d(loss)/dx = -d(H_marg)/dx + d(H_cond)/dx
+
+    x_query = build from opt_var (one graph)
+    H_marg = compute_H(get_gp_marginal_moments(model, x_query))
+    (-H_marg).backward()  # -d(H_marg)/dx into grad, frees graph
+
+    for each MC sample:
+        x_query_i = rebuild from opt_var (fresh graph)
+        H_cond_i = compute_H(get_gp_conditional_moments(model, x_query_i, x_i, lambda_i))
+        (H_cond_i / n_mc).backward()  # +d(H_cond)/dx into grad, frees graph
+
+    return scalar loss (for LBFGS line search)
+```
 
 ---
 
 ## Continuation Prompt
 
 ```
-I'm continuing work on the LocalRBFKernel investigation on branch
+I'm continuing the RBF kernel utility exploration on branch
 pietro/rbf-kernel in the worktree at:
-/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/gpytorch_porting_rbf_kernel
+/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting_rbf/Spatial_GP_repo/scripts/gpytorch_porting
 
 Read the handoff at:
 investigations/rbf_kernel/HANDOFF.md
 
-The kernel implementation is complete (2 commits: 9ae87b7, 565717b).
-It uses k(x,y) = exp(-(x-y)^T C_base (x-y) / (2l^2)) with log-space
-lengthscale and C_base excluding Amp. test_r=0.7785 on cell 8, M=50.
+IMMEDIATE FIX NEEDED: The per-sample backward approach in both
+gradient_rbf.py and distribution_gradient.py has a bug —
+A_val/lam0_val are not detached, causing "backward through graph
+a second time" error. Fix: add .detach() to both.
 
-Next steps: test with M=100, multi-cell validation, compare RF params
-with arc-cosine, potentially add ScaleKernel wrapping.
+Three scripts in investigations/rbf_kernel/:
+- explore_utility_rbf.py (utility workbench, complete)
+- gradient_rbf.py (single-target LBFGS, per-sample backward needs fix)
+- distribution_gradient.py (multi-image LBFGS, per-sample backward needs fix)
+
+Focus: fix the detach bug, then continue image optimization experiments.
 
 Check git status and git branch before starting.
+
+Uncommitted changes include per-sample backward code + user param tweaks.
 ```

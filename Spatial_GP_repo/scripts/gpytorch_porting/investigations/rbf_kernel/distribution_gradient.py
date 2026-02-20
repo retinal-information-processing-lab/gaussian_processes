@@ -49,12 +49,15 @@ from metrics import compute_pearson_correlation, compute_explained_variance
 # Investigation parameters (visible, explicit)
 # Model params (M=50, N_TRAIN=50) are set in explore_utility_rbf.py¡
 # ---------------------------------------------------------------------------
-N_SAMPLE = 100            # number of conditioning images from pool
-NOISE_AMP = 1.         # amplitude of starting noise on top of mean gray
+N_SAMPLE = 1000            # number of conditioning images from pool
+# Starting image mode: 'gray' (uniform at mean RF intensity + tiny noise) or
+#                      'random' (random noise scaled by NOISE_AMP)
+START_MODE = 'random'   # 'gray' or 'random'
+NOISE_AMP = 0.1         # noise amplitude ons start image
 SAMPLE_LAMBDA = False    # True: stochastic lambda samples; False: deterministic (mean)
 
 # --- Pixel bounds ---
-USE_SIGMOID_BOUNDS = False   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
+USE_SIGMOID_BOUNDS = True   # sigmoid reparametrization: pixels bounded to dataset [vmin, vmax]
 
 # --- LBFGS optimizer parameters ---
 N_STEPS = 3             # outer LBFGS steps
@@ -298,16 +301,24 @@ def main():
     # Conditioning images: first N_SAMPLE from pool
     n_pool = X_pool.shape[0]
     n_sample = min(N_SAMPLE, n_pool)
-    x_samples = X_pool[:n_sample]
+    x_samples = X_pool[1:n_sample+1]
     print(f"  Conditioning images: {n_sample} from pool ({n_pool} total)")
 
-    # Starting image: uniform gray at the mean RF intensity of sampled images, + small noise
-    mean_rf_val = x_samples[:, rf_mask].mean().item()
+    # Starting image
     torch.manual_seed(config['seed'])
-    x_start = torch.full((n_pixels,), mean_rf_val, dtype=dtype, device=device)
-    x_start[rf_mask] += 0.01 * torch.randn(rf_mask.sum().item(), dtype=dtype, device=device)
-    x_start[~rf_mask] = 0.0
-    print(f"  Starting image: uniform gray ({mean_rf_val:.4f}) + noise, RF only")
+    n_rf = rf_mask.sum().item()
+    if START_MODE == 'random':
+        x_start = torch.zeros(n_pixels, dtype=dtype, device=device)
+        x_start[rf_mask] = NOISE_AMP * torch.randn(n_rf, dtype=dtype, device=device)
+        print(f"  Starting image: random noise (amp={NOISE_AMP}), RF only")
+    elif START_MODE == 'gray':
+        mean_rf_val = x_samples[:, rf_mask].mean().item()
+        x_start = torch.full((n_pixels,), mean_rf_val, dtype=dtype, device=device)
+        x_start[rf_mask] += NOISE_AMP * torch.randn(n_rf, dtype=dtype, device=device)
+        x_start[~rf_mask] = 0.0
+        print(f"  Starting image: uniform gray ({mean_rf_val:.4f}) + tiny noise, RF only")
+    else:
+        raise ValueError(f"Unknown START_MODE: {START_MODE}")
     print(f"  ||start||_RF={x_start[rf_mask].norm().item():.2f}")
 
     # Dataset pixel bounds (RF pixels only) for sigmoid reparametrization
@@ -435,6 +446,22 @@ def main():
     img_best = masked_crop(x_samples[best_idx], gray_val)
     img_diff = masked_crop(x_final - x_start, 0.0)
 
+    # Check if images exceed dataset pixel range (imshow silently clips)
+    rf_mask_np = rf_mask.cpu().numpy()
+    clip_warnings = {}
+    for label, x_img in [('Start', x_start), ('Final', x_final)]:
+        vals = x_img.cpu().numpy()[rf_mask_np]
+        below = vals[vals < vmin]
+        above = vals[vals > vmax]
+        if len(below) > 0 or len(above) > 0:
+            clip_warnings[label] = {
+                'n_below': len(below), 'min_val': float(vals.min()),
+                'n_above': len(above), 'max_val': float(vals.max()),
+            }
+            print(f"  WARNING: {label} exceeds dataset range [{vmin:.3f}, {vmax:.3f}]: "
+                  f"min={float(vals.min()):.3f}, max={float(vals.max()):.3f} "
+                  f"({len(below)} px below, {len(above)} px above)")
+
     fig = plt.figure(figsize=(18, 8))
 
     # Top row: 4 images
@@ -445,6 +472,7 @@ def main():
         f'Best match (pool[{best_idx}])\nr={correlations[best_idx]:.4f}, U_DA={u_best:.4f}',
         'Final - Start',
     ]
+    clip_labels = ['Start', 'Final', None, None]  # map subplot index to clip_warnings key
     cmaps = ['gray', 'gray', 'gray', 'RdBu_r']
     for i, (img, title, cmap) in enumerate(zip(images, titles, cmaps)):
         ax = fig.add_subplot(2, 4, i + 1)
@@ -457,6 +485,13 @@ def main():
         ax.axis('off')
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.ax.tick_params(labelsize=7)
+        cl = clip_labels[i]
+        if cl and cl in clip_warnings:
+            w = clip_warnings[cl]
+            warn_text = f"CLIPPED: [{w['min_val']:.2f}, {w['max_val']:.2f}]"
+            ax.text(0.5, 0.02, warn_text, transform=ax.transAxes, fontsize=8,
+                    color='red', fontweight='bold', ha='center', va='bottom',
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8))
 
     # Bottom left: U_DA convergence
     ax1 = fig.add_subplot(2, 4, 5)

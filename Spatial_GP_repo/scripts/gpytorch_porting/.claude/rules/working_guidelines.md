@@ -87,6 +87,13 @@ Example:
 
 When sources conflict, flag both explicitly and ask user which is correct.
 
+### Math 
+- When presenting math results, keep in mind you are presenting in the terminal and Latex does not render,
+- When discussing math after having read a reference, usually latex, keep the notation and symbols you present consistent,
+- If you notice serious inconsistencies in the math resources you read, raise to user,
+- Only when asked explicitely to write a latex file, use latex formulas.
+
+
 ---
 
 ## 3. Development Process

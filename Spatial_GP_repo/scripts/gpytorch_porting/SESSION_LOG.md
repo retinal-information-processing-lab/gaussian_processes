@@ -1,12 +1,18 @@
 # Session Log
 
-## 2026-02-11: RBF utility exploration scripts
+## 2026-02-12: Multi-image DA optimization, per-sample backward, OOM fixes
 **Branch**: `pietro/rbf-kernel`
-**Handoff**: `.claude/handoffs/HANDOFF_2026-02-11_rbf-utility-exploration-scripts.md`
-**Plan**: `.claude/plans/sorted-sniffing-tiger.md`
-**Status**: Implemented
+**Handoff**: `investigations/rbf_kernel/HANDOFF.md`
+**Status**: Continuing
 
-Created `explore_utility_rbf.py` and `gradient_rbf.py` in `investigations/rbf_kernel/`. Adapted from arc-cosine versions in `investigations/understanding_utility/`. Key RBF adaptations: imports from `run_rbf.py`, right panel plots U_DA vs K(x*, x_cond) instead of ||x||_C, no sigma_0 override, added `kernel_distance()` helper. Merged workingbranch to get LBFGS/f_max upgrades; gradient_rbf.py needs rewrite to use LBFGS template.
+Created `distribution_gradient.py` (multi-image DA utility optimization). Added BOUNDS_MODE to gradient_rbf.py. Fixed OOM in acquisition.py (no_grad for conditioning images). Wired adaptive r_max into run_rbf.py. Implemented per-sample backward approach for O(1) memory — discovered and diagnosed two bugs: (1) x_query graph freed by H_marg.backward() (fixed: recompute per sample), (2) A_val/lam0_val retain grad_fn from squeeze() (fix identified: .detach(), NOT YET APPLIED).
+
+## 2026-02-11: RBF utility exploration + LBFGS gradient ascent scripts
+**Branch**: `pietro/rbf-kernel`
+**Handoff**: `investigations/rbf_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Created `explore_utility_rbf.py` and `gradient_rbf.py` in `investigations/rbf_kernel/`. Initial gradient script used stale pre-LBFGS template from worktree; merged workingbranch (f3508be), then rewrote gradient_rbf.py from the correct 585-line LBFGS template (sigmoid bounds, RF-only optimization, f_max guard). User began experimenting with parameters (USE_SYNTHETIC=False, LR=0.1, SIGMA_SMOOTH=10.0).
 
 ## 2026-02-11c: Arc-sine investigation paused
 **Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
