@@ -50,7 +50,7 @@ import matplotlib.pyplot as plt
 # side effects (torch.set_grad_enabled(False) at utils.py line 2)
 
 # Import our GPyTorch components
-from kernels import ArcCosineKernel, GRADIENT_MODES
+from kernels import GRADIENT_MODES, KERNEL_TYPES, create_kernel
 from likelihoods import PoissonLikelihood
 from gpy_model import VariationalGPModel
 from gpy_training import train_gpy_default, predict
@@ -299,6 +299,7 @@ def build_config_from_defaults(**overrides):
         'dtype': run['dtype'],
 
         # --- Kernel (from kernel section) ---
+        'kernel_type': ker['type'],
         'sigma_0': ker['sigma_0'],
         'Amp': ker['Amp'],
         'beta': ker['beta'],
@@ -309,6 +310,7 @@ def build_config_from_defaults(**overrides):
         'use_mask': ker['use_mask'],
         'bound_rf_center': ker['bound_rf_center'],
         'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
+        'lengthscale': ker['lengthscale'],  # only used when kernel_type=rbf
 
         # --- Likelihood (from link_function section) ---
         'A_init': lik['A_init'],
@@ -406,6 +408,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'dtype': num['dtype'],
 
         # Kernel
+        'kernel_type': ker['type'],
         'sigma_0': ker['sigma_0'],
         'Amp': ker['Amp'],
         'beta': ker['beta'],
@@ -416,6 +419,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'use_mask': ker['use_mask'],
         'bound_rf_center': ker['bound_rf_center'],
         'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
+        'lengthscale': ker['lengthscale'],
 
         # Likelihood
         'A_init': lik['A_init'],
@@ -524,6 +528,7 @@ def run_single_config(config):
         dict with metrics, timing, and final parameters. None if training failed.
     """
     mode = config['mode']
+    kernel_type = config['kernel_type']
     M = config['M']
     n_train_requested = config['n_train']
     seed = config['seed']
@@ -531,11 +536,23 @@ def run_single_config(config):
     n_iterations = config['n_iterations']
     n_px_side = config['n_px_side']
 
+    # --- Validation guards for kernel/mode compatibility ---
+    if kernel_type != 'arc_cosine' and mode == 'vargp_old':
+        raise ValueError(
+            f"vargp_old mode only supports arc_cosine kernel (got '{kernel_type}'). "
+            f"The old codebase (utils.py:varGP) only implements arc-cosine.")
+    if kernel_type != 'arc_cosine' and config['gradient_mode'] in ('vjp', 'jacobian'):
+        raise ValueError(
+            f"Analytical gradient modes (vjp, jacobian) only support arc_cosine kernel "
+            f"(got '{kernel_type}'). Use --gradient-mode autograd for other kernels.")
+
     device = torch.device(config['device'])
     dtype = torch.float32 if config['dtype'] == 'float32' else torch.float64
 
     print(f"Device: {device}")
     print(f"Mode: {mode}")
+    if kernel_type != 'arc_cosine':
+        print(f"Kernel type: {kernel_type}")
     print(f"M={M} inducing points")
     if config['gradient_mode'] != 'autograd':
         print(f"Gradient mode: {config['gradient_mode']}")
@@ -635,16 +652,7 @@ def run_single_config(config):
 
         # Create temporary kernel for pivoted selection (will be re-created
         # by the training code with the same params)
-        temp_kernel = ArcCosineKernel(
-            n_px_side=n_px_side,
-            sigma_0=config['sigma_0'],
-            Amp=config['Amp'],
-            beta=config['beta'],
-            rho=config['rho'],
-            eps_0x=eps_0x,
-            eps_0y=eps_0y,
-            use_mask=config['use_mask'],
-            jitter=jitter,
+        temp_kernel = create_kernel(config, n_px_side, eps_0x, eps_0y
         ).to(device=device, dtype=dtype)
 
         ntilde = min(M, X.shape[0])
@@ -829,17 +837,7 @@ def run_single_config(config):
     # VARGP_DIRECT MODE: Eigenspace projection, LBFGS M-step
     # =========================================================================
     elif mode == 'vargp_direct':
-        kernel = ArcCosineKernel(
-            sigma_0=config['sigma_0'],
-            Amp=config['Amp'],
-            n_px_side=n_px_side,
-            eps_0x=eps_0x,
-            eps_0y=eps_0y,
-            beta=config['beta'],
-            rho=config['rho'],
-            use_mask=config['use_mask'],
-            gradient_mode=config['gradient_mode']
-        )
+        kernel = create_kernel(config, n_px_side, eps_0x, eps_0y)
         from utils import apply_rf_center_bounds
         apply_rf_center_bounds(kernel, eps_0x, eps_0y, config)
         kernel = kernel.to(dtype=dtype, device=device)
@@ -930,18 +928,7 @@ def run_single_config(config):
     # GPYTORCH MODE: default_gpy
     # =========================================================================
     elif mode == 'default_gpy':
-        base_kernel = ArcCosineKernel(
-            sigma_0=config['sigma_0'],
-            n_px_side=n_px_side,
-            eps_0x=eps_0x,
-            eps_0y=eps_0y,
-            beta=config['beta'],
-            rho=config['rho'],
-            use_mask=config['use_mask'],
-            gradient_mode=config['gradient_mode']
-        )
-        kernel = base_kernel
-        kernel.Amp = config['Amp']
+        kernel = create_kernel(config, n_px_side, eps_0x, eps_0y)
         from utils import apply_rf_center_bounds
         apply_rf_center_bounds(kernel, eps_0x, eps_0y, config)
 
@@ -1135,8 +1122,13 @@ def main():
                         help=f'Training mode (default: {defaults["run"]["mode"]})')
 
     # Kernel parameters
+    parser.add_argument('--kernel-type', type=str, default=defaults['kernel']['type'],
+                        choices=list(KERNEL_TYPES),
+                        help=f'Kernel type (default: {defaults["kernel"]["type"]})')
     parser.add_argument('--sigma-0', type=float, default=defaults['kernel']['sigma_0'], help=f'Kernel bias variance (default: {defaults["kernel"]["sigma_0"]})')
     parser.add_argument('--Amp', type=float, default=defaults['kernel']['Amp'], help=f'Kernel amplitude (default: {defaults["kernel"]["Amp"]})')
+    parser.add_argument('--lengthscale', type=float, default=defaults['kernel']['lengthscale'],
+                        help=f'RBF lengthscale, only used with --kernel-type rbf (default: {defaults["kernel"]["lengthscale"]})')
     parser.add_argument('--beta', type=float, default=defaults['kernel']['beta'], help=f'RF size (default: {defaults["kernel"]["beta"]})')
     parser.add_argument('--rho', type=float, default=defaults['kernel']['rho'], help=f'Smoothness (default: {defaults["kernel"]["rho"]})')
     parser.add_argument('--eps-0x', type=float, default=defaults['kernel']['eps_0x'], help=f'RF center x (default: {defaults["kernel"]["eps_0x"]})')
@@ -1225,6 +1217,7 @@ def main():
     # user-provided CLI flags actually change anything.
     config = build_config_from_defaults(
         mode=args.mode,
+        kernel_type=args.kernel_type,
         M=args.ntilde,
         n_train=args.n_train,
         seed=args.seed,
@@ -1236,6 +1229,7 @@ def main():
         Amp=args.Amp,
         beta=args.beta,
         rho=args.rho,
+        lengthscale=args.lengthscale,
         eps_0x=eps_0x,
         eps_0y=eps_0y,
         gradient_mode=args.gradient_mode,

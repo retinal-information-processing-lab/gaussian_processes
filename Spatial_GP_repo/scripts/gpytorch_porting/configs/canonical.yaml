@@ -18,6 +18,7 @@ experiment:
 
 # ===== KERNEL INITIALIZATION =====
 kernel:
+  type: arc_cosine            # arc_cosine | arc_sine | rbf
   sigma_0: 1.0
   Amp: 1.0
   beta: 0.1
@@ -28,6 +29,7 @@ kernel:
   use_mask: true
   bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
   n_sigma_rf_bounds: 3.0     # allowed deviation in units of sigma_rf = beta * sqrt(2)
+  lengthscale: 100.0         # only used when type=rbf; initial RBF lengthscale
 
 # ===== KERNEL BOUNDS =====
 # Clamping limits for kernel hyperparameters during optimization.

@@ -61,6 +61,52 @@ def _get_vjp_implementation():
     return _ArcCosineVJPGradients
 
 
+# =========================================================================
+# Kernel factory
+# =========================================================================
+
+KERNEL_TYPES = ('arc_cosine', 'arc_sine', 'rbf')
+
+
+def create_kernel(config, n_px_side, eps_0x, eps_0y):
+    """Create the appropriate kernel based on config['kernel_type'].
+
+    All kernels share the same RF structure (C matrix, masking, center bounds).
+    LocalRBFKernel additionally requires a lengthscale parameter.
+
+    Args:
+        config: Flat config dict with kernel_type, sigma_0, Amp, beta, rho,
+                use_mask, gradient_mode, and lengthscale (for rbf).
+        n_px_side: Image side length in pixels.
+        eps_0x, eps_0y: RF center coordinates (normalized).
+    """
+    kernel_type = config['kernel_type']
+    common = dict(
+        n_px_side=n_px_side,
+        sigma_0=config['sigma_0'],
+        Amp=config['Amp'],
+        eps_0x=eps_0x,
+        eps_0y=eps_0y,
+        beta=config['beta'],
+        rho=config['rho'],
+        use_mask=config['use_mask'],
+        gradient_mode=config['gradient_mode'],
+    )
+    if kernel_type == 'arc_cosine':
+        return ArcCosineKernel(**common)
+    elif kernel_type == 'arc_sine':
+        return ArcSineKernel(**common)
+    elif kernel_type == 'rbf':
+        return LocalRBFKernel(**common, lengthscale=config['lengthscale'])
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}. "
+                         f"Supported: {KERNEL_TYPES}")
+
+
+# =========================================================================
+# Kernel classes
+# =========================================================================
+
 class ArcCosineKernel(Kernel):
     """Arc-cosine kernel for GPyTorch with receptive field structure.
 
