@@ -174,6 +174,8 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
         'x_target': X_pool[0].clone(),
         'config': config,
         'kernel_type': detected_type,
+        'test_r': result['test_r'],
+        'reliability': result['reliability'],
     }
 
 
