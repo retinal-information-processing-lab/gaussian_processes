@@ -1,6 +1,6 @@
 """
 Test compute_H_MC: Monte Carlo entropy estimation.
-Created by Claude for investigations/understanding_utility/.
+Created by Claude for investigations/utility/.
 
 Tests:
 1. Agreement with compute_H in the safe region (low mu_g, low sigma2_g)
@@ -9,7 +9,7 @@ Tests:
 4. Plot H vs c to visualize the behavior
 
 Usage:
-    python investigations/understanding_utility/test_compute_H_MC.py
+    python investigations/utility/test_compute_H_MC.py
 """
 
 import sys

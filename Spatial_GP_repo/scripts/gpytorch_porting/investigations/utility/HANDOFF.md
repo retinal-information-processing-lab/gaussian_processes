@@ -70,4 +70,4 @@ These replace the per-kernel scripts that were in `understanding_utility/`, `arc
 | `investigations/understanding_utility/explore_utility.py` | Arc-cosine explore script | Superseded by utility/explore_utility.py |
 | `investigations/understanding_utility/gradient_unnormalized.py` | Arc-cosine gradient script | Superseded by utility/gradient.py |
 
-**Kept in `understanding_utility/`**: entropy_landscape.*, test_compute_H_MC.py, *.tex math docs, key_facts.md, HANDOFF.md, da_utility_landscape.png.
+`understanding_utility/` folder deleted. Reference material (entropy_landscape.*, test_compute_H_MC.py, *.tex math docs, key_facts.md) moved to `utility/`.

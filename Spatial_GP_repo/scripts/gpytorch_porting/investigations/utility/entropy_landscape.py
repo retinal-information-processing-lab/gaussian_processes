@@ -10,7 +10,7 @@ Also overlays the analytical 3-sigma boundary for comparison.
 See entropy_landscape.md for findings and limitations.
 
 Usage:
-    python investigations/understanding_utility/entropy_landscape.py
+    python investigations/utility/entropy_landscape.py
 """
 
 import sys
