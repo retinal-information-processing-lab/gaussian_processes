@@ -1,5 +1,21 @@
 # Session Log
 
+## 2026-02-20b: Implement Phases 1-2, handoff Phase 3
+**Branch**: `pietro/workingbranch`
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-20_unify-kernel-phase3-gradient.md`
+**Plan**: `~/.claude/plans/cozy-humming-wadler.md`
+**Status**: Phases 1-2 complete, Phase 3 handed off
+
+Phase 1 (committed 8d54cf1): kernel selection in run_single_mode.py -- create_kernel() factory in kernels.py, --kernel-type CLI, config wiring, validation guards. Phase 2 (uncommitted): unified investigations/utility/explore_utility.py with auto-detect right panel, setup(kernel_type), all 3 kernels verified. Phase 3 (gradient.py) and Phase 4 (cleanup) remaining.
+
+## 2026-02-20: Plan for unifying kernel selection and utility investigation
+**Branch**: `pietro/workingbranch`
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-20_unify-kernel-selection-utility.md`
+**Plan**: `~/.claude/plans/cozy-humming-wadler.md`
+**Status**: Handed off for implementation
+
+Planning-only session. Explored codebase to understand duplication across 4 kernel investigation folders. Designed 4-phase plan: (1) kernel selection in run_single_mode.py, (2) unified explore_utility.py, (3) unified gradient.py, (4) cleanup. Key decisions: exclude normalized kernel (deprecated), no MC sampling in gradient script, sigmoid bounds with 2 modes only, single set of hardcoded hyperparams (not kernel-specific). No code written.
+
 ## 2026-02-12: Multi-image DA optimization, per-sample backward, OOM fixes
 **Branch**: `pietro/rbf-kernel`
 **Handoff**: `investigations/rbf_kernel/HANDOFF.md`
