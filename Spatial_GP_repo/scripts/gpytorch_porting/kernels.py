@@ -780,9 +780,9 @@ class LocalRBFKernel(ArcCosineKernel):
     RAW_LS_MIN = np.log(LENGTHSCALE_MIN)   # approx -2.30
     RAW_LS_MAX = np.log(LENGTHSCALE_MAX)   # approx 11.51
 
-    def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
-                 eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
-                 lengthscale=100.0,
+    def __init__(self, n_px_side, sigma_0, Amp,
+                 eps_0x, eps_0y, beta, rho,
+                 lengthscale,
                  use_mask=True, gradient_mode='autograd', **kwargs):
         if gradient_mode != 'autograd':
             warnings.warn(

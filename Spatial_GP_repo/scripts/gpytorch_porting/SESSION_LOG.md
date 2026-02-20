@@ -1,11 +1,26 @@
 # Session Log
 
+## 2026-02-12: Multi-image DA optimization, per-sample backward, OOM fixes
+**Branch**: `pietro/rbf-kernel`
+**Handoff**: `investigations/rbf_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Created `distribution_gradient.py` (multi-image DA utility optimization). Added BOUNDS_MODE to gradient_rbf.py. Fixed OOM in acquisition.py (no_grad for conditioning images). Wired adaptive r_max into run_rbf.py. Implemented per-sample backward approach for O(1) memory — discovered and diagnosed two bugs: (1) x_query graph freed by H_marg.backward() (fixed: recompute per sample), (2) A_val/lam0_val retain grad_fn from squeeze() (fix identified: .detach(), NOT YET APPLIED).
+
+## 2026-02-11: RBF utility exploration + LBFGS gradient ascent scripts
+**Branch**: `pietro/rbf-kernel`
+**Handoff**: `investigations/rbf_kernel/HANDOFF.md`
+**Status**: Continuing
+
+Created `explore_utility_rbf.py` and `gradient_rbf.py` in `investigations/rbf_kernel/`. Initial gradient script used stale pre-LBFGS template from worktree; merged workingbranch (f3508be), then rewrote gradient_rbf.py from the correct 585-line LBFGS template (sigmoid bounds, RF-only optimization, f_max guard). User began experimenting with parameters (USE_SYNTHETIC=False, LR=0.1, SIGMA_SMOOTH=10.0).
+
 ## 2026-02-11c: Arc-sine investigation paused
 **Handoff**: `investigations/arcsine_kernel/HANDOFF.md`
 **Status**: Paused — branch `pietro/arcsine-kernel` parked, nothing urgent to merge to workingbranch.
 
 ## 2026-02-11b: LBFGS upgrade, f_max guard, cross-kernel parity
 Implemented LBFGS optimizer in gradient_arcsine.py (replaces plain GD). Investigated norm-driven utility divergence: optimizer exploits firing rate growth (0.49→5.82 spikes), confirmed with DEBUG diagnostics. Added f_max=100.0 firing rate guard to LBFGS closure (returns +inf to reject high-rate steps). Wired f_max through default_params.json, both YAMLs, and config builders. Upgraded gradient_unnormalized.py and gradient_normalized.py with same features (LBFGS, f_max, RF metrics, diagnostics). Fixed explore_utility.py output filename. All three kernel investigation folders now consistent.
+
 ## 2026-02-11: LocalRBFKernel implementation
 **Branch**: `pietro/rbf-kernel` (worktree at `gpytorch_porting_rbf_kernel`)
 **Handoff**: `investigations/rbf_kernel/HANDOFF.md`
