@@ -195,7 +195,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/utility/` | Unified utility investigation scripts for all kernel types. `explore_utility.py` (utility workbench with `--kernel-type`), `gradient.py` (LBFGS gradient ascent with `--kernel-type`), `HANDOFF.md` (consolidated findings), `entropy_landscape.py` + docs, `test_compute_H_MC.py`, math TeX docs, `key_facts.md`. |
+| `investigations/utility/` | Unified utility investigation. Scripts: `explore_utility.py` (workbench), `gradient.py` (LBFGS gradient ascent), `entropy_landscape.py` + `.md` (entropy heatmap), `test_compute_H_MC.py`. Docs: `REFERENCE.md` (source of truth for definitions + findings), `HANDOFF.md` (session guide). Proofs: `proof_moments_and_conditioning.tex`, `proof_divergence_theorems.tex`, `proof_kernel_solutions.tex`. |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
