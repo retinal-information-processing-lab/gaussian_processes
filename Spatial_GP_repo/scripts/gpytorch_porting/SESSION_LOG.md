@@ -1,5 +1,11 @@
 # Session Log
 
+## 2026-02-20c: Complete Phases 3-4, consolidate utility folder
+**Branch**: `pietro/workingbranch`
+**Status**: All 4 phases complete
+
+Phase 3: unified gradient.py (verified all 3 kernels). Phase 4: user deleted per-kernel folders. Moved understanding_utility/ reference files into utility/, deleted the folder. All utility investigation code now in investigations/utility/.
+
 ## 2026-02-20b: Implement Phases 1-2, handoff Phase 3
 **Branch**: `pietro/workingbranch`
 **Handoff**: `.claude/handoffs/HANDOFF_2026-02-20_unify-kernel-phase3-gradient.md`
