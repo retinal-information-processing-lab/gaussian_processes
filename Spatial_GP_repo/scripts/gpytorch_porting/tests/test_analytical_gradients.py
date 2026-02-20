@@ -74,11 +74,11 @@ def test_gradient_correctness():
         ).to(device).double()
 
         # Compute K and sum (simple loss function)
-        K_autograd = kernel_autograd(x1, x2).evaluate()
+        K_autograd = kernel_autograd(x1, x2).to_dense()
         loss_autograd = K_autograd.sum()
         loss_autograd.backward()
 
-        K_analytical = kernel_analytical(x1, x2).evaluate()
+        K_analytical = kernel_analytical(x1, x2).to_dense()
         loss_analytical = K_analytical.sum()
         loss_analytical.backward()
 
@@ -148,7 +148,7 @@ def test_numerical_gradient():
     ).to(device).double()
 
     # Get analytical gradient
-    K = kernel(x1, x2).evaluate()
+    K = kernel(x1, x2).to_dense()
     loss = K.sum()
     loss.backward()
 
@@ -165,12 +165,12 @@ def test_numerical_gradient():
 
             # Forward
             param.data = original_val + eps_fd
-            K_plus = kernel(x1, x2).evaluate()
+            K_plus = kernel(x1, x2).to_dense()
             loss_plus = K_plus.sum().item()
 
             # Backward
             param.data = original_val - eps_fd
-            K_minus = kernel(x1, x2).evaluate()
+            K_minus = kernel(x1, x2).to_dense()
             loss_minus = K_minus.sum().item()
 
             # Restore
@@ -237,7 +237,7 @@ def test_training_equivalence():
         losses = []
         for step in range(n_steps):
             optimizer.zero_grad()
-            K = kernel(x_train, x_train).evaluate()
+            K = kernel(x_train, x_train).to_dense()
             loss = (K.sum() - target_norm) ** 2
             loss.backward()
             optimizer.step()

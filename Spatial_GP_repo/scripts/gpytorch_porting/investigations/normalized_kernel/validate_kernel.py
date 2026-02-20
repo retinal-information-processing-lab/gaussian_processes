@@ -85,8 +85,8 @@ def test_normalization_identity(k_unnorm, k_norm, X_batch):
     """K_bar[i,j] == K[i,j] / sqrt(K[i,i] * K[j,j]) for real images."""
     print("\n--- Test: Normalization identity ---")
     with torch.no_grad():
-        K = k_unnorm(X_batch, X_batch).evaluate()
-        K_bar = k_norm(X_batch, X_batch).evaluate()
+        K = k_unnorm(X_batch, X_batch).to_dense()
+        K_bar = k_norm(X_batch, X_batch).to_dense()
         K_diag = k_unnorm(X_batch, diag=True)
 
     # Manual normalization
@@ -117,7 +117,7 @@ def test_diagonal_consistency(k_norm, X_batch):
     """diag(K_bar(X, X)) matches K_bar(X, diag=True)."""
     print("\n--- Test: Diagonal consistency (full vs diag path) ---")
     with torch.no_grad():
-        K_bar_full = k_norm(X_batch, X_batch).evaluate()
+        K_bar_full = k_norm(X_batch, X_batch).to_dense()
         K_bar_diag = k_norm(X_batch, diag=True)
 
     full_diag = torch.diagonal(K_bar_full)
@@ -140,8 +140,8 @@ def test_symmetry(k_norm, X_batch):
     x1 = X_batch[:10]
     x2 = X_batch[10:20]
     with torch.no_grad():
-        K12 = k_norm(x1, x2).evaluate()
-        K21 = k_norm(x2, x1).evaluate()
+        K12 = k_norm(x1, x2).to_dense()
+        K21 = k_norm(x2, x1).to_dense()
     max_err = (K12 - K21.T).abs().max().item()
     print(f"  Max |K(x1,x2) - K(x2,x1).T|: {max_err:.2e}")
     passed = max_err < 1e-6
@@ -153,7 +153,7 @@ def test_value_range(k_norm, X_batch):
     """All K_bar values in [0, 1]."""
     print("\n--- Test: Value range [0, 1] ---")
     with torch.no_grad():
-        K_bar = k_norm(X_batch, X_batch).evaluate()
+        K_bar = k_norm(X_batch, X_batch).to_dense()
     min_val = K_bar.min().item()
     max_val = K_bar.max().item()
     print(f"  K_bar range: [{min_val:.6f}, {max_val:.6f}]")
@@ -166,7 +166,7 @@ def test_positive_semidefinite(k_norm, X_batch):
     """All eigenvalues of K_bar matrix >= -1e-6."""
     print("\n--- Test: Positive semi-definite ---")
     with torch.no_grad():
-        K_bar = k_norm(X_batch, X_batch).evaluate()
+        K_bar = k_norm(X_batch, X_batch).to_dense()
     eigvals = torch.linalg.eigvalsh(K_bar)
     min_eig = eigvals.min().item()
     max_eig = eigvals.max().item()
@@ -182,7 +182,7 @@ def test_gradient_flow(k_norm_fresh_fn, X_batch):
     k = k_norm_fresh_fn()  # Fresh kernel with grad enabled
     x = X_batch[:5].detach().requires_grad_(False)
 
-    K_bar = k(x, x).evaluate()
+    K_bar = k(x, x).to_dense()
     loss = K_bar.sum()
     loss.backward()
 
@@ -216,8 +216,8 @@ def test_amp_effect(k_norm, X_batch, config, dtype, eps_0x, eps_0y):
     ).to(dtype=dtype)
     x = X_batch[:5]
     with torch.no_grad():
-        K1 = k_norm(x, x).evaluate()
-        K2 = k2(x, x).evaluate()
+        K1 = k_norm(x, x).to_dense()
+        K2 = k2(x, x).to_dense()
     diff = (K1 - K2).abs().max().item()
     print(f"  Max |K_bar(Amp) - K_bar(2*Amp)|: {diff:.6e}")
     passed = diff > 1e-6
@@ -238,8 +238,8 @@ def test_sigma0_effect(k_norm, X_batch, config, dtype, eps_0x, eps_0y):
     ).to(dtype=dtype)
     x = X_batch[:5]
     with torch.no_grad():
-        K1 = k_norm(x, x).evaluate()
-        K2 = k2(x, x).evaluate()
+        K1 = k_norm(x, x).to_dense()
+        K2 = k2(x, x).to_dense()
     diff = (K1 - K2).abs().max().item()
     print(f"  Max |K_bar(sigma0) - K_bar(3*sigma0)|: {diff:.6e}")
     passed = diff > 1e-6
@@ -275,8 +275,8 @@ def test_ktilde_conditioning(k_unnorm, k_norm, X_inducing):
     """Compare condition numbers of K_tilde."""
     print("\n--- Test: K_tilde conditioning ---")
     with torch.no_grad():
-        K_tilde_unnorm = k_unnorm(X_inducing, X_inducing).evaluate()
-        K_tilde_norm = k_norm(X_inducing, X_inducing).evaluate()
+        K_tilde_unnorm = k_unnorm(X_inducing, X_inducing).to_dense()
+        K_tilde_norm = k_norm(X_inducing, X_inducing).to_dense()
 
     cond_unnorm = torch.linalg.cond(K_tilde_unnorm).item()
     cond_norm = torch.linalg.cond(K_tilde_norm).item()
@@ -293,8 +293,8 @@ def test_eigenspectrum(k_unnorm, k_norm, X_inducing):
     """Compare eigenvalue spectra and kept eigenvalue count."""
     print("\n--- Test: Eigenspectrum comparison ---")
     with torch.no_grad():
-        K_tilde_unnorm = k_unnorm(X_inducing, X_inducing).evaluate()
-        K_tilde_norm = k_norm(X_inducing, X_inducing).evaluate()
+        K_tilde_unnorm = k_unnorm(X_inducing, X_inducing).to_dense()
+        K_tilde_norm = k_norm(X_inducing, X_inducing).to_dense()
 
     eigvals_unnorm = torch.linalg.eigvalsh(K_tilde_unnorm)
     eigvals_norm = torch.linalg.eigvalsh(K_tilde_norm)
@@ -398,7 +398,7 @@ def test_identical_images_full_path(k_norm, X_batch):
     print("\n--- Test: Identical images via full matrix path ---")
     x = X_batch[:5]
     with torch.no_grad():
-        K_full = k_norm(x, x).evaluate()
+        K_full = k_norm(x, x).to_dense()
     full_diag = torch.diagonal(K_full)
     max_err = (full_diag - 1.0).abs().max().item()
     print(f"  Full-path diagonal values: {full_diag.tolist()}")
@@ -420,7 +420,7 @@ def test_zero_image(k_norm, config, dtype):
 
     with torch.no_grad():
         K_diag = k_norm(x_zero, diag=True)
-        K_cross = k_norm(x_zero, x_other).evaluate()
+        K_cross = k_norm(x_zero, x_other).to_dense()
 
     print(f"  K_bar(zero, zero) diag: {K_diag.item():.6f}")
     print(f"  K_bar(zero, other): {K_cross.item():.6f}")

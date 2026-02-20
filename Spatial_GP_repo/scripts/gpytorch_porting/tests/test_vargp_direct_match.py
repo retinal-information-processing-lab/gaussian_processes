@@ -157,12 +157,12 @@ def test_softplus_chain_rule(verbose=False):
         with torch.no_grad():
             # K(raw + eps)
             raw_param.data = raw_val + eps
-            K_plus = kernel(X, X_tilde).evaluate()
+            K_plus = kernel(X, X_tilde).to_dense()
             loss_plus = K_plus.sum().item()
 
             # K(raw - eps)
             raw_param.data = raw_val - eps
-            K_minus = kernel(X, X_tilde).evaluate()
+            K_minus = kernel(X, X_tilde).to_dense()
             loss_minus = K_minus.sum().item()
 
             # Restore
@@ -216,7 +216,7 @@ def test_eigenspace_projection_gradients(verbose=False):
 
     # Compute initial K_tilde and eigenspace
     with torch.no_grad():
-        K_tilde_init = kernel(X_tilde, X_tilde).evaluate()
+        K_tilde_init = kernel(X_tilde, X_tilde).to_dense()
         K_tilde_init = (K_tilde_init + K_tilde_init.T) / 2
         B, eigvals_b, _ = eigendecompose_K_tilde(K_tilde_init)
         B = B.clone()  # Detach from any computation graph
@@ -275,14 +275,14 @@ def test_eigenspace_projection_gradients(verbose=False):
         with torch.no_grad():
             # K_tilde_b(raw + eps).sum()
             raw_param.data = raw_val + eps
-            K_tilde_plus = kernel(X_tilde, X_tilde).evaluate()
+            K_tilde_plus = kernel(X_tilde, X_tilde).to_dense()
             K_tilde_plus = (K_tilde_plus + K_tilde_plus.T) / 2
             K_tilde_b_plus = B.T @ K_tilde_plus @ B
             loss_plus = K_tilde_b_plus.sum().item()
 
             # K_tilde_b(raw - eps).sum()
             raw_param.data = raw_val - eps
-            K_tilde_minus = kernel(X_tilde, X_tilde).evaluate()
+            K_tilde_minus = kernel(X_tilde, X_tilde).to_dense()
             K_tilde_minus = (K_tilde_minus + K_tilde_minus.T) / 2
             K_tilde_b_minus = B.T @ K_tilde_minus @ B
             loss_minus = K_tilde_b_minus.sum().item()
@@ -333,7 +333,7 @@ def test_ktilde_inv_methods(verbose=False):
     kernel = create_test_kernel(device, dtype)
 
     # Compute initial K_tilde
-    K_tilde_init = kernel(X_tilde, X_tilde).evaluate()
+    K_tilde_init = kernel(X_tilde, X_tilde).to_dense()
     K_tilde_init = (K_tilde_init + K_tilde_init.T) / 2
 
     # Eigenspace projection
@@ -378,7 +378,7 @@ def test_ktilde_inv_methods(verbose=False):
         kernel.raw_m2log2beta.data += 0.1
 
     # Recompute K_tilde with new params
-    K_tilde_new = kernel(X_tilde, X_tilde).evaluate()
+    K_tilde_new = kernel(X_tilde, X_tilde).to_dense()
     K_tilde_new = (K_tilde_new + K_tilde_new.T) / 2
 
     # Project with OLD B

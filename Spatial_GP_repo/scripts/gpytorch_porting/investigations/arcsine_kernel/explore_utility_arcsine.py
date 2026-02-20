@@ -155,7 +155,7 @@ def kernel_value(model, x1, x2):
     with torch.no_grad():
         return model.covar_module(
             x1.unsqueeze(0), x2.unsqueeze(0)
-        ).evaluate().squeeze().item()
+        ).to_dense().squeeze().item()
 
 
 def kernel_norm(model, x):

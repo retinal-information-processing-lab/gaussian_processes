@@ -243,7 +243,7 @@ def main(cell=10, use_analytical_lambda0=False, A_init=0.01, lambda0_init=1.0,
     model.eval()
     with torch.no_grad():
         # Get cross-covariance k(X_train, X_tilde)
-        K_cross = model.covar_module(X_train, inducing_points).evaluate()
+        K_cross = model.covar_module(X_train, inducing_points).to_dense()
         print(f"  K_cross shape: {K_cross.shape}")
         print(f"  K_cross[0,0:5]: {K_cross[0, :5].tolist()}")
         print(f"  K_cross row std (should vary): {K_cross.std(dim=1).mean().item():.6f}")

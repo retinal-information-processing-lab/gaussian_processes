@@ -186,7 +186,7 @@ def test_kernel_equivalence():
         rho=rho,
         use_mask=True
     )
-    K_gpy = kernel(X_full, X_full).evaluate()
+    K_gpy = kernel(X_full, X_full).to_dense()
 
     # Compare
     max_diff = (K_ref - K_gpy).abs().max().item()

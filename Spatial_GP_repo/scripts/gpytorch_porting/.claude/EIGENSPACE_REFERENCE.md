@@ -214,8 +214,8 @@ This matches vargp_old behavior exactly:
 
 ```python
 # In DirectVGPModel.__init__() (via _compute_initial_eigenspace):
-K_tilde = kernel(X_tilde, X_tilde).evaluate()  # (M, M)
-K = kernel(X_train, X_tilde).evaluate()        # (N, M)
+K_tilde = kernel(X_tilde, X_tilde).to_dense()  # (M, M)
+K = kernel(X_train, X_tilde).to_dense()        # (N, M)
 Kvec = kernel(X_train, diag=True)              # (N,)
 
 # Eigendecomposition
@@ -280,8 +280,8 @@ The M-step has two implementations in `mstep.py`:
 ```python
 def closure():
     # Recompute kernels with current hyperparams
-    K_tilde = kernel(X_tilde, X_tilde).evaluate()
-    K = kernel(X, X_tilde).evaluate()
+    K_tilde = kernel(X_tilde, X_tilde).to_dense()
+    K = kernel(X, X_tilde).to_dense()
     # BUG: Uses diagonal approximation for KL trace (see Section 8)
     # ... compute loss using fixed eigenspace B ...
     grads = torch.autograd.grad(loss, kernel_params)

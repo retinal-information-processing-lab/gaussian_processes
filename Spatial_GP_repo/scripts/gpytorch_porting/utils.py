@@ -270,7 +270,7 @@ def select_inducing_points_pivoted(X, kernel, n_inducing, n_candidates=None, see
 
     # Compute kernel matrix on candidates
     with torch.no_grad():
-        K = kernel(X_candidates).evaluate()
+        K = kernel(X_candidates).to_dense()
         K = K + jitter * torch.eye(K.shape[0], device=K.device, dtype=K.dtype)
 
         # Pivoted Cholesky — returns pivots in order of informativeness

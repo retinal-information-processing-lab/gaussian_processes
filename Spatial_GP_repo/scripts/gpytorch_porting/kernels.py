@@ -1076,7 +1076,7 @@ def test_kernel_matches_reference():
     # GPyTorch implementation (with minimal RF parameters)
     kernel = ArcCosineKernel(n_px_side=n_px_side, sigma_0=sigma_0,
                              beta=0.1, rho=0.1, eps_0x=0.0, eps_0y=0.0)
-    K_new = kernel(X1, X2).evaluate()
+    K_new = kernel(X1, X2).to_dense()
 
     # Compare
     max_diff = (K_ref - K_new).abs().max().item()

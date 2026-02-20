@@ -206,7 +206,7 @@ def test_dK_gradients(verbose=False):
         for p in kernel.parameters():
             p.requires_grad_(True)
 
-        K_auto = kernel(X, X_tilde).evaluate()
+        K_auto = kernel(X, X_tilde).to_dense()
         loss = K_auto.sum()
         loss.backward()
 

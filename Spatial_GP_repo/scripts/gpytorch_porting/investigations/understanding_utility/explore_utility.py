@@ -80,8 +80,8 @@ _ADAPTIVE_RMAX_PARAMS = {
 # ---------------------------------------------------------------------------
 # Default config
 # ---------------------------------------------------------------------------
-N_TRAIN = 70
-M = 50
+N_TRAIN = 300
+M = 300
 SIGMA_0 = None  # Override kernel sigma_0 AFTER training, before utility eval. None = keep trained value.
 
 
@@ -101,7 +101,9 @@ def setup():
             x_target: (n_pixels,) first pool image (convenient reference)
             config: full config dict
     """
+
     config = build_config_from_defaults(mode='default_gpy', M=M, n_train=N_TRAIN)
+    # config = build_config_from_defaults(mode='default_gpy')
     result = run_single_config(config)
 
     if result is None or result.get('status') != 'success':
@@ -149,7 +151,7 @@ def kernel_value(model, x1, x2):
     with torch.no_grad():
         return model.covar_module(
             x1.unsqueeze(0), x2.unsqueeze(0)
-        ).evaluate().squeeze().item()
+        ).to_dense().squeeze().item()
 
 
 def kernel_norm(model, x):

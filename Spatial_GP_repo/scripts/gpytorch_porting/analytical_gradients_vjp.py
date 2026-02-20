@@ -399,7 +399,7 @@ def test_vjp_correctness():
         gradient_mode='autograd'
     ).to(device).double()
 
-    K_auto = kernel_auto(x1, x2).evaluate()
+    K_auto = kernel_auto(x1, x2).to_dense()
     loss_auto = K_auto.sum()
     loss_auto.backward()
 
@@ -518,7 +518,7 @@ def benchmark_implementations():
 
     for _ in range(n_warmup):
         kernel_auto.zero_grad()
-        K = kernel_auto(x1, x2).evaluate()
+        K = kernel_auto(x1, x2).to_dense()
         K.sum().backward()
 
     if device.type == 'cuda':
@@ -527,7 +527,7 @@ def benchmark_implementations():
     t0 = time.time()
     for _ in range(n_trials):
         kernel_auto.zero_grad()
-        K = kernel_auto(x1, x2).evaluate()
+        K = kernel_auto(x1, x2).to_dense()
         K.sum().backward()
     if device.type == 'cuda':
         torch.cuda.synchronize()

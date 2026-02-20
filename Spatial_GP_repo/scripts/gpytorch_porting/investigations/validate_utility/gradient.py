@@ -117,7 +117,7 @@ def compute_closeness_metrics(x_opt, x_target, model, rf_mask, initial_pixel_dis
         rf_pixel_dist = (x_opt[rf_mask] - x_target[rf_mask]).norm().item()
         kernel_sim = model.covar_module(
             x_opt.unsqueeze(0), x_target.unsqueeze(0)
-        ).evaluate().squeeze().item()
+        ).to_dense().squeeze().item()
         pixel_min = x_opt.min().item()
         pixel_max = x_opt.max().item()
 

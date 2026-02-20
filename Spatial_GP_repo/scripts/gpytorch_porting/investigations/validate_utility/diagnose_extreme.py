@@ -218,10 +218,10 @@ def main():
 
     for name, x in test_images:
         with torch.no_grad():
-            k_xx = model.covar_module(x.unsqueeze(0), x.unsqueeze(0)).evaluate().squeeze().item()
-            k_xt = model.covar_module(x.unsqueeze(0), x_target.unsqueeze(0)).evaluate().squeeze().item()
+            k_xx = model.covar_module(x.unsqueeze(0), x.unsqueeze(0)).to_dense().squeeze().item()
+            k_xt = model.covar_module(x.unsqueeze(0), x_target.unsqueeze(0)).to_dense().squeeze().item()
             # Angular distance: cos(angle) = k(x,y) / sqrt(k(x,x)*k(y,y))
-            k_tt = model.covar_module(x_target.unsqueeze(0), x_target.unsqueeze(0)).evaluate().squeeze().item()
+            k_tt = model.covar_module(x_target.unsqueeze(0), x_target.unsqueeze(0)).to_dense().squeeze().item()
             cos_angle = k_xt / (math.sqrt(k_xx * k_tt) + 1e-30)
             cos_angle = max(-1.0, min(1.0, cos_angle))  # clamp for arccos
             angle = math.acos(cos_angle)

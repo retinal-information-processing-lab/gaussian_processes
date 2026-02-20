@@ -88,9 +88,9 @@ def compute_kernel_angle(model, x1, x2):
     For small angles the approximation is excellent (error O(theta^4)).
     """
     with torch.no_grad():
-        k_11 = model.covar_module(x1.unsqueeze(0), x1.unsqueeze(0)).evaluate().squeeze().item()
-        k_22 = model.covar_module(x2.unsqueeze(0), x2.unsqueeze(0)).evaluate().squeeze().item()
-        k_12 = model.covar_module(x1.unsqueeze(0), x2.unsqueeze(0)).evaluate().squeeze().item()
+        k_11 = model.covar_module(x1.unsqueeze(0), x1.unsqueeze(0)).to_dense().squeeze().item()
+        k_22 = model.covar_module(x2.unsqueeze(0), x2.unsqueeze(0)).to_dense().squeeze().item()
+        k_12 = model.covar_module(x1.unsqueeze(0), x2.unsqueeze(0)).to_dense().squeeze().item()
         cos_a = k_12 / (math.sqrt(k_11 * k_22) + 1e-30)
         cos_a = max(-1.0, min(1.0, cos_a))
         return math.acos(cos_a)
@@ -123,7 +123,7 @@ def test_c1_kernel_proportionality(model, x_target, X_inducing):
         # K(x_target, z_j) for each inducing point
         k_base = model.covar_module(
             x_target.unsqueeze(0), X_inducing[test_indices]
-        ).evaluate().squeeze()  # (n_test,)
+        ).to_dense().squeeze()  # (n_test,)
 
     print(f"\n  {'c':>6}  ", end="")
     for j in range(n_test):
@@ -139,7 +139,7 @@ def test_c1_kernel_proportionality(model, x_target, X_inducing):
         with torch.no_grad():
             k_scaled = model.covar_module(
                 x_scaled.unsqueeze(0), X_inducing[test_indices]
-            ).evaluate().squeeze()
+            ).to_dense().squeeze()
 
         ratios = (k_scaled / k_base).cpu().numpy()
         mean_ratio = ratios.mean()
@@ -370,12 +370,12 @@ def test_c7_sigma0_correction(model, x_target, X_inducing):
     with torch.no_grad():
         k_base = model.covar_module(
             x_target.unsqueeze(0), X_inducing[:n_test]
-        ).evaluate().squeeze()
+        ).to_dense().squeeze()
 
         # Also compute v_t = K(x_t, x_t) (self-kernel)
         v_t = model.covar_module(
             x_target.unsqueeze(0), x_target.unsqueeze(0)
-        ).evaluate().squeeze().item()
+        ).to_dense().squeeze().item()
 
     q = v_t - sigma0_sq  # x_t^T C x_t
     print(f"  v_t = K(x_t, x_t) = {v_t:.4f}")
@@ -393,7 +393,7 @@ def test_c7_sigma0_correction(model, x_target, X_inducing):
         with torch.no_grad():
             k_scaled = model.covar_module(
                 x_scaled.unsqueeze(0), X_inducing[:n_test]
-            ).evaluate().squeeze()
+            ).to_dense().squeeze()
 
         frac_err = ((k_scaled - c * k_base).abs() / (c * k_base).abs()).cpu().numpy()
         mean_err = frac_err.mean()
