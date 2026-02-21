@@ -71,13 +71,17 @@ from run_single_mode import build_config_from_defaults
 # ---------------------------------------------------------------------------
 # Investigation-specific constants (optimizer tuning, not model parameters)
 # ---------------------------------------------------------------------------
-N_STEPS = 100            # Adam optimization steps
-LR = 0.1                 # Adam learning rate (larger than LBFGS because gradient is small)
+N_STEPS = 50             # outer optimization steps
+LR = 0.5                 # LBFGS learning rate
+LBFGS_MAX_ITER = 20      # LBFGS inner iterations per step
+LBFGS_MAX_EVAL = 25      # LBFGS max function evaluations per step
+LBFGS_HISTORY_SIZE = 10  # LBFGS history size
 LOG_EVERY = 5            # print every N steps
 
 TARGET_INDEX = 0          # pool image index for target
 
 DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
+START_NOISE = 5             # noise std relative to ||z_target|| (0 = exact PCA projection)
 
 
 # ============================================================================
@@ -179,18 +183,13 @@ def image_to_pca(x_full, mu_rf, V_K, rf_mask):
 def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
                         rf_mask, r_max, f_max, n_pixels, dtype, device,
                         n_steps, lr, z_max_norm=None):
-    """Adam gradient ascent maximizing U_DA in PCA space.
+    """LBFGS gradient ascent maximizing U_DA in PCA space.
 
     Optimizes z in R^K. The image is reconstructed as x* = mu + V_K @ z.
     Gradient chain: z -> V_K @ z + mu -> x_full -> kernel -> utility.
 
-    Uses Adam instead of LBFGS because the DA utility landscape is very
-    flat (gradient ~1e-5) and LBFGS's strong_wolfe line search rejects
-    all steps when function changes are below numerical noise.
-
     If z_max_norm is set, z is projected back onto the ball ||z|| <= z_max_norm
-    after each step (projected gradient ascent). This prevents the optimizer
-    from amplifying the image beyond the range of natural images.
+    after each outer step (projected gradient ascent).
 
     Args:
         z_start: (K,) initial PCA coordinates
@@ -210,7 +209,13 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
     """
     z = z_start.clone().detach().requires_grad_(True)
 
-    optimizer = torch.optim.Adam([z], lr=lr)
+    optimizer = torch.optim.LBFGS(
+        [z], lr=lr,
+        max_iter=LBFGS_MAX_ITER,
+        max_eval=LBFGS_MAX_EVAL,
+        history_size=LBFGS_HISTORY_SIZE,
+        line_search_fn='strong_wolfe',
+    )
 
     history = {
         'step': [], 'utility': [], 'grad_norm': [],
@@ -218,24 +223,27 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
     }
 
     for step in range(n_steps):
-        optimizer.zero_grad()
-        x_full = pca_to_image(z, mu_rf, V_K, rf_mask, n_pixels, dtype, device)
-        result = distribution_aware_utility(
-            model, likelihood,
-            x_full.unsqueeze(0),
-            x_target.unsqueeze(0),
-            r_max=r_max,
-            adaptive_r_max=False,
-            sample_lambda=False,
-        )
-        # Firing rate guard: skip step if firing rate exceeds f_max
-        mu_g = result['mu_g_marg']
-        if torch.exp(mu_g).item() > f_max:
-            print(f"  step {step}: firing rate exceeded f_max, skipping")
-            continue
-        loss = -result['utility'].squeeze()
-        loss.backward()
-        optimizer.step()
+
+        def closure():
+            optimizer.zero_grad()
+            x_full = pca_to_image(z, mu_rf, V_K, rf_mask, n_pixels, dtype, device)
+            result = distribution_aware_utility(
+                model, likelihood,
+                x_full.unsqueeze(0),
+                x_target.unsqueeze(0),
+                r_max=r_max,
+                adaptive_r_max=False,
+                sample_lambda=False,
+            )
+            # Firing rate guard
+            mu_g = result['mu_g_marg']
+            if torch.exp(mu_g).item() > f_max:
+                return torch.tensor(float('inf'), device=device)
+            loss = -result['utility'].squeeze()  # NEGATE: maximize utility
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
 
         # Project z back onto the ball ||z|| <= z_max_norm
         if z_max_norm is not None:
@@ -301,6 +309,7 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
 
 def plot_results(x_target, x_start, x_final, history, rf_mask,
                  kernel, config, vmin, vmax, test_r, K, var_explained,
+                 var_threshold, kernel_type,
                  n_px_side, out_path, pct_oob=0.0, final_range=None):
     """Generate PCA optimization summary figure.
 
@@ -413,7 +422,8 @@ def plot_results(x_target, x_start, x_final, history, rf_mask,
 
     title_str = (
         f'PCA-constrained DA Utility Optimization  '
-        f'(K={K}, var_expl={var_explained:.3f}, '
+        f'(K={K}, var_thr={var_threshold:.2f}, var_expl={var_explained:.3f}, '
+        f'kernel={kernel_type}, '
         f'M={config["M"]}, n_train={config["n_train"]}, '
         f'seed={config["seed"]}, cell={config["cell"]})  '
         f'test_r={test_r:.3f}'
@@ -501,11 +511,11 @@ def main():
 
     # === Step 3: Compute PCA ===
     print("\n" + "=" * 70)
-    print("Step 3: PCA on training images (RF-masked)")
+    print("Step 3: PCA on all images (RF-masked)")
     print("=" * 70)
 
     mu_rf, V_K, eigenvalues, K, var_explained = compute_pca(
-        X_train, rf_mask,
+        X_all, rf_mask,
         var_threshold=args.var_threshold,
         n_components=args.n_components,
     )
@@ -538,17 +548,23 @@ def main():
           f"max={z_train_norms.max():.2f}, "
           f"95th percentile={z_max_norm:.2f}")
 
-    # Start from target's PCA projection -- ensures we begin in a region
-    # with meaningful utility and can test whether optimizer improves it
+    # Start from noisy version of target's PCA projection
     z_start = z_target.clone().detach()
+    if START_NOISE > 0:
+        noise_std = START_NOISE * z_target.norm().item()
+        z_start = z_start + noise_std * torch.randn_like(z_start)
+    # Clip z_start to norm boundary before optimization (avoids gradient
+    # detach from the in-loop projection on the very first step)
+    if z_max_norm is not None and z_start.norm() > z_max_norm:
+        z_start = z_start * (z_max_norm / z_start.norm())
     x_start = pca_to_image(z_start, mu_rf, V_K, rf_mask, n_pixels, dtype, device)
-    print(f"  Starting from z_target (PCA projection of target)")
+    print(f"  Starting from z_target + noise (START_NOISE={START_NOISE})")
     print(f"  ||z_start|| = {z_start.norm().item():.4f}")
     print(f"  Norm constraint: ||z|| <= {z_max_norm:.2f} (95th percentile of training)")
 
     # === Step 5: Gradient ascent ===
     print("\n" + "=" * 70)
-    print(f"Step 5: Adam gradient ascent in PCA space (K={K})")
+    print(f"Step 5: LBFGS gradient ascent in PCA space (K={K})")
     print("=" * 70)
 
     x_final, z_final, history = gradient_ascent_pca(
@@ -610,6 +626,7 @@ def main():
     plot_results(
         x_target, x_start, x_final, history, rf_mask,
         kernel, config, vmin_dataset, vmax_dataset, test_r, K, var_explained,
+        args.var_threshold, kernel_type,
         n_px_side,
         out_path=_script_dir / 'pca_optimization.png',
         pct_oob=pct_oob,

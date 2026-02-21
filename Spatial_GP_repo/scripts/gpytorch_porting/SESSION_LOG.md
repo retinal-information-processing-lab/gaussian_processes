@@ -1,5 +1,20 @@
 # Session Log
 
+## 2026-02-21: PCA and C-eigenvalue utility optimization investigation
+
+**Branch**: `pietro/pca-utility-optimization` (PCA), `pietro/c-eigen-utility-optimization` (C-eigen)
+
+**Accomplished:**
+- Orchestrated 2-agent team for parallel implementation of PCA-constrained and C-eigenspace utility optimization
+- PCA script: LBFGS optimization of z in x*=mu+V_K@z, PCA on full dataset, norm constraint, OOB detection, START_NOISE
+- C-eigen script: LBFGS optimization of z in x*=U_K@z from C matrix eigendecomposition (K=91 of 1725 dims)
+- Comparative runs: arc_cosine vs RBF, different targets and noise levels
+- Key finding: RBF well-behaved, arc_cosine suffers from norm-driven utility (projected gradient + momentum instability)
+
+**Documentation updated:** SESSION_LOG.md
+
+**Known issues:** Arc-cosine + projected gradient ascent can decrease utility for some targets (momentum/projection interaction). Not investigated further.
+
 ## 2026-02-20c: Complete Phases 3-4, consolidate utility folder
 **Branch**: `pietro/workingbranch`
 **Status**: All 4 phases complete
