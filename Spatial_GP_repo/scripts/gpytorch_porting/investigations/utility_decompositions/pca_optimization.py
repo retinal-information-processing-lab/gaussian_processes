@@ -307,16 +307,21 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
 # Visualization
 # ============================================================================
 
-def plot_results(x_target, x_start, x_final, history, rf_mask,
+def plot_results(x_target, x_target_pca, x_start, x_final, history, rf_mask,
+                 u_target_orig, u_target_pca, target_index,
                  kernel, config, vmin, vmax, test_r, K, var_explained,
                  var_threshold, kernel_type,
-                 n_px_side, out_path, pct_oob=0.0, final_range=None):
+                 n_px_side, out_path):
     """Generate PCA optimization summary figure.
 
-    Top row: target, start (PCA projection), final optimized, difference.
+    Top row: target, target PCA projection, start (noisy), final optimized.
     Bottom left: utility convergence. Bottom right: Pearson r convergence.
+
+    Each subplot independently checks for OOB pixels (RF-masked only)
+    and flags with red title if any exceed [vmin, vmax].
     """
     mask_2d = rf_mask.cpu().numpy().reshape(n_px_side, n_px_side)
+    rf_mask_np = rf_mask.cpu().numpy()
     rows = np.any(mask_2d, axis=1)
     cols = np.any(mask_2d, axis=0)
     r_min, r_max_px = np.where(rows)[0][[0, -1]]
@@ -330,6 +335,15 @@ def plot_results(x_target, x_start, x_final, history, rf_mask,
         img = x_flat.detach().cpu().numpy().reshape(n_px_side, n_px_side).copy()
         img[~mask_2d] = gray_val
         return img[r_min:r_max_px+1, c_min:c_max_px+1]
+
+    def check_oob(x_flat):
+        """Check OOB on RF pixels. Returns (pct_oob, actual_min, actual_max)."""
+        vals = x_flat.detach().cpu().numpy()[rf_mask_np]
+        n_below = (vals < vmin).sum()
+        n_above = (vals > vmax).sum()
+        n_oob = n_below + n_above
+        pct = 100.0 * n_oob / len(vals)
+        return pct, float(vals.min()), float(vals.max())
 
     gray_val = (vmin + vmax) / 2
 
@@ -355,34 +369,29 @@ def plot_results(x_target, x_start, x_final, history, rf_mask,
 
     fig = plt.figure(figsize=(16, 8))
 
-    # Top row: 4 images
-    img_target = masked_crop(x_target, gray_val)
-    img_start = masked_crop(x_start, gray_val)
-    img_final = masked_crop(x_final, gray_val)
-    img_diff = masked_crop(x_final - x_start, 0.0)
+    # Top row: 4 images — each with independent OOB check
+    x_tensors = [x_target, x_target_pca, x_start, x_final]
+    cropped_images = [masked_crop(x, gray_val) for x in x_tensors]
 
     u_start = history['utility'][0]
     u_final = history['utility'][-1]
 
-    clip_warning = ''
-    if pct_oob > 0:
-        lo_str = f'{final_range[0]:.2f}' if final_range else '?'
-        hi_str = f'{final_range[1]:.2f}' if final_range else '?'
-        clip_warning = f'\nCLIPPED {pct_oob:.0f}% OOB [{lo_str},{hi_str}]'
-
-    titles = [
-        f'Target A\n(conditioning image)',
-        f'Start (PCA proj of target)\nU_DA={u_start:.4f}',
-        f'Final (PCA optimized)\nU_DA={u_final:.4f}{clip_warning}',
-        f'Final - Start',
+    base_titles = [
+        f'Target A (original, pool[{target_index}])\nU_DA={u_target_orig:.4f}',
+        f'Target A (PCA, K={K})\nU_DA={u_target_pca:.4f}',
+        f'Start (noisy)\nU_DA={u_start:.4f}',
+        f'Final (PCA optimized)\nU_DA={u_final:.4f}',
     ]
-    images = [img_target, img_start, img_final, img_diff]
 
-    for i, (img, title) in enumerate(zip(images, titles)):
+    for i, (img, x_flat, title) in enumerate(zip(cropped_images, x_tensors, base_titles)):
+        pct_oob, lo, hi = check_oob(x_flat)
+        is_oob = pct_oob > 0
+        if is_oob:
+            title += f'\nCLIPPED {pct_oob:.0f}% OOB [{lo:.2f},{hi:.2f}]'
+
         ax = fig.add_subplot(2, 4, i + 1)
         im = ax.imshow(img, cmap='gray', vmin=vmin, vmax=vmax, aspect='equal')
-        title_color = 'red' if (i == 2 and pct_oob > 0) else 'black'
-        ax.set_title(title, fontsize=10, color=title_color)
+        ax.set_title(title, fontsize=10, color='red' if is_oob else 'black')
         ax.axis('off')
         cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.ax.tick_params(labelsize=7)
@@ -579,21 +588,6 @@ def main():
     print(f"  Pearson r (RF): {history['pearson_r_rf'][0]:.4f} -> {history['pearson_r_rf'][-1]:.4f}")
     print(f"  |z|: {history['z_norm'][0]:.4f} -> {history['z_norm'][-1]:.4f}")
 
-    # Pixel bounds check
-    x_final_rf = x_final[rf_mask]
-    final_min = x_final_rf.min().item()
-    final_max = x_final_rf.max().item()
-    n_below = (x_final_rf < vmin_dataset).sum().item()
-    n_above = (x_final_rf > vmax_dataset).sum().item()
-    n_oob = n_below + n_above
-    pct_oob = 100.0 * n_oob / n_rf
-    print(f"\n  Pixel bounds check (dataset RF range: [{vmin_dataset:.3f}, {vmax_dataset:.3f}]):")
-    print(f"    Final image RF range: [{final_min:.3f}, {final_max:.3f}]")
-    print(f"    Out-of-bounds pixels: {n_oob}/{n_rf} ({pct_oob:.1f}%)"
-          f"  [{n_below} below, {n_above} above]")
-    if n_oob > 0:
-        print(f"    ** IMAGE IS CLIPPED in plot (vmin/vmax set to dataset range)")
-
     # PCA space analysis: how does z_final compare to z_target?
     z_similarity = torch.nn.functional.cosine_similarity(
         z_final.unsqueeze(0), z_target.unsqueeze(0)
@@ -618,19 +612,38 @@ def main():
                   f"mu_g={mu_g.item():.4f}, firing_rate={firing_rate:.2f}, "
                   f"H_marg={H:.6f}{flag}")
 
+    # Compute utility for target (original) and target (PCA projection)
+    with torch.no_grad():
+        result_target_orig = distribution_aware_utility(
+            model, likelihood,
+            x_target.unsqueeze(0), x_target.unsqueeze(0),
+            r_max=r_max, adaptive_r_max=False, sample_lambda=False,
+        )
+        u_target_orig = result_target_orig['utility'].item()
+
+        result_target_pca = distribution_aware_utility(
+            model, likelihood,
+            x_target_reconstructed.unsqueeze(0), x_target.unsqueeze(0),
+            r_max=r_max, adaptive_r_max=False, sample_lambda=False,
+        )
+        u_target_pca = result_target_pca['utility'].item()
+
+    print(f"\n  Utility at target images:")
+    print(f"    target (original):       U_DA={u_target_orig:.6f}")
+    print(f"    target (PCA projection): U_DA={u_target_pca:.6f}")
+
     # === Step 6: Visualization ===
     print("\n" + "=" * 70)
     print("Step 6: Visualization")
     print("=" * 70)
 
     plot_results(
-        x_target, x_start, x_final, history, rf_mask,
+        x_target, x_target_reconstructed, x_start, x_final, history, rf_mask,
+        u_target_orig, u_target_pca, args.target_index,
         kernel, config, vmin_dataset, vmax_dataset, test_r, K, var_explained,
         args.var_threshold, kernel_type,
         n_px_side,
-        out_path=_script_dir / 'pca_optimization.png',
-        pct_oob=pct_oob,
-        final_range=(final_min, final_max),
+        out_path=_script_dir / f'pca_optimization_{kernel_type}_vt{args.var_threshold:.2f}.png',
     )
 
 
