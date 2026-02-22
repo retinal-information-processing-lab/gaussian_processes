@@ -33,6 +33,17 @@ Investigation scripts that **fit models or produce metrics** follow the same par
 
 Quick inline checks (printing shapes, inspecting config keys, verifying a value) are fine without config traceability — they're debugging, not results.
 
+## Image Pixel Range and Plotting (No Silent Clipping)
+The DMD projector has a finite physical range [0, 255]. In our normalized data, this maps to **[dataset_global_min, dataset_global_max]** computed across ALL available images (train + pool, not just training subset). These are the hard physical limits — nothing brighter or darker can be displayed to the neuron.
+
+**Plotting rules:**
+- `imshow` must always use **fixed vmin/vmax = dataset global min/max**. Never adaptive, never per-image scaling.
+- **Every subplot must independently check** if its pixel values exceed [vmin, vmax]. If any pixel is out of bounds, the title must turn red and report the OOB percentage. No exceptions — this applies to initial images, intermediate images, and final optimized images alike.
+- `imshow` naturally clips values outside [vmin, vmax] to the colorbar endpoints. This clipping is acceptable **only when flagged visually** (red title). Silent clipping — where the plot looks fine but values are actually out of range — is a bug.
+- This is the last checkpoint before an image would be shown to a real neuron. Treat it accordingly.
+
+**Why this matters:** Unconstrained optimization (or even noisy initial conditions) can produce pixel values outside physical limits. The optimization itself is free to explore wherever utility is high — but we must always know whether the result is physically realizable. Hiding OOB behind silent clipping defeats the entire purpose of this experimental work.
+
 ## Numerical Debugging Checklist
 When diagnosing numerical issues, always check these in order:
 1. Kernel initialization (bounds, lengthscale)
