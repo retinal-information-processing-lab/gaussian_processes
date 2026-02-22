@@ -80,7 +80,7 @@ LOG_EVERY = 5            # print every N steps
 
 TARGET_INDEX = 0          # pool image index for target
 
-DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
+DEFAULT_VAR_THRESHOLD = 0.8  # fraction of variance to retain
 START_NOISE = 5             # noise std relative to ||z_target|| (0 = exact PCA projection)
 
 
@@ -254,8 +254,17 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
 
         # Verify gradient flow on first step
         if step == 0:
-            assert z.grad is not None and z.grad.norm() > 0, \
-                "No gradient flow through PCA reconstruction"
+            if z.grad is None or z.grad.norm() == 0:
+                # LBFGS closure may never call backward() if every evaluation
+                # triggers the f_max firing rate guard (predicted firing rate
+                # exceeds f_max). This happens with arc_cosine kernel when the
+                # starting image has large ||Cx|| (e.g., dataset mean).
+                raise RuntimeError(
+                    f"No gradient at step 0: f_max guard likely rejected all "
+                    f"closure evaluations. The starting image's predicted "
+                    f"firing rate exceeds f_max={f_max}. Try a different "
+                    f"starting point or increase f_max."
+                )
 
         # Track metrics
         with torch.no_grad():
@@ -288,8 +297,12 @@ def gradient_ascent_pca(model, likelihood, z_start, x_target, mu_rf, V_K,
         history['pearson_r_rf'].append(pr)
 
         if np.isnan(utility) or np.isnan(grad_norm):
-            print(f"  step {step}: NaN detected - stopping")
-            break
+            raise RuntimeError(
+                f"NaN detected at step {step}. LBFGS line search likely "
+                f"proposed a step that caused firing rate overflow "
+                f"(arc_cosine kernel: k(x,x) ~ ||Cx||^2). "
+                f"Try RBF kernel or start from target PCA projection."
+            )
 
         if step % LOG_EVERY == 0 or step == n_steps - 1:
             print(f"  step {step:4d}: U={utility:.6f}  "
@@ -557,19 +570,27 @@ def main():
           f"max={z_train_norms.max():.2f}, "
           f"95th percentile={z_max_norm:.2f}")
 
-    # Start from noisy version of target's PCA projection
-    z_start = z_target.clone().detach()
-    if START_NOISE > 0:
-        noise_std = START_NOISE * z_target.norm().item()
-        z_start = z_start + noise_std * torch.randn_like(z_start)
-    # Clip z_start to norm boundary before optimization (avoids gradient
-    # detach from the in-loop projection on the very first step)
-    if z_max_norm is not None and z_start.norm() > z_max_norm:
-        z_start = z_start * (z_max_norm / z_start.norm())
+    # Start from dataset mean (z = 0 in PCA space, since mu is the PCA center)
+    z_start = torch.zeros(K, dtype=dtype, device=device)
     x_start = pca_to_image(z_start, mu_rf, V_K, rf_mask, n_pixels, dtype, device)
-    print(f"  Starting from z_target + noise (START_NOISE={START_NOISE})")
+    print(f"  Starting from dataset mean image")
     print(f"  ||z_start|| = {z_start.norm().item():.4f}")
     print(f"  Norm constraint: ||z|| <= {z_max_norm:.2f} (95th percentile of training)")
+
+    # Sanity check: verify starting image has valid firing rate
+    with torch.no_grad():
+        mu_start, _ = get_gp_marginal_moments(model, x_start.unsqueeze(0))
+        A = likelihood.A.squeeze()
+        lam0 = likelihood.lambda0.squeeze()
+        fr_start = torch.exp(A * mu_start + lam0).item()
+    if fr_start > f_max or np.isnan(fr_start):
+        raise RuntimeError(
+            f"Starting image has firing rate {fr_start:.1f} (f_max={f_max}). "
+            f"Cannot optimize — utility will be NaN. "
+            f"Arc-cosine kernel amplifies image norm via k(x,x) ~ ||Cx||^2. "
+            f"Try starting from target PCA projection instead of mean, "
+            f"or use RBF kernel."
+        )
 
     # === Step 5: Gradient ascent ===
     print("\n" + "=" * 70)
