@@ -1,19 +1,19 @@
 # Session Log
 
-## 2026-02-21: PCA and C-eigenvalue utility optimization investigation
+## 2026-02-23: PCA-constrained utility optimization (continuing)
 
-**Branch**: `pietro/pca-utility-optimization` (PCA), `pietro/c-eigen-utility-optimization` (C-eigen)
+**Branch**: `pietro/pca-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_PCA.md`
+**Status**: Continuing in next session
 
-**Accomplished:**
-- Orchestrated 2-agent team for parallel implementation of PCA-constrained and C-eigenspace utility optimization
-- PCA script: LBFGS optimization of z in x*=mu+V_K@z, PCA on full dataset, norm constraint, OOB detection, START_NOISE
-- C-eigen script: LBFGS optimization of z in x*=U_K@z from C matrix eigendecomposition (K=91 of 1725 dims)
-- Comparative runs: arc_cosine vs RBF, different targets and noise levels
-- Key finding: RBF well-behaved, arc_cosine suffers from norm-driven utility (projected gradient + momentum instability)
+PCA optimization of x*=mu+V_K@z with LBFGS. Iterated through: Adam vs LBFGS, training-only vs full-dataset PCA, noise starts vs mean start, arc_cosine vs RBF, multiple var_thresholds. RBF+LBFGS+M=50 is the working configuration. Key insight: var_threshold < 1.0 is a genuine naturalness constraint (not just reparameterization).
 
-**Documentation updated:** SESSION_LOG.md
+## 2026-02-21: C-eigenvalue utility optimization (separate branch)
 
-**Known issues:** Arc-cosine + projected gradient ascent can decrease utility for some targets (momentum/projection interaction). Not investigated further.
+**Branch**: `pietro/c-eigen-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_C_EIGEN.md`
+
+C-eigenspace optimization (x*=U_K@z from kernel C matrix). Confirmed theoretical prediction: equivalent to pixel-space optimization, just better conditioning. K=91 of 1725 dims retained.
 
 ## 2026-02-20c: Complete Phases 3-4, consolidate utility folder
 **Branch**: `pietro/workingbranch`
