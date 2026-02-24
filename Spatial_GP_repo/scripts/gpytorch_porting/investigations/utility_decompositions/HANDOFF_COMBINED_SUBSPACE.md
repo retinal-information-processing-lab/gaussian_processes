@@ -191,6 +191,62 @@ On branch `pietro/c-eigen-utility-optimization` only (not on current branch):
 
 ---
 
+## Open Idea: Input Warping for Pixel Bound Enforcement
+
+**Status**: Untested idea. Noted here for future investigation.
+
+### The Problem
+
+Subspace optimization (all three methods) can produce images with pixel values outside the physical display range [vmin, vmax]. The utility function does not penalize this because it operates through the kernel, which applies the C matrix (a spatial smoother) before evaluating. Individual pixel bound violations are invisible to C — a pixel at 2.5 (in bounds) and 2.6 (out of bounds) look the same after spatial smoothing. The utility landscape has no "walls" at pixel bounds.
+
+With arc-cosine kernel, norm growth eventually triggers the f_max firing rate guard, which indirectly limits OOB. But with RBF kernel (k(x,x)=1 always), there is no such mechanism.
+
+### The Idea: Kernel-Level Input Warping
+
+Instead of constraining the optimizer (sigmoid reparameterization, clipping, norm projection), modify the kernel itself to be unaware of OOB pixel values. Apply a per-pixel nonlinear warping function w() **before** the C matrix:
+
+```
+k(x, y) = exp(-||C @ w(x) - C @ w(y)||^2 / (2l^2))
+```
+
+where w() applies a soft-clipping function to each pixel independently:
+- Within [vmin, vmax]: w(x_i) ~ x_i (approximately linear, minimal distortion)
+- Outside [vmin, vmax]: w(x_i) saturates (diminishing response)
+
+Candidate functions: scaled tanh, sigmoid mapped to [vmin, vmax], Beta CDF.
+
+### Why This Differs From Sigmoid Reparameterization
+
+Sigmoid reparameterization during optimization (`x = sigmoid(z)`) is a constraint on the search — the model trains on raw pixels and may predict high utility just beyond the bound. The sigmoid forces the optimizer to stay in bounds but doesn't change what the model has learned. You are fighting the model's landscape.
+
+Input warping changes the model itself. The kernel trains on w(x), so learned parameters (lengthscale, C matrix, inducing points) all adapt to a world where pixel values saturate at bounds. The model genuinely cannot distinguish "at the bound" from "past the bound." The utility landscape itself has no incentive to go OOB. No optimizer constraint needed.
+
+### Analogy
+
+The C matrix is a **spatial RF** — it determines WHERE the kernel looks. Input warping would be a **dynamic range RF** — it determines WHAT pixel values the kernel can respond to. Biological neurons have both: a spatial receptive field and a saturation/response curve that compresses extreme inputs. The physical display projector has this too (it clips at [0, 255]).
+
+### Considerations
+
+- This is a **modeling change**, not a post-hoc fix. The model must be retrained with warped inputs. Results will differ from the unwarped model.
+- The warping goes **before C** in the pipeline: `x -> w(x) -> C @ w(x) -> kernel`. Order matters — we want per-pixel saturation before spatial smoothing.
+- The warping function must be differentiable for gradient-based training and optimization.
+- The warping adds a nonlinearity to what is currently a linear pipeline (`x -> C @ x`). This may interact with the eigenspace decompositions in nontrivial ways — the C eigenvectors are computed for the linear C, not for `C @ w()`.
+- Input warping is well-established in the GP/Bayesian optimization literature (Snoek et al. 2014, "Input Warping for Bayesian Optimization of Non-stationary Functions"), but typically for low-dimensional inputs. Applying it per-pixel to 11664 dimensions is unusual and may have unexpected effects.
+- It is unclear whether the warping would need to be differentiable through the training loop or only during utility optimization. If only during optimization, the model could train on raw pixels and the warping would be applied post-hoc — but then we lose the "model learns the bounds" property.
+- An intermediate approach: add a multiplicative penalty term to the kernel rather than warping inputs. Something like `k_bounded(x, y) = k_base(Cx, Cy) * prod_i phi(x_i)` where phi(x_i) ~ 1 in bounds and drops toward 0 outside. This preserves the linear C pipeline but still encodes bounds at the kernel level. Untested.
+
+### What To Try First
+
+If investigating this, a minimal experiment would be:
+1. Pick a simple warping function (e.g., scaled tanh that maps [vmin, vmax] to ~[vmin, vmax] with saturation outside)
+2. Apply it in `kernels.py` before the C matrix multiplication
+3. Retrain the model with warped inputs
+4. Check: does test_r change? Do utility-optimized images stay in bounds without explicit constraints?
+
+This should be a separate investigation, not mixed into the subspace optimization work.
+
+---
+
 ## Continuation Prompt
 
 ```

@@ -95,7 +95,7 @@ LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
 LOG_EVERY = 1            # print every step
 
 # --- Image selection ---
-TARGET_INDEX = 5         # pool image index for single-target mode
+TARGET_INDEX = 51         # pool image index for single-target mode
 
 # --- Multi-conditioning mode ---
 N_COND = 1               # 1 = single-target mode. >1 = multi-conditioning.
@@ -104,7 +104,7 @@ START_SEED = 123         # seed for random start image selection (multi-cond onl
 GRAD_CHUNK_SIZE = 30     # images per gradient accumulation chunk (GPU memory)
 
 # --- PCA-specific ---
-DEFAULT_VAR_THRESHOLD = 0.6  # fraction of variance to retain
+DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
 
 # --- C-eigenspace-specific ---
 # Relative threshold: keep eigenvalues > EIGEN_REL_THRESHOLD * max_eigenvalue.
