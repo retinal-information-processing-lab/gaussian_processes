@@ -1,5 +1,28 @@
 # Session Log
 
+## 2026-02-23b: Unified subspace script + combined approach handoff
+
+**Branch**: `pietro/pca-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_COMBINED_SUBSPACE.md`
+**Status**: Continuing — next session implements COMBINED PCA+C-eigenspace optimization
+
+Created `subspace_optimization.py` unifying PCA and C-eigenspace as separate `--method` alternatives. Shared gradient_ascent, z_to_image, plotting. Both methods tested (PCA RBF + C-eigen arc_cosine). Brought c_eigen_optimization.py to this branch as reference. User clarified goal: COMBINE both decompositions in a single optimization (e.g., eigendecompose V_K^T @ C @ V_K), not just run them separately.
+
+## 2026-02-23: PCA-constrained utility optimization (continuing)
+
+**Branch**: `pietro/pca-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_PCA.md`
+**Status**: Continuing in next session
+
+PCA optimization of x*=mu+V_K@z with LBFGS. Iterated through: Adam vs LBFGS, training-only vs full-dataset PCA, noise starts vs mean start, arc_cosine vs RBF, multiple var_thresholds. RBF+LBFGS+M=50 is the working configuration. Key insight: var_threshold < 1.0 is a genuine naturalness constraint (not just reparameterization).
+
+## 2026-02-21: C-eigenvalue utility optimization (separate branch)
+
+**Branch**: `pietro/c-eigen-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_C_EIGEN.md`
+
+C-eigenspace optimization (x*=U_K@z from kernel C matrix). Confirmed theoretical prediction: equivalent to pixel-space optimization, just better conditioning. K=91 of 1725 dims retained.
+
 ## 2026-02-20c: Complete Phases 3-4, consolidate utility folder
 **Branch**: `pietro/workingbranch`
 **Status**: All 4 phases complete
