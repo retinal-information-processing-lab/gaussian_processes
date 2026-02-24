@@ -104,13 +104,13 @@ START_SEED = 123         # seed for random start image selection (multi-cond onl
 GRAD_CHUNK_SIZE = 30     # images per gradient accumulation chunk (GPU memory)
 
 # --- PCA-specific ---
-DEFAULT_VAR_THRESHOLD = 0.8  # fraction of variance to retain
+DEFAULT_VAR_THRESHOLD = 0.6  # fraction of variance to retain
 
 # --- C-eigenspace-specific ---
 # Relative threshold: keep eigenvalues > EIGEN_REL_THRESHOLD * max_eigenvalue.
 # Mass-based thresholds (e.g., 95%) are useless for C because the first
 # eigenvalue contains 99%+ of the total mass due to the locality mask.
-EIGEN_REL_THRESHOLD = 1e-4
+EIGEN_REL_THRESHOLD = 1e-3
 
 # --- Model size (investigation overrides, smaller for wider RF) ---
 M_OVERRIDE = 50
@@ -126,8 +126,12 @@ def z_to_image(z, basis, offset, rf_mask, n_pixels, dtype, device):
 
     x_rf = offset + basis @ z, then place into full image (zeros elsewhere).
 
-    For PCA:   offset = mu_rf (data mean), basis = V_K (PCA eigenvectors)
-    For C-eigen: offset = zeros,           basis = U_K (C matrix eigenvectors)
+    offset = mu_rf (dataset mean over RF pixels) for ALL methods.
+    This is mathematically intrinsic for PCA (centering before SVD).
+    For C-eigen it is a practical choice: the C eigendecomposition has no
+    natural offset, but centering at the data mean keeps reconstructions
+    within pixel bounds and gives the kernel a realistic operating point.
+    See compute_c_eigenspace() docstring for details.
 
     MUST NOT be called under torch.no_grad() during optimization --
     the gradient flows through z -> basis @ z -> kernel -> utility.
@@ -225,15 +229,28 @@ def compute_pca(X_images, rf_mask, var_threshold=0.95, n_components=None):
 # C-eigenspace decomposition
 # ============================================================================
 
-def compute_c_eigenspace(kernel, rf_mask, eigen_rel_threshold, no_filter=False):
+def compute_c_eigenspace(kernel, rf_mask, eigen_rel_threshold,
+                         data_mean_rf, no_filter=False):
     """Eigendecompose the kernel's C matrix on masked pixels.
 
     Uses a RELATIVE threshold: keep eigenvalues > threshold * max_eigenvalue.
 
     If no_filter=True, keep ALL eigenvectors (K = n_rf).
 
+    The C eigendecomposition is purely a kernel property — mathematically,
+    there is no natural offset (the basis passes through the origin).
+    However, we use the dataset mean (data_mean_rf) as offset for consistency
+    with PCA and combined methods. This is a practical choice, not a
+    mathematical one: it keeps reconstructed images within pixel bounds
+    and gives the kernel a realistic operating point (the kernel sees
+    C @ (mu + U_K @ z) instead of C @ (U_K @ z), which changes the
+    actual utility landscape).
+
+    Args:
+        data_mean_rf: (n_rf,) dataset mean over RF pixels. Used as offset.
+
     Returns:
-        offset: (n_rf,) zeros (C-eigenspace has no mean offset)
+        offset: (n_rf,) dataset mean (same as PCA, for consistency)
         basis: (n_rf, K) top K eigenvectors (columns)
         eigenvalues_all: full eigenvalue spectrum (for plotting)
         K: number of retained dimensions
@@ -279,7 +296,9 @@ def compute_c_eigenspace(kernel, rf_mask, eigen_rel_threshold, no_filter=False):
           f"({100 * K / eigvals.shape[0]:.1f}%)")
 
     basis = eigvecs[:, :K]  # (n_rf, K)
-    offset = torch.zeros(n_rf, dtype=basis.dtype, device=basis.device)
+
+    # Use dataset mean as offset (not zeros) — see docstring for rationale
+    offset = data_mean_rf
 
     meta = {
         'eigen_rel_threshold': eigen_rel_threshold,
@@ -1095,6 +1114,13 @@ def main():
     print(f"Step 3: {method_label} decomposition")
     print("=" * 70)
 
+    # Dataset mean over RF pixels — used as offset for ALL methods.
+    # For PCA this is intrinsic (centering before SVD).
+    # For C-eigen it is a practical choice: the C eigendecomposition has no
+    # natural offset, but centering at the data mean keeps reconstructions
+    # within pixel bounds and changes the kernel operating point.
+    mu_rf = X_all[:, rf_mask].mean(dim=0)  # (n_rf,)
+
     if method == 'pca':
         offset, basis, eigenvalues_all, K, method_meta = compute_pca(
             X_all, rf_mask,
@@ -1111,6 +1137,7 @@ def main():
     else:  # c_eigen
         offset, basis, eigenvalues_all, K, method_meta = compute_c_eigenspace(
             kernel, rf_mask, eigen_rel_threshold,
+            data_mean_rf=mu_rf,
             no_filter=args.no_filter,
         )
 
