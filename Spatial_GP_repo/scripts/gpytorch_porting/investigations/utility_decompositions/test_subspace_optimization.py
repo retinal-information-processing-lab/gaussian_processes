@@ -116,6 +116,7 @@ def main():
     n_rf = rf_mask.sum().item()
 
     X_all = torch.cat([X_pool, X_train], dim=0)
+    mu_rf = X_all[:, rf_mask].mean(dim=0)  # dataset mean over RF pixels
 
     print(f"\nModel ready. n_rf={n_rf}, n_pool={X_pool.shape[0]}, "
           f"test_r={test_r:.4f}")
@@ -217,7 +218,7 @@ def main():
     print("=" * 70)
 
     offset_ceig, basis_ceig, eigvals_ceig, K_ceig, meta_ceig = compute_c_eigenspace(
-        kernel, rf_mask, eigen_rel_threshold=1e-3)
+        kernel, rf_mask, eigen_rel_threshold=1e-3, data_mean_rf=mu_rf)
 
     # 2a: C-eigen basis orthonormality
     gram_c = basis_ceig.T @ basis_ceig
@@ -235,14 +236,15 @@ def main():
           np.all(np.diff(ceig_np[:K_ceig]) <= 1e-7),
           f"max ascending diff = {np.diff(ceig_np[:K_ceig]).max():.6e}")
 
-    # 2c: C-eigen offset is zeros
-    check("C-eigen offset is zeros",
-          offset_ceig.abs().max().item() == 0.0,
-          f"max |offset| = {offset_ceig.abs().max().item():.2e}")
+    # 2c: C-eigen offset is dataset mean (unified offset convention)
+    ceig_offset_err = (offset_ceig - mu_rf).abs().max().item()
+    check("C-eigen offset is dataset mean (mu_rf)",
+          ceig_offset_err < 1e-6,
+          f"max |offset - mu_rf| = {ceig_offset_err:.2e}")
 
     # 2d: C-eigen no_filter gives full rank
     offset_nf, basis_nf, eigvals_nf, K_nf, meta_nf = compute_c_eigenspace(
-        kernel, rf_mask, eigen_rel_threshold=1e-3, no_filter=True)
+        kernel, rf_mask, eigen_rel_threshold=1e-3, data_mean_rf=mu_rf, no_filter=True)
     check("C-eigen no_filter gives K = n_rf",
           K_nf == n_rf,
           f"K={K_nf}, n_rf={n_rf}")
@@ -267,7 +269,7 @@ def main():
 
     # 2g: C-eigen with lower threshold retains MORE dimensions
     _, _, _, K_loose, _ = compute_c_eigenspace(
-        kernel, rf_mask, eigen_rel_threshold=1e-6)
+        kernel, rf_mask, eigen_rel_threshold=1e-6, data_mean_rf=mu_rf)
     check("Lower eigen threshold => more dimensions",
           K_loose > K_ceig,
           f"K(1e-6)={K_loose}, K(1e-3)={K_ceig}")
