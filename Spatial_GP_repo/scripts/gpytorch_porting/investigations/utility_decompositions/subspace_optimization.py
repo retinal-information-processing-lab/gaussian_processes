@@ -1,16 +1,21 @@
 """
 Subspace-constrained gradient ascent for distribution-aware utility.
 
-Unified script supporting two subspace parameterizations:
+Unified script supporting three subspace parameterizations:
 
-  PCA:         x* = mu + V_K @ z   (data manifold constraint)
-  C-eigenspace: x* = U_K @ z       (kernel C matrix eigenvectors)
+  PCA:         x* = mu + V_K @ z        (data manifold constraint)
+  C-eigenspace: x* = U_K @ z            (kernel C matrix eigenvectors)
+  Combined:    x* = mu + (V_K @ W) @ z  (PCA-filtered C-eigenspace)
 
-Both methods optimize z in R^K via LBFGS to maximize U_DA(x* | conditioning images).
+All methods optimize z in R^K via LBFGS to maximize U_DA(x* | conditioning images).
 
 PCA truncation is a genuine constraint — it restricts the optimizer to directions
 with observed variance in the dataset. C-eigenspace truncation only improves
 conditioning (removes near-zero gradient directions) without changing the solution.
+
+Combined: projects C into PCA space (C_pca = V_K^T @ C @ V_K), then eigendecomposes
+C_pca. Keeps directions that are BOTH natural (PCA) AND kernel-visible (C-eigenspace).
+Two thresholds: --var-threshold (PCA) and --eigen-threshold (C_pca eigendecomposition).
 
 Model training via setup() from explore_utility.py.
 All model params from default_params.json via build_config_from_defaults().
@@ -22,13 +27,16 @@ Usage:
     # C-eigenspace, single target:
     python investigations/utility_decompositions/subspace_optimization.py --method c_eigen
 
+    # Combined PCA + C-eigenspace:
+    python investigations/utility_decompositions/subspace_optimization.py --method combined --kernel-type rbf --var-threshold 0.80 --eigen-threshold 1e-3
+
     # PCA with custom variance threshold:
     python investigations/utility_decompositions/subspace_optimization.py --var-threshold 0.95
 
     # C-eigenspace with custom threshold and RBF kernel:
     python investigations/utility_decompositions/subspace_optimization.py --method c_eigen --kernel-type rbf --eigen-threshold 1e-6
 
-    # Multi-conditioning mode (either method):
+    # Multi-conditioning mode (any method):
     python investigations/utility_decompositions/subspace_optimization.py --method pca --n-cond 300 --kernel-type rbf
 """
 
@@ -283,7 +291,95 @@ def compute_c_eigenspace(kernel, rf_mask, eigen_rel_threshold, no_filter=False):
 
 
 # ============================================================================
-# Gradient ascent (unified for both methods)
+# Combined PCA + C-eigenspace decomposition
+# ============================================================================
+
+def compute_combined(X_images, kernel, rf_mask, var_threshold=0.95,
+                     eigen_rel_threshold=1e-3, n_components=None):
+    """Combined PCA + C-eigenspace decomposition.
+
+    Projects the kernel C matrix into PCA space, then eigendecomposes to find
+    directions that are BOTH natural (high data variance) AND kernel-visible
+    (non-zero C eigenvalue).
+
+    Math:
+        V_K = top PCA eigenvectors of data covariance  (n_rf x K_pca)
+        C_pca = V_K^T @ C @ V_K                        (K_pca x K_pca)
+        W = eigenvectors of C_pca (kept by threshold)   (K_pca x K_combined)
+        basis = V_K @ W                                 (n_rf x K_combined)
+        x_rf = mu + basis @ z
+
+    Returns:
+        offset: (n_rf,) dataset mean in RF (mu_rf)
+        basis: (n_rf, K_combined) combined basis vectors
+        eigenvalues_all: full C_pca eigenvalue spectrum (for plotting/thresholding)
+        K: number of retained dimensions (K_combined)
+        meta: dict with combined-specific metadata
+    """
+    print(f"\n  Combined PCA + C-eigenspace:")
+
+    # Step 1: PCA
+    mu_rf, V_K, pca_eigvals, K_pca, pca_meta = compute_pca(
+        X_images, rf_mask,
+        var_threshold=var_threshold,
+        n_components=n_components,
+    )
+    ve = pca_meta['var_explained']
+    print(f"\n  Step 1 - PCA: K_pca={K_pca}, var_explained={ve:.4f}")
+
+    # Step 2: Project C into PCA space
+    with torch.no_grad():
+        C, _ = kernel._compute_C_matrix(apply_mask=True)
+
+    C_pca = V_K.T @ C @ V_K  # (K_pca, K_pca)
+    print(f"  Step 2 - C_pca = V_K^T @ C @ V_K, shape {tuple(C_pca.shape)}")
+
+    # Eigendecompose C_pca
+    eigvals, eigvecs = torch.linalg.eigh(C_pca)
+
+    # Reverse to descending order
+    eigvals = eigvals.flip(0)
+    eigvecs = eigvecs.flip(1)
+
+    # Clamp negative eigenvalues (numerical noise)
+    eigvals = eigvals.clamp(min=0.0)
+
+    total_mass = eigvals.sum().item()
+    max_eigval = eigvals[0].item()
+
+    print(f"  C_pca eigenvalue range: [{eigvals[-1].item():.6e}, {max_eigval:.6e}]")
+    n_show = min(10, eigvals.shape[0])
+    print(f"  Top {n_show} C_pca eigenvalues: {eigvals[:n_show].cpu().numpy()}")
+
+    # Apply relative threshold
+    abs_threshold = eigen_rel_threshold * max_eigval
+    K_combined = int((eigvals > abs_threshold).sum().item())
+    K_combined = max(K_combined, 1)
+    print(f"  Relative threshold: {eigen_rel_threshold} * max = {abs_threshold:.6e}")
+
+    cumsum = eigvals.cumsum(0) / total_mass
+    print(f"  Dimensions kept: K_combined={K_combined} out of K_pca={K_pca}")
+    print(f"  C_pca eigenvalue mass captured: {cumsum[K_combined - 1].item():.6f}")
+    n_rf = rf_mask.sum().item()
+    print(f"  Total reduction: n_rf={n_rf} -> K_pca={K_pca} -> K_combined={K_combined}")
+
+    # Build combined basis
+    W = eigvecs[:, :K_combined]      # (K_pca, K_combined)
+    basis = V_K @ W                   # (n_rf, K_combined)
+
+    meta = {
+        'pca_var_explained': ve,
+        'pca_var_threshold': var_threshold,
+        'pca_n_components': n_components,
+        'K_pca': K_pca,
+        'eigen_rel_threshold': eigen_rel_threshold,
+        'pca_eigenvalues': pca_eigvals,
+    }
+    return mu_rf, basis, eigvals, K_combined, meta
+
+
+# ============================================================================
+# Gradient ascent (unified for all methods)
 # ============================================================================
 
 def gradient_ascent(model, likelihood, z_start, x_samples,
@@ -613,7 +709,7 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
     x_tensors = [x_target, x_target_proj, x_start, x_final]
     cropped_images = [masked_crop(x) for x in x_tensors]
 
-    method_label = 'PCA' if method == 'pca' else 'C-eigen'
+    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined'}[method]
     base_titles = [
         f'Target (original, pool[{target_index}])\nU_DA={u_target_orig:.4f}',
         f'Target ({method_label}, K={K})\nU_DA={u_target_proj:.4f}',
@@ -646,6 +742,10 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
         vt = method_meta.get('var_threshold', DEFAULT_VAR_THRESHOLD)
         ve = method_meta.get('var_explained', 0.0)
         threshold_label = f'K={K} (var={ve:.2f}, thr={vt:.2f})'
+    elif method == 'combined':
+        K_pca = method_meta.get('K_pca', '?')
+        et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
+        threshold_label = f'K={K} (C_pca thresh={et:.0e}, K_pca={K_pca})'
     else:
         if method_meta.get('no_filter', False):
             threshold_label = f'K={K} (no filter)'
@@ -656,7 +756,8 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
                    label=threshold_label)
     ax_eig.set_xlabel('Component index')
     ax_eig.set_ylabel('Eigenvalue (log scale)')
-    spectrum_name = 'PCA' if method == 'pca' else 'C matrix'
+    spectrum_name = {'pca': 'PCA', 'c_eigen': 'C matrix',
+                     'combined': 'C_pca (C in PCA space)'}[method]
     ax_eig.set_title(f'{spectrum_name} eigenvalue spectrum')
     ax_eig.legend(fontsize=9)
     ax_eig.grid(True, alpha=0.3)
@@ -694,6 +795,12 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
         vt = method_meta.get('var_threshold', DEFAULT_VAR_THRESHOLD)
         ve = method_meta.get('var_explained', 0.0)
         method_str = f'PCA (var_thr={vt:.2f}, var_expl={ve:.3f})'
+    elif method == 'combined':
+        K_pca = method_meta.get('K_pca', '?')
+        vt = method_meta.get('pca_var_threshold', DEFAULT_VAR_THRESHOLD)
+        ve = method_meta.get('pca_var_explained', 0.0)
+        et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
+        method_str = f'Combined (PCA vt={vt:.2f} K={K_pca}, C_pca et={et:.0e})'
     else:
         if method_meta.get('no_filter', False):
             method_str = 'C-eigen (no filter)'
@@ -744,7 +851,7 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
     cropped_images = [masked_crop(x) for x in x_tensors]
     start_label = (f'Start (pool #{start_index})'
                    if start_index is not None else 'Start')
-    method_label = 'PCA' if method == 'pca' else 'C-eigen'
+    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined'}[method]
     base_titles = [
         f'{start_label}\nU_DA={u_start:.4f}',
         f'Final ({method_label} opt)\nU_DA={u_final:.4f}',
@@ -806,6 +913,10 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
         vt = method_meta.get('var_threshold', DEFAULT_VAR_THRESHOLD)
         ve = method_meta.get('var_explained', 0.0)
         threshold_label = f'K={K} (var={ve:.2f}, thr={vt:.2f})'
+    elif method == 'combined':
+        K_pca = method_meta.get('K_pca', '?')
+        et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
+        threshold_label = f'K={K} (C_pca thresh={et:.0e}, K_pca={K_pca})'
     else:
         if method_meta.get('no_filter', False):
             threshold_label = f'K={K} (no filter)'
@@ -816,7 +927,8 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
                    label=threshold_label)
     ax_eig.set_xlabel('Component index')
     ax_eig.set_ylabel('Eigenvalue (log scale)')
-    spectrum_name = 'PCA' if method == 'pca' else 'C matrix'
+    spectrum_name = {'pca': 'PCA', 'c_eigen': 'C matrix',
+                     'combined': 'C_pca (C in PCA space)'}[method]
     ax_eig.set_title(f'{spectrum_name} eigenvalue spectrum')
     ax_eig.legend(fontsize=9)
     ax_eig.grid(True, alpha=0.3)
@@ -853,6 +965,11 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
     if method == 'pca':
         vt = method_meta.get('var_threshold', DEFAULT_VAR_THRESHOLD)
         method_str = f'PCA (var_thr={vt:.2f})'
+    elif method == 'combined':
+        K_pca = method_meta.get('K_pca', '?')
+        vt = method_meta.get('pca_var_threshold', DEFAULT_VAR_THRESHOLD)
+        et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
+        method_str = f'Combined (PCA vt={vt:.2f} K={K_pca}, C_pca et={et:.0e})'
     else:
         if method_meta.get('no_filter', False):
             method_str = 'C-eigen (no filter)'
@@ -881,7 +998,7 @@ def main():
     parser = argparse.ArgumentParser(
         description='Subspace-constrained DA utility gradient ascent (PCA or C-eigenspace)')
     parser.add_argument('--method', type=str, default='pca',
-                        choices=['pca', 'c_eigen'],
+                        choices=['pca', 'c_eigen', 'combined'],
                         help='Subspace method (default: pca)')
     # PCA-specific
     parser.add_argument('--var-threshold', type=float, default=DEFAULT_VAR_THRESHOLD,
@@ -923,7 +1040,8 @@ def main():
                            if args.eigen_threshold is not None
                            else EIGEN_REL_THRESHOLD)
 
-    method_label = 'PCA' if method == 'pca' else 'C-eigenspace'
+    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigenspace',
+                     'combined': 'Combined'}[method]
 
     # === Step 1: Train model ===
     print("=" * 70)
@@ -985,6 +1103,13 @@ def main():
             var_threshold=args.var_threshold,
             n_components=args.n_components,
         )
+    elif method == 'combined':
+        offset, basis, eigenvalues_all, K, method_meta = compute_combined(
+            X_all, kernel, rf_mask,
+            var_threshold=args.var_threshold,
+            eigen_rel_threshold=eigen_rel_threshold,
+            n_components=args.n_components,
+        )
     else:  # c_eigen
         offset, basis, eigenvalues_all, K, method_meta = compute_c_eigenspace(
             kernel, rf_mask, eigen_rel_threshold,
@@ -1038,6 +1163,13 @@ def main():
             print(f"  Training z-norms: mean={z_train_norms.mean():.2f}, "
                   f"std={z_train_norms.std():.2f}, "
                   f"max={z_train_norms.max():.2f}")
+        elif method == 'combined':
+            # Combined: start from mean (z=0), NO constraints
+            z_start = torch.zeros(K, dtype=dtype, device=device)
+            x_start = z_to_image(z_start, basis, offset, rf_mask,
+                                 n_pixels, dtype, device)
+            print(f"  Start: dataset mean (z=0)")
+            print(f"  Norm constraint: NONE (unconstrained)")
         else:
             # C-eigen: start from smoothed target projected into eigenspace
             x_target_2d = x_target.cpu().numpy().reshape(n_px_side, n_px_side)
@@ -1203,6 +1335,10 @@ def main():
     cond_suffix = f'_cond{n_cond}' if n_cond > 1 else ''
     if method == 'pca':
         threshold_suffix = f'_vt{args.var_threshold:.2f}'
+    elif method == 'combined':
+        vt_str = f'vt{args.var_threshold:.2f}'
+        et_str = f'et{eigen_rel_threshold:.0e}'
+        threshold_suffix = f'_{vt_str}_{et_str}'
     else:
         if args.no_filter:
             threshold_suffix = '_nofilter'
@@ -1266,6 +1402,13 @@ def main():
         ve = method_meta.get('var_explained', 0.0)
         print(f"  Variance explained: {ve:.4f} "
               f"(threshold={args.var_threshold})")
+    elif method == 'combined':
+        K_pca = method_meta.get('K_pca', '?')
+        ve = method_meta.get('pca_var_explained', 0.0)
+        print(f"  PCA step: K_pca={K_pca}, var_explained={ve:.4f} "
+              f"(threshold={args.var_threshold})")
+        print(f"  C_pca step: K_combined={K} "
+              f"(eigen_threshold={eigen_rel_threshold:.0e})")
     else:
         if args.no_filter:
             print(f"  Eigenvalue filter: NONE (all eigenvectors kept)")

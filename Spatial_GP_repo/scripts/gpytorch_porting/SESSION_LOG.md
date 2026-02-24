@@ -1,5 +1,13 @@
 # Session Log
 
+## 2026-02-23b: Unified subspace script + combined approach handoff
+
+**Branch**: `pietro/pca-utility-optimization`
+**Handoff**: `investigations/utility_decompositions/HANDOFF_COMBINED_SUBSPACE.md`
+**Status**: Continuing — next session implements COMBINED PCA+C-eigenspace optimization
+
+Created `subspace_optimization.py` unifying PCA and C-eigenspace as separate `--method` alternatives. Shared gradient_ascent, z_to_image, plotting. Both methods tested (PCA RBF + C-eigen arc_cosine). Brought c_eigen_optimization.py to this branch as reference. User clarified goal: COMBINE both decompositions in a single optimization (e.g., eigendecompose V_K^T @ C @ V_K), not just run them separately.
+
 ## 2026-02-23: PCA-constrained utility optimization (continuing)
 
 **Branch**: `pietro/pca-utility-optimization`
