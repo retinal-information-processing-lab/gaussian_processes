@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-02-24: Input warping investigation and planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-02-24_input-warping-bounded-pixels.md`
+**Plan**: `.claude/plans/playful-wandering-pine.md`
+**Status**: Handed off for implementation
+
+Literature survey on input/output warping for bounded-domain GPs. Created `investigations/input_warping/INPUT_WARPING_REFERENCE.md` (comprehensive reference: Beta CDF, Kumaraswamy, compositional warping, constrained GPs, Jacobian analysis, 10 references). Decided on fixed scaled tanh (zero learnable params, simplest option). Planned implementation: warping at top of kernel.forward(), togglable via config, disabled by default, both modes, all gradient modes. Branch `pietro/input-warping` to be created from `pietro/workingbranch`.
+
 ## 2026-02-23b: Unified subspace script + combined approach handoff
 
 **Branch**: `pietro/pca-utility-optimization`
