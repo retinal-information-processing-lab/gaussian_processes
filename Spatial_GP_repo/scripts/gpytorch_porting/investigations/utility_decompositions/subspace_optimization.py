@@ -50,7 +50,6 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.ndimage import gaussian_filter
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -96,8 +95,7 @@ LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
 LOG_EVERY = 1            # print every step
 
 # --- Image selection ---
-TARGET_INDEX = 0         # pool image index for single-target mode
-SIGMA_SMOOTH = 5.0       # Gaussian smoothing sigma for C-eigen start (single-target)
+TARGET_INDEX = 5         # pool image index for single-target mode
 
 # --- Multi-conditioning mode ---
 N_COND = 1               # 1 = single-target mode. >1 = multi-conditioning.
@@ -112,7 +110,7 @@ DEFAULT_VAR_THRESHOLD = 0.8  # fraction of variance to retain
 # Relative threshold: keep eigenvalues > EIGEN_REL_THRESHOLD * max_eigenvalue.
 # Mass-based thresholds (e.g., 95%) are useless for C because the first
 # eigenvalue contains 99%+ of the total mass due to the locality mask.
-EIGEN_REL_THRESHOLD = 1e-3
+EIGEN_REL_THRESHOLD = 1e-4
 
 # --- Model size (investigation overrides, smaller for wider RF) ---
 M_OVERRIDE = 50
@@ -1123,8 +1121,10 @@ def main():
 
     x_target = None       # only set for single-target
     x_target_proj = None   # target projected into subspace
-    z_max_norm = None      # norm constraint (PCA single-target only)
     actual_start_index = None
+
+    # Compute dataset mean image (used as universal starting point)
+    mu_image = X_all.mean(dim=0)  # (n_pixels,)
 
     if n_cond == 1:
         # --- Single-target mode ---
@@ -1143,47 +1143,13 @@ def main():
         print(f"  Reconstruction error: {recon_err:.4f} "
               f"(relative: {recon_err / target_norm:.4f})")
 
-        if method == 'pca':
-            # PCA: start from mean (z=0), with norm constraint
-            z_start = torch.zeros(K, dtype=dtype, device=device)
-            x_start = z_to_image(z_start, basis, offset, rf_mask,
-                                 n_pixels, dtype, device)
-
-            # Compute norm constraint from training data
-            z_train_norms = []
-            for i in range(X_train.shape[0]):
-                z_i = image_to_z(X_train[i], basis, offset, rf_mask)
-                z_train_norms.append(z_i.norm().item())
-            z_train_norms = np.array(z_train_norms)
-            z_max_norm = float(np.percentile(z_train_norms, 95))
-
-            print(f"  Start: dataset mean (z=0)")
-            print(f"  Norm constraint: ||z|| <= {z_max_norm:.2f} "
-                  f"(95th percentile of training)")
-            print(f"  Training z-norms: mean={z_train_norms.mean():.2f}, "
-                  f"std={z_train_norms.std():.2f}, "
-                  f"max={z_train_norms.max():.2f}")
-        elif method == 'combined':
-            # Combined: start from mean (z=0), NO constraints
-            z_start = torch.zeros(K, dtype=dtype, device=device)
-            x_start = z_to_image(z_start, basis, offset, rf_mask,
-                                 n_pixels, dtype, device)
-            print(f"  Start: dataset mean (z=0)")
-            print(f"  Norm constraint: NONE (unconstrained)")
-        else:
-            # C-eigen: start from smoothed target projected into eigenspace
-            x_target_2d = x_target.cpu().numpy().reshape(n_px_side, n_px_side)
-            x_smoothed_2d = gaussian_filter(x_target_2d, sigma=SIGMA_SMOOTH)
-            x_smoothed = torch.tensor(
-                x_smoothed_2d.reshape(-1), dtype=dtype, device=device)
-            z_start = image_to_z(x_smoothed, basis, offset, rf_mask)
-            x_start = z_to_image(z_start, basis, offset, rf_mask,
-                                 n_pixels, dtype, device)
-
-            pixel_dist = (x_start - x_target).norm().item()
-            rf_dist = (x_start[rf_mask] - x_target[rf_mask]).norm().item()
-            print(f"  Start: Gaussian smoothing sigma={SIGMA_SMOOTH}")
-            print(f"  pixel_dist={pixel_dist:.4f}, rf_dist={rf_dist:.4f}")
+        # Universal start: dataset mean projected into subspace
+        z_start = image_to_z(mu_image, basis, offset, rf_mask)
+        x_start = z_to_image(z_start, basis, offset, rf_mask,
+                             n_pixels, dtype, device)
+        print(f"  Start: dataset mean projected into {method_label} subspace")
+        print(f"  |z_start| = {z_start.norm().item():.4f}")
+        print(f"  Norm constraint: NONE (unconstrained)")
 
     else:
         # --- Multi-conditioning mode ---
@@ -1255,7 +1221,7 @@ def main():
         model, likelihood, z_start, x_samples,
         basis, offset, rf_mask, r_max, f_max,
         n_pixels, dtype, device, N_STEPS, LR,
-        z_max_norm=z_max_norm,
+        z_max_norm=None,
         x_target_for_pearson=pearson_ref,
     )
 
