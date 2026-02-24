@@ -4,6 +4,9 @@
 **Last updated**: 2026-02-24
 **Location**: `investigations/utility_decompositions/`
 
+
+** REMIND USER AS SOON AS YOU SEE THIS :: the c_eigenspace mode has non zero offset, this is not mathematically motivated, its just given by our limiter precision, which makes the non-capturable eigenvectors colapse to 0 instead of the mean, so we have to compensate setting offset=mean. this should be investigated. **
+
 ---
 
 ## What This Script Does
@@ -94,12 +97,9 @@ For PCA and combined, centering is part of the math. For C-eigen, it is a practi
 |------|-------|-------------|
 | `subspace_optimization.py` | ~1400 | Main script. Three methods, shared optimizer/plotting. |
 | `test_subspace_optimization.py` | 596 | Tests (user-written). 9 test groups: PCA math, C-eigen math, gradient flow, rf_pearson_r, norm constraint, utility improvement, subspace membership, cross-method consistency, early stopping. **Note**: tests were written before the offset unification — C-eigen tests may need updating to expect mu_rf offset instead of zeros. |
-| `HANDOFF_PCA.md` | 149 | Historical PCA-only handoff (superseded by this file). |
-| `HANDOFF_C_EIGEN.md` | ~350 | Historical C-eigen handoff (outdated). |
 | `HANDOFF_COMBINED_SUBSPACE.md` | This file. |
-| `*.png` | various | Test output plots. Can be deleted when no longer needed. |
 
-Old scripts `pca_optimization.py` and `c_eigen_optimization.py` have been deleted (recoverable from git history).
+Old scripts (`pca_optimization.py`, `c_eigen_optimization.py`) and per-method handoffs (`HANDOFF_PCA.md`, `HANDOFF_C_EIGEN.md`) have been deleted (recoverable from git history). PNG outputs are gitignored.
 
 ---
 
