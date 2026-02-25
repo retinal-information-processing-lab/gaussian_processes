@@ -104,7 +104,7 @@ START_SEED = 123         # seed for random start image selection (multi-cond onl
 GRAD_CHUNK_SIZE = 30     # images per gradient accumulation chunk (GPU memory)
 
 # --- PCA-specific ---
-DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
+DEFAULT_VAR_THRESHOLD = 0.8  # fraction of variance to retain
 
 # --- C-eigenspace-specific ---
 # Relative threshold: keep eigenvalues > EIGEN_REL_THRESHOLD * max_eigenvalue.
@@ -726,7 +726,8 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
     x_tensors = [x_target, x_target_proj, x_start, x_final]
     cropped_images = [masked_crop(x) for x in x_tensors]
 
-    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined'}[method]
+    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined',
+                     'pixel': 'Pixel'}[method]
     base_titles = [
         f'Target (original, pool[{target_index}])\nU_DA={u_target_orig:.4f}',
         f'Target ({method_label}, K={K})\nU_DA={u_target_proj:.4f}',
@@ -763,6 +764,8 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
         K_pca = method_meta.get('K_pca', '?')
         et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
         threshold_label = f'K={K} (C_pca thresh={et:.0e}, K_pca={K_pca})'
+    elif method == 'pixel':
+        threshold_label = f'K={K} (all RF pixels)'
     else:
         if method_meta.get('no_filter', False):
             threshold_label = f'K={K} (no filter)'
@@ -774,7 +777,8 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
     ax_eig.set_xlabel('Component index')
     ax_eig.set_ylabel('Eigenvalue (log scale)')
     spectrum_name = {'pca': 'PCA', 'c_eigen': 'C matrix',
-                     'combined': 'C_pca (C in PCA space)'}[method]
+                     'combined': 'C_pca (C in PCA space)',
+                     'pixel': 'Pixel (identity)'}[method]
     ax_eig.set_title(f'{spectrum_name} eigenvalue spectrum')
     ax_eig.legend(fontsize=9)
     ax_eig.grid(True, alpha=0.3)
@@ -818,6 +822,8 @@ def plot_results_single(x_target, x_target_proj, x_start, x_final,
         ve = method_meta.get('pca_var_explained', 0.0)
         et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
         method_str = f'Combined (PCA vt={vt:.2f} K={K_pca}, C_pca et={et:.0e})'
+    elif method == 'pixel':
+        method_str = 'Pixel (no subspace)'
     else:
         if method_meta.get('no_filter', False):
             method_str = 'C-eigen (no filter)'
@@ -868,7 +874,8 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
     cropped_images = [masked_crop(x) for x in x_tensors]
     start_label = (f'Start (pool #{start_index})'
                    if start_index is not None else 'Start')
-    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined'}[method]
+    method_label = {'pca': 'PCA', 'c_eigen': 'C-eigen', 'combined': 'Combined',
+                     'pixel': 'Pixel'}[method]
     base_titles = [
         f'{start_label}\nU_DA={u_start:.4f}',
         f'Final ({method_label} opt)\nU_DA={u_final:.4f}',
@@ -934,6 +941,8 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
         K_pca = method_meta.get('K_pca', '?')
         et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
         threshold_label = f'K={K} (C_pca thresh={et:.0e}, K_pca={K_pca})'
+    elif method == 'pixel':
+        threshold_label = f'K={K} (all RF pixels)'
     else:
         if method_meta.get('no_filter', False):
             threshold_label = f'K={K} (no filter)'
@@ -945,7 +954,8 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
     ax_eig.set_xlabel('Component index')
     ax_eig.set_ylabel('Eigenvalue (log scale)')
     spectrum_name = {'pca': 'PCA', 'c_eigen': 'C matrix',
-                     'combined': 'C_pca (C in PCA space)'}[method]
+                     'combined': 'C_pca (C in PCA space)',
+                     'pixel': 'Pixel (identity)'}[method]
     ax_eig.set_title(f'{spectrum_name} eigenvalue spectrum')
     ax_eig.legend(fontsize=9)
     ax_eig.grid(True, alpha=0.3)
@@ -987,6 +997,8 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
         vt = method_meta.get('pca_var_threshold', DEFAULT_VAR_THRESHOLD)
         et = method_meta.get('eigen_rel_threshold', EIGEN_REL_THRESHOLD)
         method_str = f'Combined (PCA vt={vt:.2f} K={K_pca}, C_pca et={et:.0e})'
+    elif method == 'pixel':
+        method_str = 'Pixel (no subspace)'
     else:
         if method_meta.get('no_filter', False):
             method_str = 'C-eigen (no filter)'
@@ -1014,9 +1026,9 @@ def plot_results_multicond(x_start, x_final, history, eigenvalues_all, K,
 def main():
     parser = argparse.ArgumentParser(
         description='Subspace-constrained DA utility gradient ascent (PCA or C-eigenspace)')
-    parser.add_argument('--method', type=str, default='pca',
-                        choices=['pca', 'c_eigen', 'combined'],
-                        help='Subspace method (default: pca)')
+    parser.add_argument('--method', type=str, required=True,
+                        choices=['pca', 'c_eigen', 'combined', 'pixel'],
+                        help='Subspace method (required)')
     # PCA-specific
     parser.add_argument('--var-threshold', type=float, default=DEFAULT_VAR_THRESHOLD,
                         help=f'Variance explained threshold for PCA (default: {DEFAULT_VAR_THRESHOLD})')
@@ -1063,7 +1075,7 @@ def main():
                            else EIGEN_REL_THRESHOLD)
 
     method_label = {'pca': 'PCA', 'c_eigen': 'C-eigenspace',
-                     'combined': 'Combined'}[method]
+                     'combined': 'Combined', 'pixel': 'Pixel'}[method]
 
     # === Step 1: Train model ===
     print("=" * 70)
@@ -1141,12 +1153,20 @@ def main():
             eigen_rel_threshold=eigen_rel_threshold,
             n_components=args.n_components,
         )
-    else:  # c_eigen
+    elif method == 'c_eigen':
         offset, basis, eigenvalues_all, K, method_meta = compute_c_eigenspace(
             kernel, rf_mask, eigen_rel_threshold,
             data_mean_rf=mu_rf,
             no_filter=args.no_filter,
         )
+    else:  # pixel
+        n_rf = int(rf_mask.sum().item())
+        offset = torch.zeros(n_rf, dtype=dtype, device=device)
+        basis = torch.eye(n_rf, dtype=dtype, device=device)
+        eigenvalues_all = torch.ones(n_rf, dtype=dtype, device=device)
+        K = n_rf
+        method_meta = {}
+        print(f"  Pixel-space: K={K} (identity basis, no subspace constraint)")
 
     # === Step 4: Create conditioning images and starting point ===
     print("\n" + "=" * 70)
@@ -1339,6 +1359,8 @@ def main():
         vt_str = f'vt{args.var_threshold:.2f}'
         et_str = f'et{eigen_rel_threshold:.0e}'
         threshold_suffix = f'_{vt_str}_{et_str}'
+    elif method == 'pixel':
+        threshold_suffix = ''
     else:
         if args.no_filter:
             threshold_suffix = '_nofilter'
@@ -1410,6 +1432,8 @@ def main():
               f"(threshold={args.var_threshold})")
         print(f"  C_pca step: K_combined={K} "
               f"(eigen_threshold={eigen_rel_threshold:.0e})")
+    elif method == 'pixel':
+        pass  # no decomposition parameters to report
     else:
         if args.no_filter:
             print(f"  Eigenvalue filter: NONE (all eigenvectors kept)")
