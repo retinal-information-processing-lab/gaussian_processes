@@ -32,7 +32,7 @@ kernel:
   lengthscale: 100.0         # only used when type=rbf; initial RBF lengthscale
   input_warping:
     enabled: false
-    steepness: 3.0             # wall sharpness (fixed constant, not learned)
+    steepness: 10.0            # outside decay rate (fixed constant, not learned)
 
 # ===== KERNEL BOUNDS =====
 # HARDCODED in kernels.py (class attributes). Listed here for documentation.

@@ -274,20 +274,26 @@ class ArcCosineKernel(Kernel):
             self.warping_steepness = warping_steepness
             self.warping_vmin = warping_vmin
             self.warping_vmax = warping_vmax
-            self._warping_mid = (warping_vmin + warping_vmax) / 2.0
-            self._warping_half_range = (warping_vmax - warping_vmin) / 2.0
 
     def _maybe_warp(self, x):
-        """Apply per-pixel tanh warping if enabled.
+        """Apply exponential soft-clipping if enabled.
 
-        w(x_i) = mid + half_range * tanh(a * (x_i - mid) / half_range)
+        w(x) = x                                            if vmin <= x <= vmax
+             = vmax + (1/a)(1 - exp(-a(x - vmax)))          if x > vmax
+             = vmin - (1/a)(1 - exp(-a(vmin - x)))          if x < vmin
 
-        Saturates at [vmin, vmax]. Returns x unchanged when warping disabled.
+        Exactly identity inside [vmin, vmax]. C^1 at boundaries.
+        Saturates at [vmin - 1/a, vmax + 1/a].
+        Returns x unchanged when warping disabled.
         """
         if not self.warping_enabled:
             return x
-        z = self.warping_steepness * (x - self._warping_mid) / self._warping_half_range
-        return self._warping_mid + self._warping_half_range * torch.tanh(z)
+        a = self.warping_steepness
+        above = torch.clamp(x - self.warping_vmax, min=0)
+        below = torch.clamp(self.warping_vmin - x, min=0)
+        return x - above - below \
+               + (1/a) * (1 - torch.exp(-a * above)) \
+               + (1/a) * (1 - torch.exp(-a * below))
 
     @property
     def sigma_0(self):

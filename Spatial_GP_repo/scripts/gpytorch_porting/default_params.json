@@ -24,7 +24,7 @@
     "lengthscale": 100.0,
     "input_warping": {
       "enabled": false,
-      "steepness": 3.0
+      "steepness": 10.0
     }
   },
 
