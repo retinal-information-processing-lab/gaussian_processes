@@ -91,6 +91,11 @@ def create_kernel(config, n_px_side, eps_0x, eps_0y):
         rho=config['rho'],
         use_mask=config['use_mask'],
         gradient_mode=config['gradient_mode'],
+        # Input warping — .get() for backward compatibility with old config dicts
+        warping_enabled=config.get('warping_enabled', False),
+        warping_steepness=config.get('warping_steepness', 3.0),
+        warping_vmin=config.get('warping_vmin', None),
+        warping_vmax=config.get('warping_vmax', None),
     )
     if kernel_type == 'arc_cosine':
         return ArcCosineKernel(**common)
@@ -189,7 +194,9 @@ class ArcCosineKernel(Kernel):
 
     def __init__(self, n_px_side, sigma_0=1.0, Amp=1.0,
                  eps_0x=0.0, eps_0y=0.0, beta=0.1, rho=0.1,
-                 use_mask=True, gradient_mode='autograd', **kwargs):
+                 use_mask=True, gradient_mode='autograd',
+                 warping_enabled=False, warping_steepness=3.0,
+                 warping_vmin=None, warping_vmax=None, **kwargs):
         super().__init__(**kwargs)
 
         # Register sigma_0 parameter with dummy initial value
@@ -256,6 +263,31 @@ class ArcCosineKernel(Kernel):
         if gradient_mode not in GRADIENT_MODES:
             raise ValueError(f"gradient_mode must be one of {GRADIENT_MODES}, got '{gradient_mode}'")
         self.gradient_mode = gradient_mode
+
+        # Input warping for bounded pixel domain
+        self.warping_enabled = warping_enabled
+        if warping_enabled:
+            if warping_vmin is None or warping_vmax is None:
+                raise ValueError(
+                    "warping_vmin and warping_vmax required when warping_enabled=True"
+                )
+            self.warping_steepness = warping_steepness
+            self.warping_vmin = warping_vmin
+            self.warping_vmax = warping_vmax
+            self._warping_mid = (warping_vmin + warping_vmax) / 2.0
+            self._warping_half_range = (warping_vmax - warping_vmin) / 2.0
+
+    def _maybe_warp(self, x):
+        """Apply per-pixel tanh warping if enabled.
+
+        w(x_i) = mid + half_range * tanh(a * (x_i - mid) / half_range)
+
+        Saturates at [vmin, vmax]. Returns x unchanged when warping disabled.
+        """
+        if not self.warping_enabled:
+            return x
+        z = self.warping_steepness * (x - self._warping_mid) / self._warping_half_range
+        return self._warping_mid + self._warping_half_range * torch.tanh(z)
 
     @property
     def sigma_0(self):
@@ -558,6 +590,10 @@ class ArcCosineKernel(Kernel):
         Tensor
             Kernel matrix of shape (..., n1, n2) or (..., n1,) if diag=True
         """
+        # Apply input warping (pixel intensities, not spatial coordinates)
+        x1 = self._maybe_warp(x1)
+        x2 = self._maybe_warp(x2)
+
         # Use analytical gradients path if enabled (VJP or Jacobian)
         if self.gradient_mode in ('vjp', 'jacobian') and self.n_px_side is not None:
             if self.gradient_mode == 'vjp':
@@ -668,6 +704,10 @@ class ArcCosineKernelNormalized(ArcCosineKernel):
         Identical computation to parent except M is NOT multiplied
         into the result and diagonal returns ones.
         """
+        # Apply input warping (pixel intensities, not spatial coordinates)
+        x1 = self._maybe_warp(x1)
+        x2 = self._maybe_warp(x2)
+
         sigma_0_sq = self.sigma_0 ** 2
 
         C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
@@ -753,6 +793,10 @@ class ArcSineKernel(ArcCosineKernel):
         This is NOT constant (unlike normalized kernel) — it varies
         with input magnitude but saturates at 1.
         """
+        # Apply input warping (pixel intensities, not spatial coordinates)
+        x1 = self._maybe_warp(x1)
+        x2 = self._maybe_warp(x2)
+
         sigma_0_sq = self.sigma_0 ** 2
 
         C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
@@ -897,6 +941,10 @@ class LocalRBFKernel(ArcCosineKernel):
 
         Diagonal: k(x, x) = exp(0) = 1 for all x.
         """
+        # Apply input warping (pixel intensities, not spatial coordinates)
+        x1 = self._maybe_warp(x1)
+        x2 = self._maybe_warp(x2)
+
         C, mask = self._compute_C_matrix(apply_mask=self.use_mask)
         if mask is not None:
             self._cached_mask = mask

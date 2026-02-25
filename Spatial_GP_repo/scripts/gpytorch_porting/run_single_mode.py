@@ -312,6 +312,10 @@ def build_config_from_defaults(**overrides):
         'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
         'lengthscale': ker['lengthscale'],  # only used when kernel_type=rbf
 
+        # --- Input warping (from kernel.input_warping section) ---
+        'warping_enabled': ker['input_warping']['enabled'],
+        'warping_steepness': ker['input_warping']['steepness'],
+
         # --- Likelihood (from link_function section) ---
         'A_init': lik['A_init'],
         'lambda0_init': lik['lambda0_init'],
@@ -420,6 +424,10 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'bound_rf_center': ker['bound_rf_center'],
         'n_sigma_rf_bounds': ker['n_sigma_rf_bounds'],
         'lengthscale': ker['lengthscale'],
+
+        # Input warping
+        'warping_enabled': ker['input_warping']['enabled'],
+        'warping_steepness': ker['input_warping']['steepness'],
 
         # Likelihood
         'A_init': lik['A_init'],
@@ -590,6 +598,15 @@ def run_single_config(config):
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
+
+    # Compute global pixel range for input warping (physical display bounds)
+    if config.get('warping_enabled', False):
+        warping_vmin = min(X.min().item(), X_test.min().item())
+        warping_vmax = max(X.max().item(), X_test.max().item())
+        config['warping_vmin'] = warping_vmin
+        config['warping_vmax'] = warping_vmax
+        print(f"Input warping: enabled (steepness={config['warping_steepness']}, "
+              f"range=[{warping_vmin:.4f}, {warping_vmax:.4f}])")
 
     # Select cell
     r = R[:, cell]
@@ -1157,6 +1174,19 @@ def main():
     parser.add_argument('--n-sigma-rf-bounds', type=float, default=ker_defaults['n_sigma_rf_bounds'],
                         help=f'Allowed RF center deviation in sigma_rf units (default: {ker_defaults["n_sigma_rf_bounds"]})')
 
+    # Input warping
+    iw_defaults = defaults['kernel']['input_warping']
+    parser.add_argument('--input-warping', action='store_true',
+                        default=iw_defaults['enabled'],
+                        dest='warping_enabled',
+                        help='Enable per-pixel tanh input warping for bounded pixel domain')
+    parser.add_argument('--no-input-warping', action='store_false',
+                        dest='warping_enabled',
+                        help='Disable input warping (default)')
+    parser.add_argument('--warping-steepness', type=float,
+                        default=iw_defaults['steepness'],
+                        help=f'Steepness for tanh warping (default: {iw_defaults["steepness"]})')
+
     # Performance options
     parser.add_argument('--use-cache', action='store_true', default=defaults['model']['use_cache'],
                         help=f'Use kernel caching in E-step (default: {defaults["model"]["use_cache"]}, 11.7x fewer kernel calls)')
@@ -1236,6 +1266,8 @@ def main():
         use_mask=args.use_mask,
         bound_rf_center=args.bound_rf_center,
         n_sigma_rf_bounds=args.n_sigma_rf_bounds,
+        warping_enabled=args.warping_enabled,
+        warping_steepness=args.warping_steepness,
         A_init=args.A_init,
         lambda0_init=args.lambda0_init,
         n_estep=args.n_estep,

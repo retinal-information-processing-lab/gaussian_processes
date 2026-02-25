@@ -21,7 +21,11 @@
     "bound_rf_center": true,
     "n_sigma_rf_bounds": 3.0,
     "_comment_lengthscale": "only used when type=rbf",
-    "lengthscale": 100.0
+    "lengthscale": 100.0,
+    "input_warping": {
+      "enabled": false,
+      "steepness": 3.0
+    }
   },
 
   "link_function": {

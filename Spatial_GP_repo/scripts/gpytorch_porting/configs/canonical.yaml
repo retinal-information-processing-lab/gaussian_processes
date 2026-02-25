@@ -30,6 +30,9 @@ kernel:
   bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
   n_sigma_rf_bounds: 3.0     # allowed deviation in units of sigma_rf = beta * sqrt(2)
   lengthscale: 100.0         # only used when type=rbf; initial RBF lengthscale
+  input_warping:
+    enabled: false
+    steepness: 3.0             # wall sharpness (fixed constant, not learned)
 
 # ===== KERNEL BOUNDS =====
 # Clamping limits for kernel hyperparameters during optimization.
