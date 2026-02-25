@@ -1,0 +1,9 @@
+name: baseline-input-warping-branch
+full_name: 2026-02-25_baseline-input-warping-branch
+description: Baseline on input-warping branch before enabling warping. Standard defaults,
+  warping OFF.
+created: '2026-02-25T10:06:36'
+git_commit: b4d301b
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/canonical.yaml
+type: canonical

@@ -1,0 +1,8 @@
+name: warping-on-baseline
+full_name: 2026-02-25_warping-on-baseline
+description: Same canonical matrix as baseline but with input warping enabled (steepness=3.0).
+created: '2026-02-25T10:08:15'
+git_commit: b4d301b
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/canonical.yaml
+type: canonical

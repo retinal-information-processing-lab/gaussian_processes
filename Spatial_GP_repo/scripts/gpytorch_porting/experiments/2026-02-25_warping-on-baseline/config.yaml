@@ -1,0 +1,109 @@
+# Canonical Experiment Configuration
+#
+# This template defines the full test matrix for regression testing.
+# All result-affecting parameters are listed here — no silent hardcoded values.
+#
+# Usage:
+#   python create_experiment.py --name baseline --desc "Post-cleanup baseline"
+#   python run_experiment.py --exp baseline
+
+# ===== EXPERIMENT MATRIX (what varies across runs) =====
+experiment:
+  modes: [vargp_direct, default_gpy]
+  inducing_points: [50, 100, 200]
+  n_train: [500]
+  seeds: [123]
+  cells: [8]
+  n_iterations: 50          # shared across all matrix entries
+
+# ===== KERNEL INITIALIZATION =====
+kernel:
+  type: arc_cosine            # arc_cosine | arc_sine | rbf
+  sigma_0: 1.0
+  Amp: 1.0
+  beta: 0.1
+  rho: 0.1
+  eps_0x: null              # null = compute from STA
+  eps_0y: null              # null = compute from STA
+  gradient_mode: autograd   # autograd | vjp | jacobian
+  use_mask: true
+  bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
+  n_sigma_rf_bounds: 3.0     # allowed deviation in units of sigma_rf = beta * sqrt(2)
+  lengthscale: 100.0         # only used when type=rbf; initial RBF lengthscale
+  input_warping:
+    enabled: true
+    steepness: 3.0             # wall sharpness (fixed constant, not learned)
+
+# ===== KERNEL BOUNDS =====
+# Clamping limits for kernel hyperparameters during optimization.
+# HARDCODED in kernels.py (class attributes). Listed here for documentation.
+# Changing these values here has NO EFFECT until wired (future work).
+kernel_bounds:
+  mask_threshold: 0.001     # kernels.py:120 MASK_THRESHOLD
+  Amp_max: 1000.0           # kernels.py:123 AMP_MAX
+  beta_min: 0.01            # kernels.py:126 BETA_MIN
+  beta_max: 1.0             # kernels.py:127 BETA_MAX
+  rho_min: 0.01             # kernels.py:132 RHO_MIN
+  rho_max: 0.5              # kernels.py:133 RHO_MAX
+  eps_min: -1.0             # kernels.py:140 EPS_MIN
+  eps_max: 1.0              # kernels.py:141 EPS_MAX
+
+# ===== LIKELIHOOD =====
+likelihood:
+  A_init: 0.01
+  lambda0_init: 1.0
+
+# ===== TRAINING =====
+training:
+  n_estep: 10
+  n_fstep: 10
+  n_mstep: 10
+  lr: 0.1
+  optimizer: lbfgs           # lbfgs | adam (for default_gpy mode)
+
+# ===== OPTIMIZER DETAILS =====
+# LBFGS settings used in eigenspace M-step, F-step, and default_gpy training.
+optimizer:
+  lbfgs_tolerance_change: 1.0e-9   # HARDCODED eigenspace_mstep.py:57,174
+  lbfgs_tolerance_grad: 1.0e-7     # HARDCODED eigenspace_mstep.py:58,175
+  lbfgs_history_size: 100          # HARDCODED eigenspace_mstep.py:59,176
+  lbfgs_line_search: strong_wolfe  # HARDCODED eigenspace_mstep.py:60,177
+  gpy_lbfgs_max_iter: 20           # WIRED via gpy_training.py lbfgs_max_iter param
+
+# ===== EARLY STOPPING =====
+early_stopping:
+  enabled: true
+  window: 20
+  threshold: 5.0e-3
+  min_iterations: 10
+
+# ===== NUMERICAL =====
+numerical:
+  jitter: 1.0e-4                   # WIRED via run_single_config + gpy_training cholesky_jitter
+  cholesky_max_tries: 3            # WIRED via gpy_training context manager
+  eigval_tol: 1.0e-4               # WIRED via DirectVGPModel constructor
+  lambda_var_clamp: 1.0e-6         # HARDCODED in 4 files (eigenspace_model, training, mstep, gradients)
+  stability_threshold: 1000        # HARDCODED eigenspace_estep.py:23
+  dtype: float32
+  device: cuda
+
+# ===== INDUCING POINT SELECTION =====
+inducing:
+  selection_method: pivoted        # WIRED via run_single_config: pivoted | random
+  n_candidates: null               # WIRED: null = all available images
+  n_samples_sta: null              # WIRED: null = all available images for STA
+
+# ===== UTILITY / ACQUISITION =====
+utility:
+  n_mc_samples: 200             # MC samples from p(x) for distribution-aware utility
+  r_max: 100                    # Fixed spike count truncation for compute_H / nd_utility_new (ignored when adaptive_r_max=true)
+  adaptive_r_max: false         # If true, compute_adaptive_rmax() sets r_max from GP moments; overrides r_max above
+  adaptive_safety_k: 3.0        # compute_adaptive_rmax(): std devs for upper tail of log-firing rate
+  adaptive_max_rmax: 10000      # compute_adaptive_rmax(): error if needed r_max exceeds this
+  adaptive_min_rmax: 200        # compute_adaptive_rmax(): floor (minimum returned r_max)
+  f_max: 100.0                  # WIRED: max predicted firing rate for utility optimization guard
+
+# ===== DATA =====
+data:
+  n_px_side: 108
+  use_cache: true
