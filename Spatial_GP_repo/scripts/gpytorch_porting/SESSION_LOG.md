@@ -1,5 +1,21 @@
 # Session Log
 
+## 2026-02-25b: Soft-clipping, pixel method, warping analysis
+
+**Branch**: `pietro/input-warping`
+
+**Accomplished:**
+- Replaced tanh warping with exponential soft-clipping (zero training cost, C^1)
+- Diagnosed tanh failure mechanism (step function distortion, not derivative issue)
+- Wired --input-warping through setup() and subspace_optimization.py
+- Added --method pixel for unconstrained RF-pixel optimization
+- Analyzed warping limitations: plateau not wall, LBFGS overshoots
+- Cherry-picked pixel method to pietro/workingbranch, pushed both branches
+
+**Documentation updated:** SESSION_LOG.md
+
+**Known issues:** Soft-clipping doesn't prevent OOB during optimization (plateau problem)
+
 ## 2026-02-25: Input warping implementation and evaluation
 **Handoff**: `investigations/input_warping/HANDOFF.md`
 **Status**: Continuing

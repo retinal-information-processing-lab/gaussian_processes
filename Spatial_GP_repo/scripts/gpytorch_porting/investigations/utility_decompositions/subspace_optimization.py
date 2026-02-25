@@ -104,13 +104,13 @@ START_SEED = 123         # seed for random start image selection (multi-cond onl
 GRAD_CHUNK_SIZE = 30     # images per gradient accumulation chunk (GPU memory)
 
 # --- PCA-specific ---
-DEFAULT_VAR_THRESHOLD = 0.8  # fraction of variance to retain
+DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
 
 # --- C-eigenspace-specific ---
 # Relative threshold: keep eigenvalues > EIGEN_REL_THRESHOLD * max_eigenvalue.
 # Mass-based thresholds (e.g., 95%) are useless for C because the first
 # eigenvalue contains 99%+ of the total mass due to the locality mask.
-EIGEN_REL_THRESHOLD = 1e-3
+EIGEN_REL_THRESHOLD = 1e-5
 
 # --- Model size (investigation overrides, smaller for wider RF) ---
 M_OVERRIDE = 50
