@@ -1,5 +1,11 @@
 # Session Log
 
+## 2026-02-25: Input warping implementation and evaluation
+**Handoff**: `investigations/input_warping/HANDOFF.md`
+**Status**: Continuing
+
+Implemented per-pixel tanh input warping on branch `pietro/input-warping` (commit `b4d301b`). Changes: `kernels.py` (_maybe_warp, all forward methods, create_kernel), `run_single_mode.py` (config wiring, CLI args, vmin/vmax from data), `default_params.json`, YAML configs. Togglable, disabled by default. Ran canonical comparison: warping OFF vs ON (steepness=3.0). Warping hurts test_r by 5-12% — arc-cosine kernel's norm-sensitivity carries real information that tanh compresses. Next: try lower steepness, soft-clipping variant, or less norm-dependent kernels.
+
 ## 2026-02-24: Input warping investigation and planning
 **Handoff**: `.claude/handoffs/HANDOFF_2026-02-24_input-warping-bounded-pixels.md`
 **Plan**: `.claude/plans/playful-wandering-pine.md`
