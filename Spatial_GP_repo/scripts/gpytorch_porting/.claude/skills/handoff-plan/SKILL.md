@@ -103,12 +103,17 @@ handoff file and the plan file, key constraints,
 - Print the continuation prompt to the conversation so the user can copy it
 - Remind the user about uncommitted changes if any exist
 
+## Step 5:
+- Make sure the plan is SAVED and its not an ephemeral plan, it needs to survive a compacting session.
+- Remind the user that if he wants a plan that asks for confirmation to proceed to each new step this is the time to ask. Stop and ask him.
+
+
 ## Quality Rules
 
 - No emojis
 - All file paths relative to project root
 - Exact numbers -- no rounding or paraphrasing metrics
 - Caveats section is mandatory
-- The plan file path is mandatory — the handoff complements the plan, it does not replace it
+- The plan file path is mandatory — the handoff complements the plan, it does not replace it. Make sure the plan is saved and not ephemeral.
 - The handoff must be readable by someone who was NOT in the session
 - This handoff replaces the standard session wrap-up (working_guidelines.md Section 9, steps 1/2/4). Steps 3 and 5 still apply.
