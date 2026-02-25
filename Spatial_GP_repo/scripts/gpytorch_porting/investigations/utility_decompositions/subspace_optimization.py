@@ -95,7 +95,7 @@ LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
 LOG_EVERY = 1            # print every step
 
 # --- Image selection ---
-TARGET_INDEX = 51         # pool image index for single-target mode
+TARGET_INDEX = 5         # pool image index for single-target mode
 
 # --- Multi-conditioning mode ---
 N_COND = 1               # 1 = single-target mode. >1 = multi-conditioning.
@@ -1038,6 +1038,11 @@ def main():
                         help=f'Number of inducing points (default: {M_OVERRIDE})')
     parser.add_argument('--n-train', type=int, default=N_TRAIN_OVERRIDE,
                         help=f'Number of training points (default: {N_TRAIN_OVERRIDE})')
+    # Input warping
+    parser.add_argument('--input-warping', action='store_true', default=False,
+                        help='Enable exponential soft-clip input warping in kernel')
+    parser.add_argument('--warping-steepness', type=float, default=None,
+                        help='Steepness for soft-clip warping (default: from default_params.json)')
     # Multi-conditioning
     parser.add_argument('--n-cond', type=int, default=N_COND,
                         help=f'Number of conditioning images '
@@ -1067,7 +1072,9 @@ def main():
     print("=" * 70)
 
     env = setup(kernel_type=args.kernel_type,
-                M_override=args.M, n_train_override=args.n_train)
+                M_override=args.M, n_train_override=args.n_train,
+                input_warping=args.input_warping,
+                warping_steepness=args.warping_steepness)
     model = env['model']
     likelihood = env['likelihood']
     X_pool = env['X_pool']
@@ -1337,7 +1344,8 @@ def main():
             threshold_suffix = '_nofilter'
         else:
             threshold_suffix = f'_thresh{eigen_rel_threshold:.0e}'
-    out_name = f'subspace_{method}{kernel_suffix}{cond_suffix}{threshold_suffix}.png'
+    warp_suffix = '_warp' if args.input_warping else ''
+    out_name = f'subspace_{method}{kernel_suffix}{cond_suffix}{threshold_suffix}{warp_suffix}.png'
 
     if n_cond == 1:
         # Compute utility for target (original and projected)

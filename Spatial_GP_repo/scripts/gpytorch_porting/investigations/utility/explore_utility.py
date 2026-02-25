@@ -110,13 +110,16 @@ def _get_kernel_type(model):
 # Setup
 # ============================================================================
 
-def setup(kernel_type=None, M_override=None, n_train_override=None):
+def setup(kernel_type=None, M_override=None, n_train_override=None,
+          input_warping=False, warping_steepness=None):
     """Train model and return everything needed for exploration.
 
     Args:
         kernel_type: 'arc_cosine', 'arc_sine', or 'rbf'. None = use default.
         M_override: override M (default: module-level M constant)
         n_train_override: override n_train (default: module-level N_TRAIN)
+        input_warping: enable exponential soft-clip warping in kernel
+        warping_steepness: override steepness (None = use default_params.json)
 
     Returns:
         dict with keys:
@@ -133,6 +136,10 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
                      n_train=n_train_override if n_train_override is not None else N_TRAIN)
     if kernel_type is not None:
         overrides['kernel_type'] = kernel_type
+    if input_warping:
+        overrides['warping_enabled'] = True
+    if warping_steepness is not None:
+        overrides['warping_steepness'] = warping_steepness
 
     config = build_config_from_defaults(**overrides)
     result = run_single_config(config)
