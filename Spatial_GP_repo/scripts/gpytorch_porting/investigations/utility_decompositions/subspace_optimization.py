@@ -95,7 +95,7 @@ LBFGS_HISTORY_SIZE = 10  # number of past gradients for Hessian approximation
 LOG_EVERY = 1            # print every step
 
 # --- Image selection ---
-TARGET_INDEX = 51         # pool image index for single-target mode
+TARGET_INDEX = 5         # pool image index for single-target mode
 
 # --- Multi-conditioning mode ---
 N_COND = 1               # 1 = single-target mode. >1 = multi-conditioning.
