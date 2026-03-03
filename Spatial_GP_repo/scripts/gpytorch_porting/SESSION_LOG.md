@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-03-03: DDPM pretrained model exploration and planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_ddpm-finetune-generate-scripts.md`
+**Plan**: `ddpm-imagenet-grayscale/PLAN_finetune_and_generate.md`
+**Status**: Handed off for implementation
+
+Explored pretrained DDPM model (64x64 grayscale, 99.5M params, trained on ImageNet). Created `DDPM_MODEL_REFERENCE.md` (architecture, training history, file map). Installed `diffusers` 0.36.0 into `pytorch_gpytorch` env, verified model loads. Planned 3 scripts: `generate_samples.py`, `finetune.py`, `generate_samples_finetuned.py`. Key decisions: divide-by-max normalization (PNAS_ABS_MAX=2.478047), random crop 108->64, lr=1e-5 for fine-tuning.
+
 ## 2026-03-03: Merge pca-utility-optimization + cleanup
 **Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
 **Status**: Continuing — next session consolidates utility/ and utility_decompositions/ into one folder
