@@ -4,122 +4,105 @@
 **Date**: 2026-03-03
 **Status**: Continuing
 **Location**: `investigations/diffusion/`
-**Worktree**: `/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting_diffusion/Spatial_GP_repo/scripts/gpytorch_porting/`
-**Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md` (also saved on `pietro/workingbranch`)
+**Worktree**: `Spatial_GP_repo/scripts/gpytorch_porting_diffusion/Spatial_GP_repo/scripts/gpytorch_porting/`
+**Reference**: `investigations/diffusion/REFERENCE.md` -- single entry point for all architecture, pipeline, CLI, and decision details.
 
 ---
 
 ## Problem Statement
 
-We want to train a DDPM (Denoising Diffusion Probabilistic Model) to generate natural image patches that match our PNAS dataset statistics. This is the first step toward using diffusion-guided optimization for GP utility maximization -- but this investigation is purely about getting unconditional generation working. No GP integration yet.
+Train a DDPM to generate 64x64 natural image patches matching PNAS dataset statistics. This is the first step toward diffusion-guided optimization for GP utility maximization. This investigation covers unconditional generation only -- no GP integration yet.
 
-**Motivation**: Unconstrained gradient ascent on GP utility produces smooth, unnatural images (norm exploitation, ~c^1.9 scaling). Subspace approaches (PCA, Fourier, C-eigenspace) only capture second-order statistics. A trained diffusion model provides a score function that encodes the full distributional structure of natural images, acting as a "restoring force" during guided generation.
+Motivation: unconstrained gradient ascent on GP utility produces smooth, unnatural images (norm exploitation, ~c^1.9 scaling). A trained diffusion model provides a score function encoding full distributional structure of natural images.
 
 ## What Was Done
 
-### Step 0: Planning and Setup (COMPLETE)
-- **What**: Read motivation docs, existing LaTeX reference, utility REFERENCE.md, subspace analysis. Discussed architecture decisions. Created worktree.
-- **Key decisions**:
-  - 64x64 resolution (not 108x108): power-of-2 for clean U-Net downsampling, massive crop augmentation, faster training
-  - Random crops + D4 symmetry (8 variants): effectively unlimited training data from 3,160 base images
-  - Pure PyTorch, no HuggingFace/diffusers (no pretrained models exist for our distribution)
-  - Cosine noise schedule, T=1000
-- **Created**: `investigation_log.md`, `unet_and_ddpm_introduction.tex` (LaTeX reference for U-Net architecture and DDPM practical mechanics)
+### Session 1: Code Implementation (Steps 0-3 of Plan)
+- **What**: Wrote all code from scratch (diffusion_model.py, train.py, sample.py), smoke-tested
+- **Result**: 2.16M param U-Net, ~1.2s/epoch on CUDA, pipeline works end-to-end
+- **Verdict**: Complete
 
-### Step 1: diffusion_model.py (COMPLETE)
-- **What**: Core module with U-Net, noise schedule, forward/reverse process
-- **Architecture**: Tiny U-Net, channels (32, 64, 128), 3 downsampling levels (64->32->16->8), sinusoidal time embedding (d=128), GroupNorm, SiLU, skip connections via concatenation
-- **Parameters**: 2.16M (slightly above original 0.5-1M estimate, but fine with unlimited augmented data)
-- **Verified**: Forward pass, shape correctness, schedule constants (alpha_bar goes from 1.0 to ~0)
-
-### Step 2: train.py (COMPLETE)
-- **What**: Training script with data pipeline (random 64x64 crop, D4 augmentation, normalize to [-1,1])
-- **Data**: 3,160 images (2,910 train + 250 val combined). Scale factor = 2.4780 (max abs pixel value)
-- **Smoke test**: 2 epochs in 2.4s (~1.2s/epoch), loss dropped 0.304 -> 0.169
-- **CLI**: `--epochs`, `--batch-size`, `--lr`, `--T`, `--resume`, `--data`, `--print-every`, `--save-every`
-
-### Step 3: sample.py (COMPLETE)
-- **What**: Generation and evaluation script with 6 plot types
-- **Plots**: generated grid, real grid, side-by-side comparison, pixel histogram, power spectrum, loss curve
-- **Smoke test**: Generated 16 images in 1.6s (0.1s/image) from 2-epoch checkpoint. Pipeline works end-to-end.
-- **Note**: 2-epoch images are garbage (expected) -- pixel values in [-40k, 76k]. Real training needed.
+### Session 2: Training, Bug Fix, Evaluation
+- **What**: Ran 500-epoch and 1000-epoch training. Discovered generated images were all black.
+- **Root cause**: Cosine schedule at t=T=1000 has beta=0.999, making 1/sqrt(alpha) = 31.6. The reverse formula amplifies any noise prediction error by 31x at the first step, causing cascading divergence. Generated pixels ended up in [-1200, +200] instead of [-2.5, +2.5].
+- **Fix**: Start reverse sampling loop from t=T-1=999 instead of t=T=1000. At t=999, the amplification is 2.0x (stable). No retraining needed -- model weights were fine.
+- **Result after fix**: Generated images in [-3.1, 2.9] (real: [-2.4, 2.5]). Pixel histogram closely matches real data. Loss plateau at ~0.12 (MSE).
+- **Verdict**: Unconditional generation works. Ready for GP integration.
 
 ## Key Findings
 
-1. CONFIRMED: 64x64 U-Net with (32, 64, 128) channels has 2.16M parameters. Forward pass shape-correct.
-2. CONFIRMED: Training runs at ~1.2s/epoch on CUDA with batch_size=32. 500 epochs would take ~10 minutes.
-3. CONFIRMED: Scale factor for [-1,1] normalization is 2.4780 (max abs value across all 3,160 images).
-4. CONFIRMED: Random crop augmentation works -- 10 calls to dataset[0] produce 10 different images.
-5. CONFIRMED: Sampling takes ~0.1s per image at 64x64 (1000 reverse steps).
-6. CONFIRMED: Dataset has 2,910 train + 250 val = 3,160 total images, all 108x108x1, float32.
+1. CONFIRMED: The T-1 sampling fix resolves divergence completely. Model predictions at t=1000 are accurate (error std=0.01) but 31.6x amplification makes it numerically unstable. See REFERENCE.md "Known Issue: T-1 Sampling Fix".
+2. CONFIRMED: No clipping or renormalization anywhere in the pipeline. The pixel distribution match is genuine model quality. Verified by tracing the full path from model output to plot.
+3. CONFIRMED: Training loss plateaus around 0.12 for both 500 and 1000 epochs (min 0.1224 at epoch 253, min 0.1168 at epoch 909). Slight oscillation is normal with random augmentation.
+4. CONFIRMED: imshow with fixed vmin/vmax silently clips outlier pixels to colormap endpoints. The histogram is the honest view of the pixel distribution.
+5. CONFIRMED: Generated images have slightly fatter tails and a small negative mean bias (-0.79 vs -0.07 at 500 epochs) compared to real data. Improves with more training.
 
 ## Why This Was Stopped
 
-Context ran out. All code is written and smoke-tested but no real training has been run yet. The next session should run full training (500 epochs) and evaluate the generated images.
+Context limit approaching. Unconditional generation is working. Next phase is integrating the diffusion model's score function with GP utility optimization -- a separate investigation scope.
 
 ## Things Noticed But Not Acted Upon
 
-1. The existing `diffusion_models_introduction.tex` and `motivation_diffusion_guided_optimization.md` reference "30x30 images (~900 pixels)" and "~10,000 images" -- these are WRONG (actual: 108x108, 3,160 images). The docs on `pietro/workingbranch` should be corrected at some point.
-2. The parent-level worktree created by `EnterWorktree` tool is still lingering at `/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/.claude/worktrees/diffusion-investigation/`. It has a branch `pietro/diffusion-investigation` in the PARENT repo (not the submodule). This is harmless but should be cleaned up eventually.
-3. The `__pycache__/` directory in the diffusion folder is not gitignored (only `checkpoints/` and `samples/` are). Minor -- `.pyc` files are gitignored at the repo root level.
+1. The existing docs on `pietro/workingbranch` (`diffusion_models_introduction.tex`, `motivation_diffusion_guided_optimization.md`) reference "30x30 images (~900 pixels)" and "~10,000 images" -- these are WRONG (actual: 108x108, 3,160 images). Should be corrected.
+2. Training ran with lr=2e-4 and batch_size=64 (not the defaults of lr=1e-4 and batch_size=32 from the plan). The user likely set these via CLI. The checkpoints record the actual values used.
+3. The parent-level worktree at `/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/.claude/worktrees/diffusion-investigation/` is still lingering. Harmless but should be cleaned up.
 
 ## Uncommitted Changes
 
-None. Working tree clean after commit `bdbba81`.
+```
+modified:   diffusion_model.py        # T-1 sampling fix (6 lines changed)
+untracked:  PLAN_diffusion_model_training.md   # Copied from main worktree
+untracked:  REFERENCE.md              # New -- comprehensive reference doc
+```
 
-## Files Created
+All three should be committed.
+
+## Files Created (This Session)
 
 | File | Purpose | Keep/Delete |
 |------|---------|-------------|
-| `investigations/diffusion/.gitignore` | Excludes checkpoints/ and samples/ | Keep |
-| `investigations/diffusion/investigation_log.md` | Decision log | Keep |
-| `investigations/diffusion/unet_and_ddpm_introduction.tex` | LaTeX reference: U-Net architecture + DDPM mechanics | Keep |
-| `investigations/diffusion/diffusion_model.py` | Core module: UNet, cosine_schedule, q_sample, p_sample, sample | Keep |
-| `investigations/diffusion/train.py` | Training script with data pipeline and augmentation | Keep |
-| `investigations/diffusion/sample.py` | Generation, evaluation, and plotting | Keep |
-| `investigations/diffusion/PLAN_diffusion_model_training.md` | Full plan (on workingbranch, not in worktree) | Keep |
-| `investigations/diffusion/HANDOFF.md` | This file | Keep |
+| `REFERENCE.md` | Comprehensive reference doc -- single entry point for future sessions | Keep |
+| `PLAN_diffusion_model_training.md` | Copied from main worktree (was missing in this worktree) | Keep |
 
 ## If Someone Revisits This
 
-**What to do next (in order)**:
-1. Run full training: `python investigations/diffusion/train.py --epochs 500`
-2. Evaluate: `python investigations/diffusion/sample.py --checkpoint investigations/diffusion/checkpoints/ddpm_epoch0500.pt`
-3. Look at the generated grid -- do images look like natural patches? Check power spectrum for 1/f^2 falloff.
-4. If quality is poor: try more epochs (1000), or slightly larger batch size (64), or lr=2e-4. Do NOT increase model size first.
-5. If quality is good: commit checkpoint reference, update investigation_log.md, and this investigation phase is done. Next phase is GP utility guidance (separate investigation).
+**Next step**: Integrate the trained diffusion model with GP utility optimization. The diffusion model provides a score function (gradient of log p(x)) that can act as a regularizer during gradient ascent on utility, pushing optimized images toward the natural image manifold.
+
+**What to try**:
+1. Use the trained model's score function to guide image optimization in acquisition.py
+2. The score at a given image x and noise level t is: score = -eps_theta(x_t, t) / sqrt(1 - alpha_bar_t)
+3. Start with the 1000-epoch checkpoint (`checkpoints/ddpm_epoch1000.pt`)
 
 **What NOT to try**:
-- Don't increase model size to fix poor generation -- train longer first (effectively unlimited data means overfitting is unlikely)
-- Don't switch to DDIM or other fast samplers yet -- DDPM at 64x64 is fast enough (<1s/image)
-- Don't try MLP architecture -- too many parameters for 64x64 (would need ~50M)
+- Don't increase model size to improve generation quality -- train longer first
+- Don't switch to DDIM sampling -- DDPM is fast enough at 64x64
+- Don't try to fix the t=T step with tighter beta clipping -- the T-1 fix is clean and standard
+
+**Prerequisites for GP integration**:
+- The diffusion model operates on 64x64 crops. GP utility operates on 108x108 images (or their projections). Resolution bridging will be needed.
+- The diffusion model normalizes to [-1,1] via scale_factor=2.4780. The GP codebase uses raw pixel values. Keep normalization/denormalization explicit.
 
 ---
 
 ## Continuation Prompt
 
 ```
-I am continuing a diffusion model investigation for natural image generation.
+I am continuing the diffusion model investigation, moving to GP utility integration.
 This session works in a git worktree on branch pietro/diffusion-investigation.
 
-Read the handoff first:
-  investigations/diffusion/HANDOFF.md
-
-Then read the plan:
-  investigations/diffusion/PLAN_diffusion_model_training.md
+Read the reference first:
+  investigations/diffusion/REFERENCE.md
 
 Key context:
-- All code is written and smoke-tested (Steps 0-3 of the plan are COMPLETE)
-- NO real training has been run yet -- that is the immediate next step
+- Unconditional 64x64 DDPM generation is WORKING (1000-epoch checkpoint)
+- T-1 sampling fix applied (diffusion_model.py), not yet committed
 - Files: diffusion_model.py (UNet + schedule), train.py (data pipeline), sample.py (eval)
-- 64x64 grayscale, cosine schedule T=1000, random crop + D4 augmentation from 3,160 PNAS images
-- Model: 2.16M params, ~1.2s/epoch on CUDA, ~0.1s/image sampling
-- Data path uses absolute path (npz is gitignored, not in worktrees)
+- Model: 2.16M params, cosine schedule T=1000, scale_factor=2.4780
+- No GP integration yet -- that is the next step
+- Resolution mismatch: diffusion is 64x64, GP utility is 108x108
 
-Next steps:
-1. Run: python investigations/diffusion/train.py --epochs 500
-2. Evaluate: python investigations/diffusion/sample.py --checkpoint investigations/diffusion/checkpoints/ddpm_epoch0500.pt
-3. Assess generation quality (visual, pixel histogram, power spectrum)
+Uncommitted changes: diffusion_model.py (T-1 fix), REFERENCE.md (new), PLAN copy.
+Commit these first, then proceed with GP integration planning.
 
 Check git status and git branch before starting.
 ```

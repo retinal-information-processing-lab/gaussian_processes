@@ -1,7 +1,14 @@
 # Session Log
 
-## 2026-03-03: Diffusion model investigation — code complete, training pending
+## 2026-03-03: Diffusion model — training, T-1 sampling fix, generation working
 **Handoff**: `investigations/diffusion/HANDOFF.md`
+**Reference**: `investigations/diffusion/REFERENCE.md`
+**Status**: Continuing — unconditional generation works, next step is GP integration
+
+Ran 500 and 1000 epoch training. Discovered generated images were all black due to cosine schedule instability at t=T=1000 (31.6x amplification in reverse formula). Fixed by starting reverse loop from T-1. Generation quality good after fix — pixel histogram matches real data. Created REFERENCE.md as single entry point for future sessions.
+
+## 2026-03-03: Diffusion model investigation — code complete, training pending
+**Handoff**: `investigations/diffusion/HANDOFF.md` (superseded by above)
 **Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
 **Status**: Continuing — next session runs full training and evaluates generation quality
 

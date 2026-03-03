@@ -364,8 +364,12 @@ def sample(model, schedule, n_samples=1, image_shape=(1, 64, 64), device='cuda')
     # Start from pure noise
     x = torch.randn(n_samples, *image_shape, device=device)
 
-    # Reverse process: t = T, T-1, ..., 1
-    for t in range(T, 0, -1):
+    # Reverse process: t = T-1, T-2, ..., 1
+    # Skip t=T because alpha_bar[T] ≈ 0 makes alpha[T] ≈ 0.001, so
+    # sqrt(1/alpha[T]) ≈ 31.6 -- the reverse formula amplifies any prediction
+    # error by 31x at that single step, causing divergence. Starting from T-1
+    # (where sqrt(1/alpha) ≈ 2.0) is standard practice with cosine schedules.
+    for t in range(T - 1, 0, -1):
         x = p_sample(model, x, t, schedule)
 
     return x
