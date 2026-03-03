@@ -1,0 +1,5 @@
+# Model checkpoints (too large for git)
+checkpoints/
+
+# Generated sample images
+samples/
