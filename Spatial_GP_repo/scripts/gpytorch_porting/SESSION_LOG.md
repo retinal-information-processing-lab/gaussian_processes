@@ -1,5 +1,11 @@
 # Session Log
 
+## 2026-03-03: Merge pca-utility-optimization + cleanup
+**Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
+**Status**: Continuing — next session consolidates utility/ and utility_decompositions/ into one folder
+
+Merged `pietro/pca-utility-optimization` (10 commits) into `pietro/workingbranch`. Clean merge, no conflicts. Cleanup: deleted `understanding_utility/` (obsolete, 2 orphan PNGs), deleted superseded handoffs (HANDOFF_PCA.md, HANDOFF_C_EIGEN.md), added .gitignore for PNGs. Fixed test_subspace_optimization.py for unified offset convention (all 52 tests pass). Committed TARGET_INDEX revert. Input warping is docs/planning only — no code in kernels.py.
+
 ## 2026-02-24: Input warping investigation and planning
 **Handoff**: `.claude/handoffs/HANDOFF_2026-02-24_input-warping-bounded-pixels.md`
 **Plan**: `.claude/plans/playful-wandering-pine.md`
