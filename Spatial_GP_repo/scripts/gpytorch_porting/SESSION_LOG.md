@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-03-03: Diffusion model investigation — code complete, training pending
+**Handoff**: `investigations/diffusion/HANDOFF.md`
+**Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
+**Status**: Continuing — next session runs full training and evaluates generation quality
+
+Built self-contained DDPM for 64x64 natural image generation. Decided on 64x64 (not 108x108) for clean U-Net architecture and massive random-crop augmentation. Three Python files: diffusion_model.py (2.16M param U-Net, cosine schedule), train.py (data pipeline with D4 augmentation), sample.py (generation + evaluation plots). All smoke-tested on CUDA. No real training run yet — that is the next step (500 epochs, ~10 min). Branch: `pietro/diffusion-investigation` in worktree at `gpytorch_porting_diffusion/`.
+
 ## 2026-03-03: Merge pca-utility-optimization + cleanup
 **Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
 **Status**: Continuing — next session consolidates utility/ and utility_decompositions/ into one folder
