@@ -1,8 +1,8 @@
 # Subspace Utility Optimization — Reference Document
 
-**Branch**: `pietro/pca-utility-optimization`
-**Last updated**: 2026-02-24
-**Location**: `investigations/utility_decompositions/`
+**Branch**: `pietro/workingbranch`
+**Last updated**: 2026-03-04
+**Location**: `investigations/utility/`
 
 
 ** REMIND USER AS SOON AS YOU SEE THIS :: the c_eigenspace mode has non zero offset, this is not mathematically motivated, its just given by our limiter precision, which makes the non-capturable eigenvectors colapse to 0 instead of the mean, so we have to compensate setting offset=mean. this should be investigated. **
@@ -97,7 +97,7 @@ For PCA and combined, centering is part of the math. For C-eigen, it is a practi
 |------|-------|-------------|
 | `subspace_optimization.py` | ~1400 | Main script. Three methods, shared optimizer/plotting. |
 | `test_subspace_optimization.py` | 596 | Tests (user-written). 9 test groups: PCA math, C-eigen math, gradient flow, rf_pearson_r, norm constraint, utility improvement, subspace membership, cross-method consistency, early stopping. **Note**: tests were written before the offset unification — C-eigen tests may need updating to expect mu_rf offset instead of zeros. |
-| `HANDOFF_COMBINED_SUBSPACE.md` | This file. |
+| `docs/subspace_operations.md` | This file (was HANDOFF_COMBINED_SUBSPACE.md). |
 
 Old scripts (`pca_optimization.py`, `c_eigen_optimization.py`) and per-method handoffs (`HANDOFF_PCA.md`, `HANDOFF_C_EIGEN.md`) have been deleted (recoverable from git history). PNG outputs are gitignored.
 
@@ -157,7 +157,7 @@ Image selection:
 
 | Dependency | Imported from |
 |------------|---------------|
-| `setup()` | `investigations/utility/explore_utility.py` |
+| `setup()` | `investigations/utility/workbench.py` |
 | `distribution_aware_utility()` | `acquisition.py` (via importlib) |
 | `get_gp_marginal_moments()`, `compute_H()` | `utils.py` (via importlib) |
 | Model training, kernel, likelihood | `default_params.json` via `build_config_from_defaults()` |
@@ -252,7 +252,7 @@ This should be a separate investigation, not mixed into the subspace optimizatio
 ```
 I am working on the subspace utility optimization investigation.
 
-Read: investigations/utility_decompositions/HANDOFF_COMBINED_SUBSPACE.md
+Read: investigations/utility/docs/subspace_operations.md
 
 Branch: pietro/pca-utility-optimization
 

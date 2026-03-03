@@ -197,7 +197,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 ### Investigation Artifacts
 | Path | Purpose |
 |------|---------|
-| `investigations/utility/` | Unified utility investigation. Scripts: `explore_utility.py` (workbench), `gradient.py` (LBFGS gradient ascent), `entropy_landscape.py` + `.md` (entropy heatmap), `test_compute_H_MC.py`. Docs: `REFERENCE.md` (source of truth for definitions + findings), `HANDOFF.md` (session guide). Proofs: `proof_moments_and_conditioning.tex`, `proof_divergence_theorems.tex`, `proof_kernel_solutions.tex`. |
+| `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -222,7 +222,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 - Works with `ArcCosineKernel`, `ArcCosineKernelNormalized`, `ArcSineKernel`, and `LocalRBFKernel`
 - Both functions return `mu_g_marg` (log-firing rate) for f_max firing rate guard
 - `f_max` parameter (default 100.0) wired through `default_params.json` and YAML configs
-- LBFGS gradient-based x* optimization in unified `investigations/utility/gradient.py` (supports all kernel types via `--kernel-type`)
+- LBFGS gradient-based x* optimization in unified `investigations/utility/gradient_ascent.py` (supports all kernel types via `--kernel-type`)
 
 **Deferred (acquisition functions)**:
 - vargp_direct support (needs augmented matrix approach for distribution-aware utility)

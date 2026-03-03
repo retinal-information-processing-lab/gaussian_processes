@@ -17,27 +17,27 @@ Combined: projects C into PCA space (C_pca = V_K^T @ C @ V_K), then eigendecompo
 C_pca. Keeps directions that are BOTH natural (PCA) AND kernel-visible (C-eigenspace).
 Two thresholds: --var-threshold (PCA) and --eigen-threshold (C_pca eigendecomposition).
 
-Model training via setup() from explore_utility.py.
+Model training via setup() from workbench.py.
 All model params from default_params.json via build_config_from_defaults().
 
 Usage:
     # PCA, single target (default):
-    python investigations/utility_decompositions/subspace_optimization.py
+    python investigations/utility/subspace_optimization.py
 
     # C-eigenspace, single target:
-    python investigations/utility_decompositions/subspace_optimization.py --method c_eigen
+    python investigations/utility/subspace_optimization.py --method c_eigen
 
     # Combined PCA + C-eigenspace:
-    python investigations/utility_decompositions/subspace_optimization.py --method combined --kernel-type rbf --var-threshold 0.80 --eigen-threshold 1e-3
+    python investigations/utility/subspace_optimization.py --method combined --kernel-type rbf --var-threshold 0.80 --eigen-threshold 1e-3
 
     # PCA with custom variance threshold:
-    python investigations/utility_decompositions/subspace_optimization.py --var-threshold 0.95
+    python investigations/utility/subspace_optimization.py --var-threshold 0.95
 
     # C-eigenspace with custom threshold and RBF kernel:
-    python investigations/utility_decompositions/subspace_optimization.py --method c_eigen --kernel-type rbf --eigen-threshold 1e-6
+    python investigations/utility/subspace_optimization.py --method c_eigen --kernel-type rbf --eigen-threshold 1e-6
 
     # Multi-conditioning mode (any method):
-    python investigations/utility_decompositions/subspace_optimization.py --method pca --n-cond 300 --kernel-type rbf
+    python investigations/utility/subspace_optimization.py --method pca --n-cond 300 --kernel-type rbf
 """
 
 import sys
@@ -77,10 +77,8 @@ _spec_acq.loader.exec_module(_acquisition)
 
 distribution_aware_utility = _acquisition.distribution_aware_utility
 
-# Import setup from explore_utility.py in utility/ folder
-_utility_dir = _script_dir.parent / 'utility'
-sys.path.insert(0, str(_utility_dir))
-from explore_utility import setup
+# Import setup from workbench.py (same folder)
+from workbench import setup
 
 # ---------------------------------------------------------------------------
 # Investigation-specific constants (optimizer tuning, not model parameters)

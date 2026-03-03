@@ -1,7 +1,7 @@
 # Utility Investigation Reference
 
 Source of truth for DA utility behavior, kernel properties, and cross-kernel findings.
-Scripts: `explore_utility.py`, `gradient.py`. Entropy analysis: `entropy_landscape.py`.
+Scripts: `workbench.py`, `gradient_ascent.py`. Entropy analysis: `entropy_landscape.py`.
 
 ---
 

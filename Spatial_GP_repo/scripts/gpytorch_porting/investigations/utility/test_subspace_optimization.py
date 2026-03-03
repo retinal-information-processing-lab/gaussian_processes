@@ -8,7 +8,7 @@ enforcement, and that optimization actually improves utility.
 Uses REAL data (PNAS dataset) — trains a model once, then runs all checks.
 
 Usage:
-    python investigations/utility_decompositions/test_subspace_optimization.py
+    python investigations/utility/test_subspace_optimization.py
 """
 
 import sys
@@ -36,10 +36,8 @@ compute_pca = _sub.compute_pca
 compute_c_eigenspace = _sub.compute_c_eigenspace
 gradient_ascent = _sub.gradient_ascent
 
-# Also need setup and utility
-_utility_dir = _script_dir.parent / 'utility'
-sys.path.insert(0, str(_utility_dir))
-from explore_utility import setup
+# Also need setup and utility (same folder)
+from workbench import setup
 
 _local_utils_path = _gpytorch_dir / 'utils.py'
 _spec_u = importlib.util.spec_from_file_location("gpytorch_porting_utils", str(_local_utils_path))

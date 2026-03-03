@@ -5,6 +5,10 @@ Trains a GP model and provides simple helper functions to compute
 kernel values, GP moments, and utilities for any image. Designed for
 interactive exploration and pedagogical use.
 
+Provides setup() which is the shared entry point for all utility
+investigation scripts. M and n_train default to default_params.json
+values; callers can override via setup(M_override=..., n_train_override=...).
+
 Supports --kernel-type {arc_cosine, arc_sine, rbf}. The right panel
 of the landscape plot auto-detects kernel type and shows the relevant
 metric:
@@ -17,16 +21,16 @@ Uses standard_utility() and distribution_aware_utility() from acquisition.py
 
 Usage:
     # Arc-cosine (default):
-    python investigations/utility/explore_utility.py
+    python investigations/utility/workbench.py
 
     # Arc-sine:
-    python investigations/utility/explore_utility.py --kernel-type arc_sine
+    python investigations/utility/workbench.py --kernel-type arc_sine
 
     # RBF:
-    python investigations/utility/explore_utility.py --kernel-type rbf
+    python investigations/utility/workbench.py --kernel-type rbf
 
     # Import in a script/REPL:
-    from explore_utility import setup, kernel_angle, describe, ...
+    from workbench import setup, kernel_angle, describe, ...
 """
 
 import sys
@@ -83,12 +87,6 @@ _ADAPTIVE_RMAX_PARAMS = {
     'adaptive_min_rmax': _defaults['utility']['adaptive_min_rmax'],
 }
 
-# ---------------------------------------------------------------------------
-# Investigation-specific overrides (not model parameters)
-# These control the exploration scope, not the model itself.
-# ---------------------------------------------------------------------------
-N_TRAIN = 300       # Larger training set for richer utility landscape
-M = 300             # Larger M for stable model (default_params.json uses 100)
 
 
 # ============================================================================
@@ -115,8 +113,8 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
 
     Args:
         kernel_type: 'arc_cosine', 'arc_sine', or 'rbf'. None = use default.
-        M_override: override M (default: module-level M constant)
-        n_train_override: override n_train (default: module-level N_TRAIN)
+        M_override: override M (None = use default_params.json)
+        n_train_override: override n_train (None = use default_params.json)
 
     Returns:
         dict with keys:
@@ -128,9 +126,11 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
             config: full config dict
             kernel_type: detected kernel type string
     """
-    overrides = dict(mode='default_gpy',
-                     M=M_override if M_override is not None else M,
-                     n_train=n_train_override if n_train_override is not None else N_TRAIN)
+    overrides = dict(mode='default_gpy')
+    if M_override is not None:
+        overrides['M'] = M_override
+    if n_train_override is not None:
+        overrides['n_train'] = n_train_override
     if kernel_type is not None:
         overrides['kernel_type'] = kernel_type
 
@@ -758,7 +758,7 @@ def demo(kernel_type=None):
         model, likelihood, x_candidates, x_target,
         kernel_type=ktype,
         n_train=X_train.shape[0],
-        save_path=_script_dir / f'explore_utility_{ktype}.png',
+        save_path=_script_dir / f'workbench_{ktype}.png',
     )
 
 

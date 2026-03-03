@@ -10,18 +10,18 @@ Supports --kernel-type {arc_cosine, arc_sine, rbf}. Consolidates the
 per-kernel gradient scripts (gradient_unnormalized.py, gradient_arcsine.py,
 gradient_rbf.py) into a single investigation script.
 
-Model training via setup() from explore_utility.py (same folder).
+Model training via setup() from workbench.py (same folder).
 All model params from default_params.json via build_config_from_defaults().
 
 Usage:
     # Arc-cosine (default):
-    python investigations/utility/gradient.py
+    python investigations/utility/gradient_ascent.py
 
     # Arc-sine:
-    python investigations/utility/gradient.py --kernel-type arc_sine
+    python investigations/utility/gradient_ascent.py --kernel-type arc_sine
 
     # RBF:
-    python investigations/utility/gradient.py --kernel-type rbf
+    python investigations/utility/gradient_ascent.py --kernel-type rbf
 """
 
 import sys
@@ -60,8 +60,8 @@ _spec_acq.loader.exec_module(_acquisition)
 
 distribution_aware_utility = _acquisition.distribution_aware_utility
 
-# Import from explore_utility.py in same folder
-from explore_utility import setup
+# Import from workbench.py in same folder
+from workbench import setup
 
 # ---------------------------------------------------------------------------
 # Investigation-specific constants (not model parameters)
