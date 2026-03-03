@@ -26,52 +26,67 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from diffusers import DDPMPipeline, DDPMScheduler
 
-from generate_samples import PNAS_ABS_MAX, PNAS_DATA_PATH, DEFAULT_PRETRAINED_PATH
+from generate_samples import (PNAS_ABS_MAX, PNAS_DATA_PATH,
+                              DEFAULT_PRETRAINED_PATH, DEFAULT_FINETUNED_PATH)
+
+
+def random_d4(img):
+    """Apply random D4 symmetry transformation: 4 rotations x 2 flips = 8 variants.
+
+    Matches preprocessing from the standalone diffusion project
+    (investigations/diffusion/train.py:random_d4).
+
+    Args:
+        img: tensor of shape (1, H, W)
+    Returns:
+        transformed tensor of same shape
+    """
+    k = torch.randint(0, 4, (1,)).item()
+    if k > 0:
+        img = torch.rot90(img, k, dims=(1, 2))
+    if torch.rand(1).item() > 0.5:
+        img = torch.flip(img, dims=(2,))
+    return img
 
 
 class PNASDataset(Dataset):
-    """PNAS natural images with random crop and flip augmentation.
+    """PNAS natural images with random crop and D4 augmentation.
 
     Loads all splits (train + val + test = 3190 images).
     Each __getitem__ returns a tensor in ~[-1, 1] (divided by PNAS_ABS_MAX).
     Random crop 108->64 provides ~2025 crops per image.
+    D4 symmetry (4 rotations x 2 flips) gives 8 variants per crop.
     """
 
     def __init__(self, seed=42):
         data = np.load(PNAS_DATA_PATH)
         all_imgs = np.concatenate([data['images_train'], data['images_val'],
                                    data['images_test']], axis=0)
-        # (3190, 108, 108, 1) -> (3190, 108, 108)
-        self.images = all_imgs[:, :, :, 0].astype(np.float32)
-        self.rng = np.random.default_rng(seed)
-        print(f"Loaded {len(self.images)} PNAS images, shape {self.images.shape}")
+        # (3190, 108, 108, 1) -> (3190, 1, 108, 108) PyTorch convention
+        self.images = torch.from_numpy(
+            all_imgs[:, :, :, 0].astype(np.float32)
+        ).unsqueeze(1)
+        print(f"Loaded {len(self.images)} PNAS images, shape {tuple(self.images.shape)}")
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img = self.images[idx]  # (108, 108)
+        img = self.images[idx]  # (1, 108, 108)
 
-        # Random crop to 64x64
+        # Random crop to 64x64 (using torch RNG -- safe with DataLoader workers)
         max_offset = 108 - 64  # = 44
-        y = self.rng.integers(0, max_offset + 1)
-        x = self.rng.integers(0, max_offset + 1)
-        img = img[y:y+64, x:x+64]
+        top = torch.randint(0, max_offset + 1, (1,)).item()
+        left = torch.randint(0, max_offset + 1, (1,)).item()
+        img = img[:, top:top+64, left:left+64]
 
-        # Random horizontal flip
-        if self.rng.random() < 0.5:
-            img = img[:, ::-1]
-
-        # Random vertical flip
-        if self.rng.random() < 0.5:
-            img = img[::-1, :]
+        # Random D4 symmetry (4 rotations x 2 flips)
+        img = random_d4(img)
 
         # Normalize to ~[-1, 1]
         img = img / PNAS_ABS_MAX
 
-        # To tensor: (64, 64) -> (1, 64, 64)
-        tensor = torch.from_numpy(img.copy()).unsqueeze(0)
-        return tensor
+        return img  # (1, 64, 64)
 
 
 def train_one_epoch(unet, scheduler, dataloader, optimizer, device, gradient_accumulation=1):
@@ -163,7 +178,7 @@ def main():
                         help='Learning rate (low to avoid catastrophic forgetting)')
     parser.add_argument('--batch-size', type=int, default=16,
                         help='Training batch size')
-    parser.add_argument('--save-dir', type=str, default='ddpm-pnas-finetuned',
+    parser.add_argument('--save-dir', type=str, default=DEFAULT_FINETUNED_PATH,
                         help='Directory to save fine-tuned model')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')

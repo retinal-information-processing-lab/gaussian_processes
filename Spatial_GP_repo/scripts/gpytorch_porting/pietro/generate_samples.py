@@ -27,10 +27,10 @@ PNAS_ABS_MAX = 2.478047
 # Absolute path — worktree-safe (relative traversal breaks in git worktrees)
 PNAS_DATA_PATH = '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/notebooks/PNAS_paper_sorted_data.npz'
 
-DEFAULT_PRETRAINED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                        'ddpm-imagenet-grayscale')
-DEFAULT_FINETUNED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                       'ddpm-pnas-finetuned')
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PARENT_DIR = os.path.dirname(_SCRIPT_DIR)
+DEFAULT_PRETRAINED_PATH = os.path.join(_PARENT_DIR, 'ddpm-imagenet-grayscale')
+DEFAULT_FINETUNED_PATH = os.path.join(_SCRIPT_DIR, 'ddpm-pnas-finetuned')
 
 
 def create_parser():
