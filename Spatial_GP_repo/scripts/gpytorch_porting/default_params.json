@@ -54,8 +54,9 @@
   },
 
   "data": {
+    "path": "datasets/PNAS_108x108_original.npz",
     "n_train": 500,
-    "n_px_side": 108,
+    "n_px_side": null,
     "cellid": 8,
     "ntilde": 100,
     "seed": 42

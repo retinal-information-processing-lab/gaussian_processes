@@ -147,9 +147,12 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
 
     detected_type = _get_kernel_type(model)
 
-    # Build pool and training set
-    data_path = _gpytorch_dir.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
-    data = np.load(data_path)
+    # Build pool and training set — data path from config (no hardcoded fallback)
+    data_path_raw = config['data_path']
+    dp = Path(data_path_raw)
+    if not dp.is_absolute():
+        dp = _gpytorch_dir / dp
+    data = np.load(dp)
     dtype = torch.float32
     device = next(model.parameters()).device
 

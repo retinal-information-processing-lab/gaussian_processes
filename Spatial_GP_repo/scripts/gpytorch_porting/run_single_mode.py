@@ -100,7 +100,7 @@ def _compute_sta_2d(X, r, n_px_side):
 def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reliability,
              STA_init_2d=None, STA_train_2d=None,
              init_eps_0x=None, init_eps_0y=None, init_beta=None,
-             kernel=None, n_px_side=108, output_path=None):
+             kernel=None, n_px_side=None, output_path=None):
     """Plot actual vs predicted firing rates, with optional STA + RF visualization.
 
     Args:
@@ -336,7 +336,8 @@ def build_config_from_defaults(**overrides):
         'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
 
         # --- Data (from data section) ---
-        'n_px_side': dat['n_px_side'],
+        'data_path': dat['path'],
+        'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
         'use_cache': mod['use_cache'],
 
         # --- Inducing point selection (from inducing section) ---
@@ -457,7 +458,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'f_max': utl['f_max'],
 
         # Data
-        'n_px_side': dat['n_px_side'],
+        'data_path': dat['path'],
+        'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
         'use_cache': dat['use_cache'],
 
         # Runtime options (not in YAML, defaults for experiment runs)
@@ -513,14 +515,14 @@ def run_single_config(config):
 
     Args:
         config: Flat dict with all parameters for ONE run. Required keys:
-            mode, M, n_train, seed, cell, n_iterations,
+            data_path, mode, M, n_train, seed, cell, n_iterations,
             device, dtype,
             sigma_0, Amp, beta, rho, eps_0x, eps_0y, gradient_mode, use_mask,
             A_init, lambda0_init,
             n_estep, n_fstep, n_mstep, lr, optimizer,
             early_stop, stop_window, stop_thresh, min_iterations,
             jitter, eigval_tol,
-            n_px_side, use_cache,
+            n_px_side (null=auto-detect from data), use_cache,
             mstep_analytical, unwhitened_variational_dist,
             ip_selection, n_candidates, n_samples_sta
 
@@ -534,7 +536,6 @@ def run_single_config(config):
     seed = config['seed']
     cell = config['cell']
     n_iterations = config['n_iterations']
-    n_px_side = config['n_px_side']
 
     # --- Validation guards for kernel/mode compatibility ---
     if kernel_type != 'arc_cosine' and mode == 'vargp_old':
@@ -575,17 +576,34 @@ def run_single_config(config):
     set_reproducible_seed(seed, device=device)
     print(f"Seed: {seed}")
 
-    # Load data
-    data_path = Path(__file__).parent.parent.parent / 'notebooks' / 'PNAS_paper_sorted_data.npz'
+    # Load data — path from config, resolved relative to gpytorch_porting/
+    data_path = Path(config['data_path'])
+    if not data_path.is_absolute():
+        data_path = Path(__file__).parent / data_path
     print(f"Loading data from: {data_path}")
     data = load_pnas_data(data_path, dtype=dtype)
     if dtype == torch.float32:
         print("WARNING: Using float32 - may cause numerical instability")
 
+    # Auto-detect n_px_side from image shape (N, H, W, 1)
+    detected_n_px_side = data['X_train'].shape[1]
+    assert data['X_train'].shape[1] == data['X_train'].shape[2], \
+        f"Expected square images, got {data['X_train'].shape[1]}x{data['X_train'].shape[2]}"
+    config_n_px_side = config['n_px_side']  # null/None = auto-detect, int = validate
+    if config_n_px_side is not None and config_n_px_side != detected_n_px_side:
+        raise ValueError(
+            f"Config n_px_side={config_n_px_side} but loaded data is "
+            f"{detected_n_px_side}x{detected_n_px_side}. "
+            f"Set n_px_side to null for auto-detection or fix the mismatch."
+        )
+    n_px_side = detected_n_px_side
+    config['n_px_side'] = n_px_side  # update config for downstream code
+    print(f"Image dimensions: {n_px_side}x{n_px_side} ({n_px_side**2} pixels)")
+
     # Combine train + val, flatten
     X = torch.cat([data['X_train'], data['X_val']], dim=0)
     R = torch.cat([data['R_train'], data['R_val']], dim=0)
-    X = X.reshape(X.shape[0], -1).to(device)  # (N, 11664)
+    X = X.reshape(X.shape[0], -1).to(device)  # (N, n_px_side^2)
     R = R.to(device)
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
@@ -1105,6 +1123,8 @@ def main():
         defaults = json.load(f)
 
     parser = argparse.ArgumentParser(description='Test E-step on PNAS data')
+    parser.add_argument('--data-path', type=str, default=defaults['data']['path'],
+                        help=f'Path to NPZ dataset, relative to gpytorch_porting/ or absolute (default: {defaults["data"]["path"]})')
     parser.add_argument('--cell', type=int, default=defaults['data']['cellid'], help=f'Cell ID (default: {defaults["data"]["cellid"]})')
     parser.add_argument('--ntilde', type=int, default=defaults['data']['ntilde'], help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
     parser.add_argument('--n-train', type=int, default=defaults['data']['n_train'], help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
@@ -1216,6 +1236,7 @@ def main():
     # All argparse defaults already come from the same JSON, so only
     # user-provided CLI flags actually change anything.
     config = build_config_from_defaults(
+        data_path=args.data_path,
         mode=args.mode,
         kernel_type=args.kernel_type,
         M=args.ntilde,
@@ -1289,7 +1310,7 @@ def main():
                  init_eps_0y=result.get('_init_eps_0y'),
                  init_beta=result.get('_init_beta'),
                  kernel=kernel_obj,
-                 n_px_side=result.get('n_px_side', 108),
+                 n_px_side=result['n_px_side'],
                  output_path=save_path)
 
     # Write JSON if requested

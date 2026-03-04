@@ -100,5 +100,6 @@ utility:
 
 # ===== DATA =====
 data:
-  n_px_side: 108
+  path: "datasets/PNAS_108x108_original.npz"  # relative to gpytorch_porting/; set to other NPZ for different datasets
+  n_px_side: null           # null = auto-detect from loaded data; set explicitly to validate
   use_cache: true
