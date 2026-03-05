@@ -1,5 +1,12 @@
 # Session Log
 
+## 2026-03-05: Approach D — Guided reverse diffusion planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-05_approach-d-guided-reverse-diffusion.md`
+**Plan**: `.claude/plans/vast-painting-boot.md`
+**Status**: Handed off for implementation
+
+Planning session for Approach D: generate high-utility images via classifier-guided DDIM reverse diffusion. Read all source materials (tex algorithm spec, diffusion_model.py, guided_optimization.py, acquisition.py). Resolved TARGET_INDEX conflict (user chose 5). Designed 4-stage implementation plan for single new file `investigations/diffusion/guided_reverse.py`. No code written — pure planning with checkpoints.
+
 ## 2026-03-03: Diffusion model — training, T-1 sampling fix, generation working
 **Handoff**: `investigations/diffusion/HANDOFF.md`
 **Reference**: `investigations/diffusion/REFERENCE.md`

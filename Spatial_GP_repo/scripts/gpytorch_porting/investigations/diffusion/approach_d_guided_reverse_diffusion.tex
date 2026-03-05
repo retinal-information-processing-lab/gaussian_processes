@@ -1,0 +1,646 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\title{Approach D: Guided Reverse Diffusion for\\Utility-Constrained Image Generation}
+\author{Discussion Notes}
+\date{March 2026}
+
+\newcommand{\xb}{\mathbf{x}}
+\newcommand{\xc}{\xb_{\mathrm{c}}}
+\newcommand{\zb}{\mathbf{z}}
+\newcommand{\eb}{\boldsymbol{\epsilon}}
+\newcommand{\gb}{\mathbf{g}}
+\newcommand{\Ib}{\mathbf{I}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\alphabar}{\bar{\alpha}}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\vspace{1em}
+
+% ============================================================================
+\section{Goal}
+% ============================================================================
+
+We want to generate an image $\xb_0 \in \R^d$ (where $d = 64 \times 64 = 4096$)
+that simultaneously:
+\begin{enumerate}[nosep]
+    \item Looks like a natural image (lies on or near the natural image manifold $\mathcal{M}$).
+    \item Has high GP-based distribution-aware utility $U(\xb_0)$ for a target neuron.
+\end{enumerate}
+
+Approaches A--C (from \texttt{GUIDANCE\_POSSIBILITIES.tex}) all start from an existing image
+and optimize it, using the diffusion model as a regularizer \emph{after the fact}.
+Their common weakness: the diffusion model's score is evaluated in situations it wasn't
+trained for (clean images, amplified images, etc.).
+
+Approach D flips the paradigm: we \textbf{generate} the image through the diffusion model's
+reverse process, nudging each denoising step toward high utility. The diffusion model
+is always in-distribution (it processes images at exactly the noise level it expects),
+and the utility acts as a guidance signal.
+
+% ============================================================================
+\section{Prerequisites and Notation}
+% ============================================================================
+
+\subsection{The trained DDPM}
+
+We have a trained noise predictor $\eb_\theta(\xb_t, t)$ (our UNet, 2.16M parameters)
+and a cosine noise schedule with:
+\begin{itemize}[nosep]
+    \item $T = 1000$ timesteps
+    \item $\alphabar_t = \prod_{s=1}^t (1 - \beta_s)$ --- cumulative signal retention
+    \item $\beta_t = 1 - \alphabar_t / \alphabar_{t-1}$ --- noise added at step $t$
+    \item $\alpha_t = 1 - \beta_t$ --- signal retained at step $t$
+\end{itemize}
+
+Key boundary values from our cosine schedule:
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+$t$ & $\alphabar_t$ & $\sqrt{\alphabar_t}$ & $\sqrt{1-\alphabar_t}$ & $\beta_t$ \\
+\midrule
+1   & 0.9999 & 1.000  & 0.010  & 0.0000 \\
+50  & 0.9939 & 0.997  & 0.078  & 0.0001 \\
+250 & 0.8445 & 0.919  & 0.394  & 0.0011 \\
+500 & 0.4938 & 0.703  & 0.711  & 0.0031 \\
+750 & 0.1310 & 0.362  & 0.930  & 0.0070 \\
+999 & 0.000002 & 0.001 & 1.000 & 0.7500 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Key identities}
+
+\paragraph{Forward process.}
+Given a clean image $\xb_0$, the noisy version at time $t$ is:
+\begin{equation}
+    \xb_t = \sqrt{\alphabar_t}\, \xb_0 + \sqrt{1 - \alphabar_t}\, \eb,
+    \qquad \eb \sim \mathcal{N}(\mathbf{0}, \Ib)
+    \label{eq:forward}
+\end{equation}
+
+\paragraph{Tweedie's formula.}
+Given $\xb_t$ at noise level $t$, the posterior mean of $\xb_0$ is:
+\begin{equation}
+    \hat{\xb}_0(\xb_t, t)
+    = \frac{\xb_t - \sqrt{1 - \alphabar_t}\, \eb_\theta(\xb_t, t)}{\sqrt{\alphabar_t}}
+    \label{eq:tweedie}
+\end{equation}
+
+\paragraph{Score function.}
+The score of the noisy distribution $p_t(\xb_t)$ is:
+\begin{equation}
+    \nabla_{\xb_t} \log p_t(\xb_t)
+    \approx s_\theta(\xb_t, t)
+    = -\frac{\eb_\theta(\xb_t, t)}{\sqrt{1 - \alphabar_t}}
+    \label{eq:score}
+\end{equation}
+
+\subsection{The GP utility}
+
+$U(\xb) = H_{\text{marg}}(\xb) - H_{\text{cond}}(\xb)$ is the distribution-aware
+utility, computed via \texttt{distribution\_aware\_utility()} from \texttt{acquisition.py}.
+It measures information gain about the target neuron's response.
+
+$U$ is differentiable with respect to $\xb$ through the GP kernel (arc-cosine kernel
+with RF structure). The gradient $\nabla_\xb U(\xb)$ is well-defined for
+images in the valid pixel range.
+
+We also have a firing rate guard: if the log-firing rate $\mu_g(\xb) = A \cdot \lambda(\xb) + \lambda_0$
+exceeds $\log(f_{\max})$, the utility is considered invalid (physiologically unrealistic firing rate).
+
+% ============================================================================
+\section{Standard DDPM Reverse Process (Unconditional)}
+% ============================================================================
+
+The standard (unguided) reverse process generates images by iterating:
+\begin{equation}
+    \xb_{t-1} = \frac{1}{\sqrt{\alpha_t}}
+    \left(\xb_t - \frac{\beta_t}{\sqrt{1 - \alphabar_t}}\, \eb_\theta(\xb_t, t)\right)
+    + \sigma_t\, \zb
+    \label{eq:ddpm_reverse}
+\end{equation}
+where $\zb \sim \mathcal{N}(\mathbf{0}, \Ib)$ for $t > 1$ and $\zb = \mathbf{0}$ for $t = 1$,
+and $\sigma_t = \sqrt{\beta_t}$.
+
+Starting from $\xb_T \sim \mathcal{N}(\mathbf{0}, \Ib)$, after $T$ steps we obtain
+$\xb_0 \sim p_\theta(\xb_0) \approx p_{\text{data}}(\xb_0)$.
+
+Equivalently, using the Tweedie estimate $\hat{\xb}_0$ from Eq.~\eqref{eq:tweedie}:
+\begin{equation}
+    \xb_{t-1} = \sqrt{\alphabar_{t-1}}\, \hat{\xb}_0
+    + \sqrt{1 - \alphabar_{t-1} - \sigma_t^2}\,
+    \frac{\xb_t - \sqrt{\alphabar_t}\, \hat{\xb}_0}{\sqrt{1 - \alphabar_t}}
+    + \sigma_t\, \zb
+    \label{eq:ddpm_reverse_x0}
+\end{equation}
+
+This ``predicted $\xb_0$'' form will be more natural for adding guidance.
+
+% ============================================================================
+\section{Classifier Guidance: Theory}
+\label{sec:classifier_guidance}
+% ============================================================================
+
+\subsection{The conditional score}
+
+We want to sample from $p(\xb_0 \mid y)$ where $y$ represents ``high utility.''
+Modeling this as $p(y \mid \xb_0) \propto \exp(w \cdot U(\xb_0))$ for guidance scale $w > 0$,
+Bayes' rule gives:
+\begin{equation}
+    \nabla_{\xb_t} \log p(\xb_t \mid y)
+    = \underbrace{\nabla_{\xb_t} \log p_t(\xb_t)}_{\text{unconditional score}}
+    + \underbrace{\nabla_{\xb_t} \log p(y \mid \xb_t)}_{\text{classifier gradient}}
+    \label{eq:conditional_score}
+\end{equation}
+
+The unconditional score is provided by the trained UNet via Eq.~\eqref{eq:score}.
+The classifier gradient requires evaluating $p(y \mid \xb_t)$ --- but $\xb_t$ is noisy,
+and our utility $U$ is defined on clean images.
+
+\subsection{Approximation: utility of the Tweedie estimate}
+
+The standard approach (Dhariwal \& Nichol, 2021) evaluates the classifier on
+$\hat{\xb}_0(\xb_t, t)$ instead of the noisy $\xb_t$:
+\begin{equation}
+    \nabla_{\xb_t} \log p(y \mid \xb_t)
+    \approx w \cdot \nabla_{\xb_t} U\!\left(\hat{\xb}_0(\xb_t, t)\right)
+    \label{eq:guidance_gradient}
+\end{equation}
+
+This gradient flows through two stages:
+\begin{enumerate}[nosep]
+    \item $\nabla_{\hat{\xb}_0} U(\hat{\xb}_0)$ --- gradient of utility w.r.t.\ the clean image estimate
+    \item $\frac{\partial \hat{\xb}_0}{\partial \xb_t}$ --- Jacobian of the Tweedie formula w.r.t.\ the noisy image
+\end{enumerate}
+
+We define the \textbf{guidance gradient}:
+\begin{equation}
+    \gb_t \;=\; \nabla_{\xb_t} U\!\left(\hat{\xb}_0(\xb_t, t)\right)
+    \label{eq:g_def}
+\end{equation}
+
+\subsection{Chain rule through Tweedie}
+
+From Eq.~\eqref{eq:tweedie}:
+\begin{equation}
+    \hat{\xb}_0 = \frac{1}{\sqrt{\alphabar_t}}
+    \left(\xb_t - \sqrt{1 - \alphabar_t}\, \eb_\theta(\xb_t, t)\right)
+\end{equation}
+
+The Jacobian $\frac{\partial \hat{\xb}_0}{\partial \xb_t}$ has two contributions:
+\begin{equation}
+    \frac{\partial \hat{\xb}_0}{\partial \xb_t}
+    = \frac{1}{\sqrt{\alphabar_t}}
+    \left(\Ib - \sqrt{1 - \alphabar_t}\, \frac{\partial \eb_\theta}{\partial \xb_t}\right)
+    \label{eq:tweedie_jacobian}
+\end{equation}
+
+where $\frac{\partial \eb_\theta}{\partial \xb_t} \in \R^{d \times d}$ is the Jacobian
+of the UNet. This is a $d \times d$ matrix ($d = 4096$), which we never form explicitly.
+Instead, PyTorch's autograd computes the vector-Jacobian product (VJP) directly:
+\begin{equation}
+    \gb_t = \left(\nabla_{\hat{\xb}_0} U\right)^T
+    \frac{\partial \hat{\xb}_0}{\partial \xb_t}
+\end{equation}
+
+This is computed automatically by calling \texttt{loss.backward()} where
+$\texttt{loss} = -U(\hat{\xb}_0)$ and $\xb_t$ is a leaf tensor with \texttt{requires\_grad=True}.
+
+\subsection{Modified noise prediction}
+
+The guided reverse step modifies the noise prediction to incorporate the classifier:
+\begin{equation}
+    \eb_{\text{guided}} = \eb_\theta(\xb_t, t)
+    - w\,\sqrt{1 - \alphabar_t}\, \gb_t
+    \label{eq:eps_guided}
+\end{equation}
+
+\textbf{Derivation.} The unconditional score is $s = -\eb_\theta / \sqrt{1-\alphabar_t}$.
+The conditional score is $s + w \cdot \gb_t$. Converting back to noise prediction:
+\begin{align}
+    \eb_{\text{guided}}
+    &= -\sqrt{1-\alphabar_t}\,(s + w \cdot \gb_t) \\
+    &= \eb_\theta - w\,\sqrt{1-\alphabar_t}\, \gb_t
+\end{align}
+
+The guided Tweedie estimate is:
+\begin{equation}
+    \hat{\xb}_0^{\text{guided}}
+    = \frac{\xb_t - \sqrt{1-\alphabar_t}\, \eb_{\text{guided}}}{\sqrt{\alphabar_t}}
+    = \hat{\xb}_0 + \frac{w\,(1-\alphabar_t)}{\sqrt{\alphabar_t}}\, \gb_t
+    \label{eq:x0_guided}
+\end{equation}
+
+The second term shows that guidance shifts the clean image estimate in the direction
+of $\gb_t$ (increasing utility), with a weight that grows with the noise level
+$(1 - \alphabar_t)$. At $t=1$, the shift is negligible ($\approx 10^{-4}$).
+At $t=500$, it is $\approx 0.7 w$.
+
+% ============================================================================
+\section{Full Algorithm: DDPM with Classifier Guidance}
+\label{sec:algorithm_ddpm}
+% ============================================================================
+
+\begin{algorithm}[H]
+\caption{Guided DDPM Reverse Process}
+\label{alg:guided_ddpm}
+\begin{algorithmic}[1]
+\Require Trained UNet $\eb_\theta$, schedule $\{\alphabar_t, \beta_t, \alpha_t\}$,
+         GP model + likelihood, guidance scale $w$, firing rate cap $f_{\max}$
+\Ensure Generated image $\xb_0$ with high utility
+\State $\xb_{T-1} \sim \mathcal{N}(\mathbf{0}, \Ib)$
+    \Comment{Start from noise (skip $t=T$ per cosine schedule fix)}
+\For{$t = T{-}1, T{-}2, \ldots, 1$}
+    \State \textbf{--- UNet forward (with gradient tracking) ---}
+    \State $\xb_t.\text{requires\_grad} \gets \text{True}$
+    \State $\hat{\eb} \gets \eb_\theta(\xb_t, t)$
+        \Comment{UNet forward pass}
+    \State $\hat{\xb}_0 \gets (\xb_t - \sqrt{1-\alphabar_t}\,\hat{\eb}) / \sqrt{\alphabar_t}$
+        \Comment{Tweedie estimate}
+    \Statex
+    \State \textbf{--- Utility evaluation on Tweedie estimate ---}
+    \State Convert $\hat{\xb}_0$ from diffusion space to raw pixel space
+    \State $U, \mu_g \gets \texttt{distribution\_aware\_utility}(\hat{\xb}_0)$
+    \Statex
+    \State \textbf{--- Compute guidance gradient ---}
+    \If{$\exp(\mu_g) < f_{\max}$}
+        \Comment{Only guide if firing rate is physical}
+        \State $(-U).\text{backward}()$
+            \Comment{Backprop through Tweedie + UNet}
+        \State $\gb_t \gets -\xb_t.\text{grad}$
+            \Comment{$\gb_t = \nabla_{\xb_t} U(\hat{\xb}_0)$}
+    \Else
+        \State $\gb_t \gets \mathbf{0}$
+    \EndIf
+    \Statex
+    \State \textbf{--- Guided reverse step ---}
+    \State $\hat{\eb}_{\text{guided}} \gets \hat{\eb} - w\sqrt{1-\alphabar_t}\,\gb_t$
+    \State $\mu_t \gets \frac{1}{\sqrt{\alpha_t}}(\xb_t - \frac{\beta_t}{\sqrt{1-\alphabar_t}}\hat{\eb}_{\text{guided}})$
+    \If{$t > 1$}
+        \State $\xb_{t-1} \gets \mu_t + \sqrt{\beta_t}\,\zb$,
+            \quad $\zb \sim \mathcal{N}(\mathbf{0}, \Ib)$
+    \Else
+        \State $\xb_0 \gets \mu_t$
+    \EndIf
+    \State Detach $\xb_{t-1}$ from computation graph
+\EndFor
+\State \Return $\xb_0$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Important details}
+
+\paragraph{Detach after each step.}
+After computing $\xb_{t-1}$, we detach it from the computation graph.
+Each step is an independent gradient computation --- we do \emph{not} backpropagate
+through the entire chain of $T$ steps (that would require $O(T)$ memory for all
+intermediate UNet activations).
+
+\paragraph{Skip $t = T$.}
+Our cosine schedule has $\alpha_{1000} \approx 0.001$, giving $1/\sqrt{\alpha_{1000}} \approx 31.6$.
+Starting the loop at $t = T{-}1 = 999$ avoids this amplification (same fix as unconditional sampling).
+
+\paragraph{Guidance gradient computation.}
+At each step, we compute $\gb_t$ by:
+\begin{enumerate}[nosep]
+    \item Setting $\xb_t$ to require gradients
+    \item Running the UNet forward (gradients enabled, but UNet weights frozen)
+    \item Computing $\hat{\xb}_0$ via Tweedie
+    \item Evaluating $U(\hat{\xb}_0)$ through the GP
+    \item Calling \texttt{backward()} to get $\xb_t.\text{grad}$
+\end{enumerate}
+
+The UNet weights are frozen (\texttt{unet.requires\_grad\_(False)}), so no optimizer
+updates to $\theta$ occur. The only purpose of the backward pass is to compute
+$\partial U / \partial \xb_t$.
+
+\paragraph{Space conversions.}
+The UNet operates in diffusion space (approximately $[-1, 1]$, normalized by \texttt{scale\_factor} $= 2.478$).
+The GP operates in raw pixel space. The conversion $\hat{\xb}_0^{\text{raw}} = \hat{\xb}_0 \cdot \text{scale\_factor}$
+must happen before calling \texttt{distribution\_aware\_utility()}, and the gradient
+must flow through this scaling.
+
+% ============================================================================
+\section{DDIM Acceleration}
+\label{sec:ddim}
+% ============================================================================
+
+Full DDPM requires $T - 1 = 999$ sequential UNet evaluations. DDIM (Song et al., 2021)
+allows using a \textbf{subsequence} of timesteps with a deterministic update rule.
+
+\subsection{DDIM update rule}
+
+Choose a subsequence of $S$ timesteps: $\tau_1 < \tau_2 < \cdots < \tau_S$ from $\{1, \ldots, T\}$.
+For example, with $S = 50$: $\tau = \{20, 40, 60, \ldots, 1000\}$ (uniform spacing).
+
+At each DDIM step, going from $\tau_i$ to $\tau_{i-1}$ (denoting these as $t$ and $t'$ for clarity):
+\begin{equation}
+    \xb_{t'} = \sqrt{\alphabar_{t'}}\, \hat{\xb}_0
+    + \sqrt{1 - \alphabar_{t'} - \sigma^2}\,
+    \underbrace{\frac{\xb_t - \sqrt{\alphabar_t}\, \hat{\xb}_0}{\sqrt{1 - \alphabar_t}}}_{\text{``predicted noise direction''}}
+    + \sigma\, \zb
+    \label{eq:ddim}
+\end{equation}
+
+where $\hat{\xb}_0 = (\xb_t - \sqrt{1-\alphabar_t}\,\eb_\theta(\xb_t, t)) / \sqrt{\alphabar_t}$
+and $\sigma$ controls stochasticity:
+\begin{itemize}[nosep]
+    \item $\sigma = 0$: deterministic DDIM (fully reproducible given $\xb_T$)
+    \item $\sigma = \sqrt{(1-\alphabar_{t'})/(1-\alphabar_t)} \cdot \sqrt{\beta_t}$: recovers DDPM
+\end{itemize}
+
+\subsection{Guided DDIM}
+
+For guided generation, replace $\hat{\xb}_0$ with $\hat{\xb}_0^{\text{guided}}$ from
+Eq.~\eqref{eq:x0_guided}:
+\begin{equation}
+    \hat{\xb}_0^{\text{guided}}
+    = \hat{\xb}_0 + \frac{w\,(1-\alphabar_t)}{\sqrt{\alphabar_t}}\, \gb_t
+\end{equation}
+
+Then use $\hat{\xb}_0^{\text{guided}}$ in the DDIM update (Eq.~\eqref{eq:ddim}).
+
+Alternatively, one can compute the guided noise prediction $\hat{\eb}_{\text{guided}}$
+(Eq.~\eqref{eq:eps_guided}) and derive $\hat{\xb}_0^{\text{guided}}$ from it. Both are equivalent.
+
+\begin{algorithm}[H]
+\caption{Guided DDIM (Deterministic, $\sigma = 0$)}
+\label{alg:guided_ddim}
+\begin{algorithmic}[1]
+\Require UNet $\eb_\theta$, schedule, GP model, guidance scale $w$,
+         number of steps $S$, firing rate cap $f_{\max}$
+\Ensure Generated image $\xb_0$ with high utility
+\State Compute timestep subsequence $\tau_S > \tau_{S-1} > \cdots > \tau_1$
+    \Comment{e.g., uniform in $[1, T{-}1]$}
+\State $\xb_{\tau_S} \sim \mathcal{N}(\mathbf{0}, \Ib)$
+\For{$i = S, S{-}1, \ldots, 1$}
+    \State $t \gets \tau_i$, \quad $t' \gets \tau_{i-1}$ (or $0$ if $i = 1$)
+    \Statex
+    \State \textbf{--- Compute Tweedie estimate with gradient tracking ---}
+    \State $\xb_t.\text{requires\_grad} \gets \text{True}$
+    \State $\hat{\eb} \gets \eb_\theta(\xb_t, t)$
+    \State $\hat{\xb}_0 \gets (\xb_t - \sqrt{1-\alphabar_t}\,\hat{\eb}) / \sqrt{\alphabar_t}$
+    \Statex
+    \State \textbf{--- Utility guidance ---}
+    \State $U, \mu_g \gets \texttt{utility}(\hat{\xb}_0)$ in raw pixel space
+    \If{$\exp(\mu_g) < f_{\max}$}
+        \State $\gb_t \gets \nabla_{\xb_t} U(\hat{\xb}_0)$ via \texttt{backward()}
+    \Else
+        \State $\gb_t \gets \mathbf{0}$
+    \EndIf
+    \Statex
+    \State \textbf{--- Guided Tweedie ---}
+    \State $\hat{\xb}_0^g \gets \hat{\xb}_0 + \frac{w(1-\alphabar_t)}{\sqrt{\alphabar_t}}\,\gb_t$
+    \Statex
+    \State \textbf{--- DDIM step ---}
+    \State \textbf{direction} $\gets (\xb_t - \sqrt{\alphabar_t}\,\hat{\xb}_0^g) / \sqrt{1-\alphabar_t}$
+    \If{$i > 1$}
+        \State $\xb_{t'} \gets \sqrt{\alphabar_{t'}}\,\hat{\xb}_0^g
+            + \sqrt{1-\alphabar_{t'}}\cdot\textbf{direction}$
+    \Else
+        \State $\xb_0 \gets \hat{\xb}_0^g$
+            \Comment{Final step: just return the clean estimate}
+    \EndIf
+    \State Detach $\xb_{t'}$ from computation graph
+\EndFor
+\State \Return $\xb_0$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Choosing the number of DDIM steps $S$}
+
+For a first implementation, $S = 50$ is a good starting point.
+Quality degrades below $S \approx 20$ for typical diffusion models.
+
+With $S = 50$ steps, each requiring one UNet forward + backward + one utility evaluation:
+\begin{itemize}[nosep]
+    \item UNet forward: $\sim$5\,ms (2.16M params, 64$\times$64, GPU)
+    \item UNet backward: $\sim$10\,ms (frozen weights, only input gradient)
+    \item Utility evaluation: $\sim$1\,ms (\texttt{distribution\_aware\_utility}, single image)
+    \item Utility backward: $\sim$2\,ms (gradient through kernel)
+    \item \textbf{Total per step}: $\sim$18\,ms
+    \item \textbf{Total for 50 steps}: $\sim$0.9\,s
+\end{itemize}
+
+This is very feasible. Even full DDPM at 999 steps would take $\sim$18\,s per image.
+
+% ============================================================================
+\section{Gradient Computation: Full vs.\ Approximate}
+\label{sec:gradient_approx}
+% ============================================================================
+
+The guidance gradient $\gb_t = \nabla_{\xb_t} U(\hat{\xb}_0(\xb_t, t))$ involves the
+chain rule through the Tweedie formula and the UNet:
+\begin{equation}
+    \gb_t = \underbrace{\nabla_{\hat{\xb}_0} U}_{\text{utility gradient}}
+    \cdot
+    \underbrace{\frac{\partial \hat{\xb}_0}{\partial \xb_t}}_{\text{Tweedie Jacobian}}
+\end{equation}
+
+\subsection{Full gradient (through UNet)}
+
+From Eq.~\eqref{eq:tweedie_jacobian}:
+\begin{equation}
+    \frac{\partial \hat{\xb}_0}{\partial \xb_t}
+    = \frac{1}{\sqrt{\alphabar_t}}
+    \left(\Ib - \sqrt{1 - \alphabar_t}\, \frac{\partial \eb_\theta}{\partial \xb_t}\right)
+\end{equation}
+
+In PyTorch, this is computed automatically: we make $\xb_t$ a leaf tensor with gradients,
+run the UNet, compute Tweedie, evaluate utility, and call \texttt{backward()}.
+The UNet's parameters are frozen (\texttt{requires\_grad=False}), but the computation
+graph through the UNet's \emph{forward pass} is retained for the input gradient.
+
+\textbf{Cost}: One UNet forward pass (already needed for denoising) + one UNet backward
+pass (for the gradient). Roughly $2\times$ the cost of a standard unconditional step.
+
+\subsection{Approximate gradient (skip UNet Jacobian)}
+\label{sec:approx_grad}
+
+An often-used approximation ignores the UNet's Jacobian entirely:
+\begin{equation}
+    \gb_t^{\text{approx}}
+    = \frac{1}{\sqrt{\alphabar_t}}\, \nabla_{\hat{\xb}_0} U(\hat{\xb}_0)
+    \label{eq:g_approx}
+\end{equation}
+
+This treats $\hat{\xb}_0$ as if it depends on $\xb_t$ only through the direct
+$\xb_t / \sqrt{\alphabar_t}$ term, ignoring the $\eb_\theta(\xb_t, t)$ dependence.
+
+\textbf{Justification}: The UNet Jacobian $\partial \eb_\theta / \partial \xb_t$
+is a complicated nonlinear function. In many practical settings (text-to-image, etc.),
+the approximate gradient works nearly as well as the full gradient. The intuition:
+the UNet's prediction $\eb_\theta$ is a ``local correction'' whose Jacobian is
+close to zero-mean (it doesn't systematically align with or oppose the utility gradient).
+
+\textbf{Advantage}: No backward pass through the UNet. The cost per step drops from
+$\sim$18\,ms to $\sim$8\,ms. For 50 DDIM steps: $\sim$0.4\,s vs.\ $\sim$0.9\,s.
+
+\textbf{When this approximation breaks down}: When the UNet's correction is large
+(early steps, high noise) or when the utility gradient is very sensitive to the
+specific noise prediction. At low noise levels ($t$ small), the approximation is
+excellent because $\sqrt{1-\alphabar_t}$ is small, making the UNet term negligible.
+
+\subsection{Recommendation for implementation}
+
+\textbf{Start with the approximate gradient} (Eq.~\eqref{eq:g_approx}):
+\begin{enumerate}[nosep]
+    \item Simpler implementation (no gradient tracking through UNet)
+    \item Faster per step (no UNet backward)
+    \item Good enough for most of the reverse process (especially late steps)
+\end{enumerate}
+
+Then implement the full gradient as a comparison. If the approximate gradient
+produces images with comparable utility and naturalness, keep it.
+
+\textbf{Hybrid approach}: Use the approximate gradient for early steps ($t > 200$)
+where the Tweedie estimate is rough anyway, and the full gradient for late steps ($t < 200$)
+where precision matters. This gives most of the benefit with minimal extra cost.
+
+% ============================================================================
+\section{Practical Considerations}
+\label{sec:practical}
+% ============================================================================
+
+\subsection{Guidance scale $w$}
+
+The guidance scale $w$ controls the tradeoff between naturalness and utility.
+$w = 0$ gives unconditional sampling (natural but random utility).
+Large $w$ pushes hard toward high utility but can distort the image.
+
+\textbf{Calibration}: At early steps ($t$ large), $\hat{\xb}_0$ is a rough estimate
+and utility gradients are noisy. At late steps ($t$ small), they are precise.
+The factor $(1-\alphabar_t)/\sqrt{\alphabar_t}$ in Eq.~\eqref{eq:x0_guided} naturally
+downweights guidance at low noise levels. This is desirable: most of the ``utility steering''
+should happen at intermediate noise levels where the image structure is being decided.
+
+Starting point: $w \in [0.1, 10]$. Print the utility of $\hat{\xb}_0$ and the guidance
+gradient norm at each step to calibrate.
+
+\subsection{Firing rate guard}
+
+At early steps, $\hat{\xb}_0$ may have extreme pixel values (the Tweedie estimate from
+heavily noisy images is rough). These can produce unrealistic firing rates.
+The $f_{\max}$ guard in the algorithm zeros out the guidance gradient when
+$\exp(\mu_g) > f_{\max}$. This prevents the guidance from chasing
+physiologically impossible utility values at early steps.
+
+\subsection{RF mask and image reconstruction}
+
+The utility depends only on RF pixels ($\sim$21\% of the 64$\times$64 image).
+But the reverse process generates \emph{all} pixels. The guidance gradient
+$\gb_t$ will be nonzero only at RF pixels (because the utility gradient is zero
+at non-RF pixels, since the kernel masks them out). The diffusion model shapes
+the entire image for naturalness; the utility guides only the RF region.
+
+This is an \textbf{advantage} over Approach A: the non-RF region is naturally
+generated (not fixed at a starting image). The full image will look natural.
+
+\subsection{Multiple samples}
+
+Each run with a different $\xb_T$ seed produces a different image. To find the
+best one:
+\begin{enumerate}[nosep]
+    \item Generate $K$ images (e.g., $K = 10$) with different seeds
+    \item Evaluate $U(\xb_0)$ on each
+    \item Select the one with highest utility
+\end{enumerate}
+
+With $\sim$1\,s per image, generating 10 candidates takes $\sim$10\,s. This is
+comparable to the 50-step SGD optimization in Approach A.
+
+\subsection{No starting point control}
+
+Unlike Approach A (which starts from a chosen image), Approach D starts from noise.
+The generated image will be ``natural with high utility'' but not a modification of
+any specific image. This is a fundamental difference in the problem formulation:
+\begin{itemize}[nosep]
+    \item Approach A: ``make this image more informative while keeping it natural''
+    \item Approach D: ``generate a natural image that is maximally informative''
+\end{itemize}
+
+If starting from a specific image is needed, \textbf{SDEdit} (Meng et al., 2022)
+offers a middle ground: encode the starting image to an intermediate noise level $t^*$
+(add noise via the forward process), then run guided reverse from $t^*$ to 0.
+This preserves the coarse structure of the starting image while refining details
+under guidance. This is a natural extension but not part of the first implementation.
+
+% ============================================================================
+\section{Comparison with Approach A}
+\label{sec:comparison}
+% ============================================================================
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Property} & \textbf{A: L2 Tweedie} & \textbf{D: Guided Reverse} \\
+\midrule
+Optimization target & Modify existing image & Generate from noise \\
+UNet usage & 1 fwd per step (detached) & 1 fwd+bwd per step \\
+Score evaluation & At fixed $t^*$ & At correct $t$ \\
+In-distribution? & Sometimes (input can drift) & Always (reverse process) \\
+Signal at $\mathcal{M}$ & Weak (Tweedie $\approx$ identity) & Strong (score at all scales) \\
+Norm control & No & Yes (generation is bounded) \\
+\# UNet calls & 50 fwd & 50 fwd + 50 bwd (DDIM-50) \\
+Wall time & $\sim$3\,s & $\sim$1\,s (no LBFGS inner loop) \\
+Starting image & User-chosen & Random (or SDEdit) \\
+Output diversity & Deterministic (fixed start) & Stochastic (different seeds) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A key advantage of Approach D: the diffusion model is \emph{always} evaluated
+at the noise level it was trained for. In Approach A, after a few optimization steps,
+the image $\xc$ may have amplified norms or broken correlations, making it
+out-of-distribution for the UNet at any fixed $t^*$.
+
+% ============================================================================
+\section{Summary of What to Implement}
+\label{sec:implementation}
+% ============================================================================
+
+\subsection{Core function: \texttt{guided\_reverse\_diffusion()}}
+
+\begin{enumerate}
+    \item \textbf{Inputs}: trained UNet, schedule, GP model + likelihood, guidance scale $w$,
+          number of DDIM steps $S$, $f_{\max}$, optional seed.
+    \item \textbf{Build DDIM timestep subsequence}: $S$ timesteps uniformly spaced in $[1, T{-}1]$.
+    \item \textbf{Initialize}: $\xb_{\tau_S} \sim \mathcal{N}(\mathbf{0}, \Ib)$ on device.
+    \item \textbf{Loop} over DDIM steps (Section~\ref{sec:ddim}, Algorithm~\ref{alg:guided_ddim}).
+    \item \textbf{Return}: final $\xb_0$ in raw pixel space + per-step metrics
+          (utility of $\hat{\xb}_0$, guidance gradient norm, $\alphabar_t$).
+\end{enumerate}
+
+\subsection{Supporting changes}
+
+\begin{itemize}[nosep]
+    \item \texttt{diffusion\_model.py}: add \texttt{ddim\_step()} function
+          (non-\texttt{@torch.no\_grad}, takes $\xb_t$, $t$, $t'$, noise prediction).
+    \item \texttt{guided\_optimization.py}: add \texttt{guided\_reverse\_diffusion()},
+          modify \texttt{main()} to call it as an additional optimization path alongside
+          utility-only and Approach A.
+    \item Plotting: show generated image, per-step utility trajectory, compare with
+          Approach A result.
+\end{itemize}
+
+\subsection{Validation plan}
+
+\begin{enumerate}[nosep]
+    \item \textbf{$w = 0$}: should match unconditional sampling quality.
+    \item \textbf{Small $w$}: utility should increase modestly vs.\ unconditional.
+    \item \textbf{Large $w$}: utility should be high; check if image still looks natural.
+    \item \textbf{Compare}: utility and naturalness of Approach D output vs.\ Approach A output.
+    \item \textbf{Multiple seeds}: verify that best-of-$K$ selection finds high-utility images.
+\end{enumerate}
+
+\end{document}
