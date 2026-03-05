@@ -19,9 +19,10 @@ from linear_operator import settings as lo_settings
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
                        print_every=100, device=None,
-                       early_stop=True, stop_window=20, stop_thresh=1e-3, min_iterations=10,
+                       early_stop=True, stop_window=20, stop_thresh=5e-3, min_iterations=10,
                        lbfgs_max_iter=20,
-                       jitter=1e-4, cholesky_max_tries=3):
+                       jitter=1e-4, cholesky_max_tries=3,
+                       stability_threshold=1000, lambda_var_clamp=1e-6):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -38,11 +39,13 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         device: Device to use (defaults to train_x.device)
         early_stop: Enable early stopping based on loss stability (default: True)
         stop_window: Number of iterations to look back for improvement (default: 20)
-        stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
+        stop_thresh: Minimum relative improvement over window to continue (default: 5e-3 = 0.5%)
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
         lbfgs_max_iter: Max inner iterations for LBFGS per outer step (default: 20)
         jitter: Jitter value for Cholesky retry schedule starting point (default: 1e-4)
         cholesky_max_tries: Number of Cholesky retry attempts (default: 3)
+        stability_threshold: Max mean firing rate before step rejection (default: 1000)
+        lambda_var_clamp: Minimum posterior variance clamp (default: 1e-6)
 
     Returns:
         dict: {'losses': list, 'stopped_early': bool, 'final_iteration': int}
@@ -108,6 +111,12 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
             output = model(train_x)
         except Exception:
             # Kernel produced NaN (e.g. all-NaN K_uu) — reject this step
+            return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
+        # Firing rate stability check (matches vargp_direct E/F/M-step guards)
+        A_val = likelihood.A.squeeze()
+        lambda0_val = likelihood.lambda0.squeeze()
+        f_mean = torch.exp(A_val * output.mean + 0.5 * A_val**2 * output.variance + lambda0_val)
+        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
         ell = likelihood.expected_log_prob(train_y, output)
         kl = model.variational_strategy.kl_divergence()
@@ -192,7 +201,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
 
 
 def predict(model, likelihood, test_x, device=None,
-            jitter=1e-4, cholesky_max_tries=3):
+            jitter=1e-4, cholesky_max_tries=3, lambda_var_clamp=1e-6):
     """Make predictions on test data.
 
     Args:
@@ -202,6 +211,7 @@ def predict(model, likelihood, test_x, device=None,
         device: Device to use (defaults to test_x.device)
         jitter: Jitter value for Cholesky retry schedule starting point (default: 1e-4)
         cholesky_max_tries: Number of Cholesky retry attempts (default: 3)
+        lambda_var_clamp: Minimum posterior variance clamp (default: 1e-6)
 
     Returns:
         dict with:
@@ -226,6 +236,7 @@ def predict(model, likelihood, test_x, device=None,
         posterior = model(test_x)
         lambda_mean = posterior.mean
         lambda_var = posterior.variance
+        lambda_var = torch.clamp(lambda_var, min=lambda_var_clamp)
 
         # Predicted firing rate: E[exp(A·λ + λ₀)] = exp(A·μ + A²σ²/2 + λ₀)
         A = likelihood.A.squeeze()

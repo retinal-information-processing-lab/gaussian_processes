@@ -100,7 +100,8 @@ def train_eigenspace(
     early_stop: bool = True,
     stop_window: int = 20,
     stop_thresh: float = 5e-3,
-    min_iterations: int = 10
+    min_iterations: int = 10,
+    stability_threshold: float = 1000
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -121,8 +122,9 @@ def train_eigenspace(
         capture_checkpoints: If True, capture state at each checkpoint for validation
         early_stop: Enable early stopping based on loss stability (default: True)
         stop_window: Number of iterations to look back for improvement (default: 20)
-        stop_thresh: Minimum relative improvement over window to continue (default: 1e-3 = 0.1%)
+        stop_thresh: Minimum relative improvement over window to continue (default: 5e-3 = 0.5%)
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
+        stability_threshold: Max mean firing rate before step rejection (default: 1000)
 
     Returns:
         Dict with:
@@ -134,7 +136,7 @@ def train_eigenspace(
             'final_iteration': Final iteration number
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
-    from eigenspace_estep import estep_eigenspace, STABILITY_THRESHOLD
+    from eigenspace_estep import estep_eigenspace
     from eigenspace_fstep import fstep_eigenspace
     from eigenspace_mstep import mstep_eigenspace_autograd, mstep_eigenspace_analytical
     from utils import compute_f_mean
@@ -197,13 +199,14 @@ def train_eigenspace(
                     estep_idx=i_estep
                 ))
 
-            if f_mean.mean().item() > STABILITY_THRESHOLD:
+            if f_mean.mean().item() > stability_threshold:
                 if verbose:
                     print(f"  E-step {i_estep}: f_mean unstable ({f_mean.mean().item():.1f})")
                 break
 
         # ===== F-step: Optimize A =====
-        fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f)
+        fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
+                         stability_threshold=stability_threshold)
 
         A = model.likelihood.A.squeeze()
         lambda0 = model.likelihood.lambda0.squeeze()
@@ -223,9 +226,13 @@ def train_eigenspace(
 
         if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
-                mstep_eigenspace_analytical(model, r, n_mstep, lr_m)
+                mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
+                                            stability_threshold=stability_threshold,
+                                            lambda_var_clamp=model.lambda_var_clamp)
             else:
-                mstep_eigenspace_autograd(model, r, n_mstep, lr_m)
+                mstep_eigenspace_autograd(model, r, n_mstep, lr_m,
+                                          stability_threshold=stability_threshold,
+                                          lambda_var_clamp=model.lambda_var_clamp)
 
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(
@@ -313,7 +320,7 @@ def predict_eigenspace(model, X_test: torch.Tensor) -> Dict:
         V_minus_K = state.V_b - state.K_tilde_b
         aV = a @ V_minus_K
         lambda_var = Kvec_test + (a * aV).sum(dim=1)
-        lambda_var = torch.clamp(lambda_var, min=1e-6)
+        lambda_var = torch.clamp(lambda_var, min=model.lambda_var_clamp)
 
         # Predicted firing rate
         A = likelihood.A.squeeze()

@@ -249,7 +249,8 @@ def compute_kernel_and_gradients(x1, x2, C, dC, sigma_0, diag=False):
 def compute_lambda_moments_and_gradients(
     K_b, K_tilde_b, Kvec, m_b, V_b,
     dK_b, dK_tilde_b, dKvec,
-    K_tilde_inv_b
+    K_tilde_inv_b,
+    lambda_var_clamp: float = 1e-6
 ):
     """Compute posterior moments and their gradients w.r.t. hyperparameters.
 
@@ -308,7 +309,7 @@ def compute_lambda_moments_and_gradients(
     lambda_var = Kvec + (a * aV).sum(dim=-1)  # (N,)
 
     # Clamp for numerical stability
-    lambda_var = torch.clamp(lambda_var, min=1e-6)
+    lambda_var = torch.clamp(lambda_var, min=lambda_var_clamp)
 
     # ====== Gradients ======
     dlambda_m = {}

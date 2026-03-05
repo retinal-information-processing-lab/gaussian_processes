@@ -246,7 +246,7 @@ def _recompute_eigenspace(
 # Posterior Moment Computation
 # ==============================================================================
 
-def _lambda_moments_eigenspace(state: DirectVariationalState) -> Tuple[torch.Tensor, torch.Tensor]:
+def _lambda_moments_eigenspace(state: DirectVariationalState, lambda_var_clamp: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute GP posterior moments using eigenspace quantities (internal).
 
     Used internally by EigenspacePosterior._compute_moments() for training data.
@@ -279,7 +279,7 @@ def _lambda_moments_eigenspace(state: DirectVariationalState) -> Tuple[torch.Ten
     lambda_var = state.Kvec + (a * aV).sum(dim=1)  # (N,)
 
     # Clamp for numerical stability
-    lambda_var = torch.clamp(lambda_var, min=1e-6)
+    lambda_var = torch.clamp(lambda_var, min=lambda_var_clamp)
 
     return lambda_m, lambda_var
 
@@ -303,7 +303,8 @@ class EigenspacePosterior:
         state: DirectVariationalState,
         X_query: torch.Tensor,
         X_tilde: torch.Tensor,
-        is_training_data: bool = False
+        is_training_data: bool = False,
+        lambda_var_clamp: float = 1e-6
     ):
         """
         Args:
@@ -313,12 +314,14 @@ class EigenspacePosterior:
             X_tilde: (M, n_features) - inducing points
             is_training_data: If True, use precomputed KKtilde_inv_b from state
                 (avoids recomputing kernel matrices for training points)
+            lambda_var_clamp: Minimum posterior variance clamp
         """
         self._kernel = kernel
         self._state = state
         self._X_query = X_query
         self._X_tilde = X_tilde
         self._is_training_data = is_training_data
+        self._lambda_var_clamp = lambda_var_clamp
 
         # Compute moments ONCE on construction
         self._mean, self._variance = self._compute_moments()
@@ -335,7 +338,7 @@ class EigenspacePosterior:
         """
         if self._is_training_data:
             # Use precomputed KKtilde_inv_b for efficiency
-            return _lambda_moments_eigenspace(self._state)
+            return _lambda_moments_eigenspace(self._state, self._lambda_var_clamp)
 
         # Test points: compute fresh
         with torch.no_grad():
@@ -356,7 +359,7 @@ class EigenspacePosterior:
             V_minus_K = self._state.V_b - self._state.K_tilde_b
             aV = a @ V_minus_K  # (N_query, n_b)
             lambda_var = Kvec_query + (a * aV).sum(dim=1)  # (N_query,)
-            lambda_var = torch.clamp(lambda_var, min=1e-6)  # Numerical stability
+            lambda_var = torch.clamp(lambda_var, min=self._lambda_var_clamp)  # Numerical stability
 
         return lambda_m, lambda_var
 
@@ -444,7 +447,8 @@ class DirectVGPModel:
         likelihood,
         X_train: torch.Tensor,
         X_tilde: torch.Tensor,
-        eigval_tol: float = EIGVAL_TOL
+        eigval_tol: float = EIGVAL_TOL,
+        lambda_var_clamp: float = 1e-6
     ):
         """
         Args:
@@ -453,12 +457,14 @@ class DirectVGPModel:
             X_train: Training data, shape (N, n_features)
             X_tilde: Inducing points, shape (M, n_features)
             eigval_tol: Eigenvalue threshold for projection (default 1e-4)
+            lambda_var_clamp: Minimum posterior variance clamp (default 1e-6)
         """
         self.kernel = kernel
         self.likelihood = likelihood
         self.X_train = X_train
         self.X_tilde = X_tilde
         self.eigval_tol = eigval_tol
+        self.lambda_var_clamp = lambda_var_clamp
 
         # Compute initial eigenspace
         self._state = _compute_initial_eigenspace(kernel, X_train, X_tilde, eigval_tol)
@@ -521,7 +527,8 @@ class DirectVGPModel:
         is_training_data = X_query is self.X_train
 
         return EigenspacePosterior(
-            self.kernel, self._state, X_query, self.X_tilde, is_training_data
+            self.kernel, self._state, X_query, self.X_tilde, is_training_data,
+            lambda_var_clamp=self.lambda_var_clamp
         )
 
     @property

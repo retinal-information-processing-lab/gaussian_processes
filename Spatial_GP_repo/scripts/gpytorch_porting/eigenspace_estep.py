@@ -14,16 +14,6 @@ import torch
 
 
 # =============================================================================
-# Stability Constants
-# =============================================================================
-
-# Maximum allowed mean firing rate before instability is detected.
-# When f_mean.mean() exceeds this, we halt the E-step loop.
-# Value chosen empirically for neural spike data where firing rates rarely exceed ~50 Hz.
-STABILITY_THRESHOLD = 1000
-
-
-# =============================================================================
 # Eigenspace E-Step
 # =============================================================================
 

@@ -15,7 +15,6 @@ import torch
 
 # Import shared utilities
 from utils import lambda0_given_A
-from eigenspace_estep import STABILITY_THRESHOLD
 
 
 def fstep_eigenspace(
@@ -24,7 +23,8 @@ def fstep_eigenspace(
     lambda_m: torch.Tensor,
     lambda_var: torch.Tensor,
     n_fstep: int,
-    lr: float
+    lr: float,
+    stability_threshold: float = 1000
 ):
     """F-step for eigenspace mode: Optimize A with LBFGS, lambda0 computed analytically.
 
@@ -83,7 +83,7 @@ def fstep_eigenspace(
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
         # Stability check
-        if f_mean.mean().item() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Log-likelihood (negative for minimization)

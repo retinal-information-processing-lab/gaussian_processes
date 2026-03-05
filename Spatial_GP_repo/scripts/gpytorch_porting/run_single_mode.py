@@ -334,6 +334,8 @@ def build_config_from_defaults(**overrides):
         'cholesky_max_tries': mod['cholesky_max_tries'],
         'eigval_tol': mod['eigval_tol'],
         'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
+        'lambda_var_clamp': mod['lambda_var_clamp'],
+        'stability_threshold': mod['stability_threshold'],
 
         # --- Data (from data section) ---
         'data_path': dat['path'],
@@ -446,6 +448,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'jitter': num['jitter'],
         'cholesky_max_tries': num['cholesky_max_tries'],
         'eigval_tol': num['eigval_tol'],
+        'lambda_var_clamp': num['lambda_var_clamp'],
+        'stability_threshold': num['stability_threshold'],
 
         # Inducing point selection
         'ip_selection': ind['selection_method'],
@@ -735,6 +739,8 @@ def run_single_config(config):
     min_iterations = config['min_iterations']
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
+    lambda_var_clamp = config['lambda_var_clamp']
+    stability_threshold = config['stability_threshold']
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
 
@@ -863,7 +869,8 @@ def run_single_config(config):
         likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
         likelihood = likelihood.to(dtype=dtype, device=device)
 
-        model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, eigval_tol)
+        model = DirectVGPModel(kernel, likelihood, X_train, inducing_points, eigval_tol,
+                               lambda_var_clamp=lambda_var_clamp)
 
         print(f"\nInitial parameters:")
         print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
@@ -894,6 +901,7 @@ def run_single_config(config):
                 stop_window=stop_window,
                 stop_thresh=stop_thresh,
                 min_iterations=min_iterations,
+                stability_threshold=stability_threshold,
             )
 
         train_time = time.time() - start_time
@@ -986,6 +994,8 @@ def run_single_config(config):
                 lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
                 jitter=jitter,
                 cholesky_max_tries=config['cholesky_max_tries'],
+                stability_threshold=stability_threshold,
+                lambda_var_clamp=lambda_var_clamp,
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
@@ -1002,7 +1012,8 @@ def run_single_config(config):
 
         print("\nEvaluating on test data...")
         predictions = predict(model, likelihood, X_test, device=device,
-                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
+                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'],
+                              lambda_var_clamp=lambda_var_clamp)
         f_pred = predictions['f_pred']
 
         r_test_mean = r_test.mean(dim=0)
@@ -1186,6 +1197,10 @@ def main():
                         help=f'Jitter for numerical stability (default: {defaults["model"]["jitter"]})')
     parser.add_argument('--cholesky-max-tries', type=int, default=defaults['model']['cholesky_max_tries'],
                         help=f'Max Cholesky retry attempts (default: {defaults["model"]["cholesky_max_tries"]})')
+    parser.add_argument('--lambda-var-clamp', type=float, default=defaults['model']['lambda_var_clamp'],
+                        help=f'Min posterior variance clamp (default: {defaults["model"]["lambda_var_clamp"]})')
+    parser.add_argument('--stability-threshold', type=float, default=defaults['model']['stability_threshold'],
+                        help=f'Max mean firing rate before step rejection (default: {defaults["model"]["stability_threshold"]})')
 
     parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
@@ -1270,6 +1285,8 @@ def main():
         min_iterations=args.min_iterations,
         jitter=args.jitter,
         cholesky_max_tries=args.cholesky_max_tries,
+        lambda_var_clamp=args.lambda_var_clamp,
+        stability_threshold=args.stability_threshold,
         use_cache=args.use_cache,
         mstep_analytical=args.mstep_analytical,
         unwhitened_variational_dist=args.unwhitened_variational_dist,

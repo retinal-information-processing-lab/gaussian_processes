@@ -14,7 +14,6 @@ Extracted from mstep.py during codebase reorganization (2025-02).
 import warnings
 import torch
 
-from eigenspace_estep import STABILITY_THRESHOLD
 # Analytical gradient functions for M-step
 from eigenspace_gradients import (
     compute_C_and_gradients,
@@ -24,7 +23,9 @@ from eigenspace_gradients import (
 )
 
 
-def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
+def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
+                              stability_threshold: float = 1000,
+                              lambda_var_clamp: float = 1e-6):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
     Uses LBFGS with PyTorch autograd for gradients (not analytical gradients).
@@ -38,6 +39,8 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
         r: Spike counts, shape (N,)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
+        stability_threshold: Max mean firing rate before step rejection
+        lambda_var_clamp: Minimum posterior variance clamp
     """
     kernel = model.kernel
     likelihood = model.likelihood
@@ -92,14 +95,14 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
         V_minus_K = state.V_b - K_tilde_b
         aV = a @ V_minus_K
         lambda_var = Kvec + (a * aV).sum(dim=1)
-        lambda_var = torch.clamp(lambda_var, min=1e-6)
+        lambda_var = torch.clamp(lambda_var, min=lambda_var_clamp)
 
         # Compute log-likelihood
         A = likelihood.A.squeeze()
         lambda0 = likelihood.lambda0.squeeze()
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        if f_mean.mean().item() > STABILITY_THRESHOLD or torch.any(torch.isnan(f_mean)):
+        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
@@ -136,7 +139,9 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float):
     kernel.clamp_hyperparameters()
 
 
-def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float):
+def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
+                                stability_threshold: float = 1000,
+                                lambda_var_clamp: float = 1e-6):
     """M-step for eigenspace mode with analytical gradients (matching vargp_old).
 
     Computes dK/dtheta matrices ONCE and caches them for LBFGS closure.
@@ -149,6 +154,8 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float)
         r: Spike counts, shape (N,)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
+        stability_threshold: Max mean firing rate before step rejection
+        lambda_var_clamp: Minimum posterior variance clamp
 
     Reference:
         utils.py M-step closure, lines 5859-5963
@@ -247,14 +254,15 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float)
         # ===== 4. Compute moments and gradients =====
         lambda_m, lambda_var, dlambda_m, dlambda_var = compute_lambda_moments_and_gradients(
             K_b, K_tilde_b, Kvec, m_b, V_b,
-            dK_b, dK_tilde_b, dKvec, K_tilde_inv_b  # Use full matrix inverse
+            dK_b, dK_tilde_b, dKvec, K_tilde_inv_b,  # Use full matrix inverse
+            lambda_var_clamp=lambda_var_clamp
         )
 
         # Compute f_mean
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
         # ===== Guardrail 2: Firing rate check =====
-        if f_mean.mean().item() > 100 or torch.any(torch.isnan(f_mean)):
+        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         # ===== 5. Compute loss =====
