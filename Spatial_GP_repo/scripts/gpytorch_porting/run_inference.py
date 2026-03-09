@@ -387,9 +387,15 @@ def main():
     parser.add_argument('--cells', type=int, nargs='+', default=None,
                         help='Specific cell IDs to process (default: all)')
     parser.add_argument('--device', type=str, default='cuda',
-                        help='Device for inference: cuda or cpu (default: cuda)')
+                        help='Device for inference (default: cuda). GPU required.')
 
     args = parser.parse_args()
+
+    # GPU check
+    if args.device == 'cuda' and not torch.cuda.is_available():
+        print("ERROR: CUDA GPU required but not available. "
+              "Install PyTorch with CUDA support.")
+        sys.exit(1)
 
     # Default output directory based on dataset name
     if args.output is None:
