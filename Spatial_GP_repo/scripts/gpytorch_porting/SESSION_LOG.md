@@ -1,5 +1,27 @@
 # Session Log
 
+## 2026-03-09: Inference package for external user
+**Status**: Complete
+
+Created a self-contained inference package (tarball) for sharing GP fitting results with another user. Package includes pre-trained checkpoints for all 41 cells on both 108x108 and 64x64 PNAS datasets.
+
+New files added to repo:
+- `checkpoint.py` — model save/load (state dict + config + metrics)
+- `run_inference.py` — load checkpoints, predict, generate plots + summary CSV/JSON
+- `train_all_cells.py` — batch train all 41 cells, save checkpoints
+- `.gitignore` — excludes checkpoints/, results/, package/, PNGs
+
+Not committed (derivative/temporary): `checkpoints/` (256 MB), `results/`, `package/` (standalone packaging artifacts), `~/gp_neural_fitting.tar.gz` (329 MB deliverable).
+
+Results: 108x108 mean test_r=0.622, 64x64 mean test_r=0.706 across 41 cells.
+
+## 2026-03-03: Diffusion model investigation planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_diffusion-model-training-investigation.md`
+**Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
+**Status**: Handed off for implementation
+
+Explored diffusion model approach for natural image generation. Read motivation doc, diffusion intro (LaTeX), utility REFERENCE.md, subspace analysis. Corrected assumptions in motivation doc (108x108 not 30x30, 3,160 not 10,000 images). Decided: full-image training (cell-agnostic), tiny U-Net (~1-2M params), pure PyTorch, cosine schedule, 4x flip augmentation. Self-contained in investigations/diffusion/ (3 files). GP integration deferred to future investigation.
+
 ## 2026-03-03: Merge pca-utility-optimization + cleanup
 **Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
 **Status**: Continuing — next session consolidates utility/ and utility_decompositions/ into one folder

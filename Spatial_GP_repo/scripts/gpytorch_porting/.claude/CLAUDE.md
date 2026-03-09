@@ -166,6 +166,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 |------|---------|
 | `gpy_model.py` | VariationalGPModel (standard GPyTorch) |
 | `gpy_training.py` | train_gpy_default(), predict() |
+| `checkpoint.py` | Save/load trained models as .pt files. `save_checkpoint()` stores model+likelihood state, config, metrics, hyperparams. `load_checkpoint()` reconstructs full model from .pt file. |
 
 ### Experiment System (YAML-based)
 | File | Purpose |
@@ -183,6 +184,8 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 |------|---------|
 | `run_single_mode.py` | Quick dev test (reads `default_params.json`, full CLI control, no experiment tracking). Exports `run_single_config(config: dict) -> dict` (core training function), `build_config_from_defaults(mode, **overrides) -> dict` (MANDATORY for standalone scripts — reads `default_params.json`), and `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell) -> dict` (YAML experiment system bridge). |
 | `run_experiment.py` | Structured experiments (reads YAML configs, frozen config, full tracking) |
+| `run_inference.py` | Load pre-trained checkpoints, run prediction on test set, generate per-cell summary plots (STA+RF, scatter, sorted comparison), save summary CSV + hyperparameters JSON. Primary entry point for sharing results. |
+| `train_all_cells.py` | Batch training: trains all 41 cells for specified datasets (108x108, 64x64), saves .pt checkpoints. Uses `build_config_from_defaults()` + `run_single_config()`. |
 
 ### Archived data
 | Path | Purpose |

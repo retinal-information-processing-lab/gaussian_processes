@@ -1,0 +1,13 @@
+# Binary outputs (regenerable)
+checkpoints/
+results/
+
+# Packaging artifacts (temporary)
+package/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Images (output artifacts)
+imgs/*.png
