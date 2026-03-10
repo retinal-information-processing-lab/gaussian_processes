@@ -1,0 +1,451 @@
+\documentclass[11pt]{article}
+  \usepackage{amsmath, amssymb, amsthm}
+  \usepackage[margin=1in]{geometry}
+  \usepackage{enumitem}
+
+  \title{Introduction to Diffusion Models for Image Generation}
+  \author{Discussion Notes}
+  \date{February 2026}
+
+  \newcommand{\xb}{\mathbf{x}}
+  \newcommand{\zb}{\mathbf{z}}
+  \newcommand{\eb}{\boldsymbol{\epsilon}}
+  \newcommand{\Ib}{\mathbf{I}}
+  \newcommand{\R}{\mathbb{R}}
+  \newcommand{\E}{\mathbb{E}}
+  \newcommand{\alphabar}{\bar{\alpha}}
+
+  \begin{document}
+  \maketitle
+
+  \section{Overview}
+
+  A diffusion model is a generative model that learns to produce new samples
+  from a data distribution $p(\xb)$ (e.g., natural images). The core mechanism
+  has two parts:
+
+  \begin{enumerate}[nosep]
+      \item A \textbf{forward process} that gradually corrupts data with noise
+            until it becomes indistinguishable from a standard Gaussian.
+      \item A \textbf{reverse process} that starts from Gaussian noise and
+            gradually removes noise, recovering a sample from $p(\xb)$.
+  \end{enumerate}
+
+  The forward process is defined analytically (no learning required). The
+  reverse process requires learning a function called the \textbf{score},
+  which encodes the statistical structure of the data distribution at each
+  noise level.
+
+  \section{The Forward Process}
+
+  Let $\xb_0 \in \R^d$ be a clean image from the dataset. Define a sequence
+  of noise levels indexed by $t = 0, 1, \ldots, T$, with a noise schedule
+  $\beta_1, \ldots, \beta_T \in (0, 1)$.
+
+  At each step, the forward process adds Gaussian noise:
+  \begin{equation}
+      q(\xb_t \mid \xb_{t-1}) = \mathcal{N}\!\left(
+          \xb_t;\; \sqrt{1 - \beta_t}\, \xb_{t-1},\; \beta_t \Ib
+      \right)
+      \label{eq:forward_step}
+  \end{equation}
+
+  This scales down the signal by $\sqrt{1 - \beta_t}$ and adds noise with
+  variance $\beta_t$. At $t = 0$ the image is clean; as $t$ increases, it
+  becomes progressively noisier.
+
+  \subsection{Direct Sampling at Arbitrary $t$}
+
+  A useful property: the marginal distribution at any time $t$ given $\xb_0$
+  can be written in closed form, without computing intermediate steps. Define
+  \begin{equation}
+      \alphabar_t = \prod_{s=1}^{t} (1 - \beta_s)
+  \end{equation}
+  Then:
+  \begin{equation}
+      q(\xb_t \mid \xb_0) = \mathcal{N}\!\left(
+          \xb_t;\; \sqrt{\alphabar_t}\, \xb_0,\;
+          (1 - \alphabar_t)\, \Ib
+      \right)
+      \label{eq:forward_marginal}
+  \end{equation}
+
+  Equivalently, one can sample $\xb_t$ directly via the reparameterization:
+  \begin{equation}
+      \xb_t = \sqrt{\alphabar_t}\, \xb_0
+          + \sqrt{1 - \alphabar_t}\, \eb,
+      \qquad \eb \sim \mathcal{N}(\mathbf{0}, \Ib)
+      \label{eq:reparam}
+  \end{equation}
+
+  The noise schedule is chosen so that $\alphabar_T \approx 0$, making
+  $q(\xb_T \mid \xb_0) \approx \mathcal{N}(\mathbf{0}, \Ib)$
+  regardless of $\xb_0$. At the end of the forward process, all information
+  about the original image has been destroyed.
+
+  \section{The Score Function}
+
+  \subsection{Definition}
+
+  The \textbf{score} of a distribution $p(\xb)$ is the gradient of its
+  log-density:
+  \begin{equation}
+      \nabla_{\xb} \log p(\xb)
+  \end{equation}
+
+  This is a vector field over $\R^d$. At any point $\xb$, the score
+  points in the direction of steepest increase of $\log p(\xb)$, i.e.,
+  toward regions of higher probability density.
+
+  For the forward process, we can define a time-dependent score. Let
+  $p_t(\xb)$ denote the marginal distribution of $\xb_t$ obtained by
+  sampling $\xb_0 \sim p(\xb_0)$ and then applying
+  Eq.~\eqref{eq:forward_marginal}. The score at noise level $t$ is:
+  \begin{equation}
+      \nabla_{\xb_t} \log p_t(\xb_t)
+  \end{equation}
+
+  \subsection{Intuitive Meaning}
+
+  At each noise level, the score encodes the structure of the data
+  distribution as seen through that amount of noise:
+
+  \begin{itemize}[nosep]
+      \item At high noise ($t$ near $T$): $p_t$ is nearly Gaussian, and the
+            score is approximately $-\xb_t$ (pointing toward the origin).
+            Little information about the data remains.
+      \item At moderate noise: $p_t$ retains large-scale data structure.
+            The score captures spatial layout, brightness patterns, and
+            coarse features.
+      \item At low noise ($t$ near $0$): $p_t$ is concentrated near the data
+            manifold. The score encodes fine-grained structure: edges,
+            textures, local contrasts --- the full statistical structure
+            of natural images.
+  \end{itemize}
+
+  \subsection{Relationship to Noise Prediction}
+
+  From Eq.~\eqref{eq:forward_marginal}, the conditional score is:
+  \begin{equation}
+      \nabla_{\xb_t} \log q(\xb_t \mid \xb_0)
+      = -\frac{\xb_t - \sqrt{\alphabar_t}\, \xb_0}{1 - \alphabar_t}
+      = -\frac{\eb}{\sqrt{1 - \alphabar_t}}
+      \label{eq:score_noise}
+  \end{equation}
+
+  where $\eb$ is the noise that was added (from Eq.~\ref{eq:reparam}).
+  This connects the score to the noise: knowing the score at $\xb_t$ is
+  equivalent to knowing which noise was added to reach $\xb_t$ from a
+  clean image.
+
+  \section{Training: Denoising Score Matching}
+
+  \subsection{The Learning Objective}
+
+  We train a neural network $\eb_\theta(\xb_t, t)$ to predict the noise
+  $\eb$ that was added to a clean image $\xb_0$ to produce $\xb_t$.
+  The training loss is:
+  \begin{equation}
+      \mathcal{L} = \E_{t \sim \mathrm{Uniform}(1,T)} \;
+          \E_{\xb_0 \sim p(\xb_0)} \;
+          \E_{\eb \sim \mathcal{N}(\mathbf{0}, \Ib)}
+          \left[\,
+              \left\| \eb_\theta(\xb_t, t) - \eb \right\|^2
+          \,\right]
+      \label{eq:training_loss}
+  \end{equation}
+
+  where $\xb_t = \sqrt{\alphabar_t}\, \xb_0 + \sqrt{1 - \alphabar_t}\, \eb$.
+
+  Each training step:
+  \begin{enumerate}[nosep]
+      \item Sample a random clean image $\xb_0$ from the dataset.
+      \item Sample a random time $t \in \{1, \ldots, T\}$.
+      \item Sample random noise $\eb \sim \mathcal{N}(\mathbf{0}, \Ib)$.
+      \item Form the noisy image $\xb_t$ via Eq.~\eqref{eq:reparam}.
+      \item Compute the loss $\|\eb_\theta(\xb_t, t) - \eb\|^2$ and
+            update $\theta$ by gradient descent.
+  \end{enumerate}
+
+  \subsection{Connection to Score Learning}
+
+  From Eq.~\eqref{eq:score_noise}, the trained noise predictor gives an
+  approximation to the score:
+  \begin{equation}
+      \nabla_{\xb_t} \log p_t(\xb_t)
+      \approx s_\theta(\xb_t, t)
+      = -\frac{\eb_\theta(\xb_t, t)}{\sqrt{1 - \alphabar_t}}
+      \label{eq:score_from_eps}
+  \end{equation}
+
+  The network does not need to know it is learning the score. It is trained
+  to predict noise, and the score emerges as a consequence.
+
+  \subsection{Architecture}
+
+  The network $\eb_\theta(\xb_t, t)$ takes two inputs: the noisy image
+  $\xb_t \in \R^d$ and the time index $t$ (or a continuous embedding of it).
+  It outputs a vector in $\R^d$ (the predicted noise, same dimensionality
+  as the image).
+
+  Common architectures:
+  \begin{itemize}[nosep]
+      \item \textbf{U-Net}: Standard for high-resolution images. Encoder-decoder
+            with skip connections. Time $t$ is injected via learned embeddings
+            added to intermediate layers.
+      \item \textbf{MLP}: Sufficient for low-resolution images. Concatenate
+            $\xb_t$ with a time embedding, pass through several hidden layers.
+  \end{itemize}
+
+  For small images ($30 \times 30$ grayscale, $d \approx 900$), either
+  architecture works. An MLP with 3--4 hidden layers of width 512 is
+  likely sufficient.
+
+  \section{The Reverse Process: Generating Images}
+
+  \subsection{Reverse Transition}
+
+  The reverse process defines a generative distribution:
+  \begin{equation}
+      p_\theta(\xb_{t-1} \mid \xb_t) = \mathcal{N}\!\left(
+          \xb_{t-1};\; \boldsymbol{\mu}_\theta(\xb_t, t),\;
+          \sigma_t^2 \Ib
+      \right)
+      \label{eq:reverse_step}
+  \end{equation}
+
+  where $\sigma_t^2$ is a fixed variance (typically $\sigma_t^2 = \beta_t$
+  or $\sigma_t^2 = \tilde{\beta}_t = \beta_t (1 - \alphabar_{t-1})/(1 - \alphabar_t)$),
+  and the mean is derived from the noise predictor:
+  \begin{equation}
+      \boldsymbol{\mu}_\theta(\xb_t, t)
+      = \frac{1}{\sqrt{1 - \beta_t}} \left(
+          \xb_t - \frac{\beta_t}{\sqrt{1 - \alphabar_t}}\,
+          \eb_\theta(\xb_t, t)
+      \right)
+      \label{eq:reverse_mean}
+  \end{equation}
+
+  \subsection{Sampling Algorithm}
+
+  To generate a new image:
+  \begin{enumerate}[nosep]
+      \item Sample $\xb_T \sim \mathcal{N}(\mathbf{0}, \Ib)$.
+      \item For $t = T, T{-}1, \ldots, 1$:
+      \begin{enumerate}[nosep]
+          \item Predict noise: $\hat{\eb} = \eb_\theta(\xb_t, t)$.
+          \item Compute the reverse mean $\boldsymbol{\mu}_\theta(\xb_t, t)$
+                via Eq.~\eqref{eq:reverse_mean}.
+          \item Sample: $\xb_{t-1} = \boldsymbol{\mu}_\theta(\xb_t, t)
+                + \sigma_t \zb$, where $\zb \sim \mathcal{N}(\mathbf{0}, \Ib)$
+                for $t > 1$, and $\zb = \mathbf{0}$ for $t = 1$.
+      \end{enumerate}
+      \item Return $\xb_0$.
+  \end{enumerate}
+
+  The output $\xb_0$ is a new image that approximates a sample from $p(\xb)$.
+  It was not in the training set; it is a novel image whose statistics match
+  the training distribution.
+
+  \subsection{The Tweedie Estimate}
+
+  At any step $t$, the network's noise prediction gives an estimate of
+  the clean image:
+  \begin{equation}
+      \hat{\xb}_0(\xb_t, t)
+      = \frac{\xb_t - \sqrt{1 - \alphabar_t}\,
+          \eb_\theta(\xb_t, t)}{\sqrt{\alphabar_t}}
+      \label{eq:tweedie}
+  \end{equation}
+
+  This is the posterior mean $\E[\xb_0 \mid \xb_t]$ under the model.
+  At high noise levels, this estimate is coarse (captures only large-scale
+  structure). As $t$ decreases, the estimate becomes increasingly detailed
+  and accurate.
+
+  \section{Guided Generation}
+
+  \subsection{Motivation}
+
+  Unguided diffusion generates images from $p(\xb)$ --- the distribution of
+  natural images. For some applications, one wants to generate images from a
+  \emph{conditional} distribution: images that are natural \emph{and} satisfy
+  some additional criterion.
+
+  Let $U(\xb)$ be a scalar function measuring how desirable an image is
+  (e.g., a utility function). The goal is to sample from:
+  \begin{equation}
+      p(\xb \mid \text{high } U) \propto p(\xb) \cdot g(U(\xb))
+  \end{equation}
+  for some increasing function $g$.
+
+  \subsection{Classifier Guidance}
+
+  The score of the guided distribution at noise level $t$ is:
+  \begin{equation}
+      \nabla_{\xb_t} \log p_t(\xb_t \mid \text{high } U)
+      = \underbrace{\nabla_{\xb_t} \log p_t(\xb_t)}_{\text{naturalness}}
+      + \underbrace{\nabla_{\xb_t} \log g(U_t(\xb_t))}_{\text{guidance}}
+      \label{eq:guided_score}
+  \end{equation}
+
+  The first term is the standard score (approximated by the trained model).
+  The second term biases the generation toward high-utility images.
+
+  In practice, $U(\xb)$ is defined on clean images, not on noisy
+  intermediates $\xb_t$. The standard approach is to evaluate $U$ on the
+  Tweedie estimate (Eq.~\ref{eq:tweedie}):
+  \begin{equation}
+      U_t(\xb_t) \approx U\!\left(\hat{\xb}_0(\xb_t, t)\right)
+  \end{equation}
+
+  The gradient $\nabla_{\xb_t} U(\hat{\xb}_0)$ is computed by
+  backpropagating through the Tweedie formula, which is a differentiable
+  function of $\xb_t$.
+
+  \subsection{Guided Sampling Algorithm}
+
+  The sampling procedure (Section~5.2) is modified: at each step, after
+  computing the noise prediction, add the guidance gradient before taking
+  the reverse step.
+
+  Concretely, at step $t$:
+  \begin{enumerate}[nosep]
+      \item Predict noise: $\hat{\eb} = \eb_\theta(\xb_t, t)$.
+      \item Compute the Tweedie estimate:
+            $\hat{\xb}_0 = (\xb_t - \sqrt{1 - \alphabar_t}\,\hat{\eb})
+            / \sqrt{\alphabar_t}$.
+      \item Compute the utility gradient: $\mathbf{g} = \nabla_{\xb_t}
+            U(\hat{\xb}_0)$.
+      \item Modify the noise prediction:
+            $\hat{\eb}_{\mathrm{guided}} = \hat{\eb}
+            - w \sqrt{1 - \alphabar_t} \; \mathbf{g}$.
+      \item Proceed with the reverse step using
+            $\hat{\eb}_{\mathrm{guided}}$ in place of $\hat{\eb}$.
+  \end{enumerate}
+
+  The scalar $w \geq 0$ is the \textbf{guidance strength}. It controls the
+  tradeoff between naturalness and utility:
+  \begin{itemize}[nosep]
+      \item $w = 0$: no guidance. Images are drawn from $p(\xb)$.
+      \item $w$ moderate: images are natural with a bias toward high utility.
+      \item $w$ large: utility dominates. Images may leave the natural
+            manifold, approaching the behavior of unconstrained gradient ascent.
+  \end{itemize}
+
+  \subsection{Properties of Guided Generation}
+
+  \begin{enumerate}
+      \item \textbf{Separation of concerns.} The score model handles
+            naturalness (all orders of image statistics). The guidance
+            gradient handles the task-specific criterion. These are
+            independent: the score model is trained once and reused
+            across different utility functions.
+
+      \item \textbf{Frequency decomposition.} If the utility gradient is
+            spatially smooth (e.g., because it passes through a GP kernel),
+            it provides a low-frequency directional bias. The score model
+            provides high-frequency detail (edges, textures). These operate
+            at complementary frequency scales.
+
+      \item \textbf{Stochastic diversity.} Each run of the reverse process
+            (from a different $\xb_T$) produces a different image. One can
+            generate multiple candidates and select the best, providing
+            additional optimization beyond single-image gradient ascent.
+
+      \item \textbf{No explicit constraint enforcement.} Unlike projected
+            gradient descent or latent-space optimization, the naturalness
+            constraint is enforced implicitly through the score model, not
+            through explicit projection or parameterization. This avoids
+            the need to define a tractable ``natural image set.''
+  \end{enumerate}
+
+  \section{Practical Considerations for Low-Resolution Images}
+
+  \subsection{Dataset Requirements}
+
+  Diffusion models require a training dataset of images from the target
+  distribution. The number of images needed depends on the image
+  dimensionality. For $30 \times 30$ grayscale images ($d = 900$),
+  a dataset of $\sim$10,000 images is likely sufficient. This is orders
+  of magnitude less demanding than training diffusion models on
+  high-resolution natural images (where hundreds of thousands or millions
+  of examples are typical).
+
+  \subsection{Noise Schedule}
+
+  The noise schedule $\{\beta_t\}_{t=1}^T$ controls how quickly noise is
+  added. Standard choices (linear or cosine schedules) work well without
+  tuning. A typical setup uses $T = 1000$ forward steps during training, but
+  the number of \emph{sampling} steps can be reduced (to 50--200) using
+  accelerated samplers (e.g., DDIM) without significant quality loss.
+
+  \subsection{Computational Cost}
+
+  Training: each update requires one forward pass of the score network and
+  one backpropagation. For a small MLP on 900-dimensional data, this is
+  fast. Training to convergence on 10,000 images should take minutes on a
+  single GPU.
+
+  Generation: each image requires $T_{\mathrm{sample}}$ sequential evaluations
+  of the score network. With guidance, each step additionally requires one
+  forward and backward pass through the utility function. For GP-based
+  utilities with $M$ inducing points, this is $O(M^2)$ per step. With
+  $T_{\mathrm{sample}} = 100$ and $M = 50$, the total cost per generated
+  image is modest.
+
+  \subsection{Evaluation}
+
+  Generated images should be evaluated along two axes:
+  \begin{enumerate}[nosep]
+      \item \textbf{Naturalness}: visual inspection, comparison of power
+            spectra and higher-order statistics with the training set,
+            nearest-neighbor distance to real images.
+      \item \textbf{Utility}: the utility $U(\xb_0)$ of generated images
+            compared to (a) random natural images from the dataset and
+            (b) images produced by unconstrained gradient ascent.
+  \end{enumerate}
+
+  The guidance strength $w$ parameterizes a curve in the naturalness--utility
+  plane. The operating point is chosen based on experimental requirements.
+
+
+\section{Why Diffusion Guidance Overrides Naive Bounding}
+
+When optimizing an image $\xb$ to maximize a given utility function $U(\xb)$, one frequently encounters the problem of pixel saturation. Unconstrained gradient ascent, $\xb \leftarrow \xb + \eta \nabla_{\xb} U(\xb)$, tends to push pixel values to unphysical extremes. 
+
+A naive approach to this problem is to enforce bounds through independent pixel-wise operations, such as projection (clipping) or sigmoid transformations. However, these methods often result in the destruction of the fine-grained structure characteristic of natural images.
+
+\subsection{The Failure of Independent Pixel Clipping}
+
+Let the space of displayable images be defined by a hypercube $\mathcal{B} = [x_{\min}, x_{\max}]^d$. Applying a projection operator $\Pi_{\mathcal{B}}(\xb)$ to enforce bounds acts on each pixel $x_i$ independently:
+\begin{equation}
+    (\Pi_{\mathcal{B}}(\xb))_i = \max(x_{\min}, \min(x_{\max}, x_i))
+\end{equation}
+
+The critical failure of $\Pi_{\mathcal{B}}$ is that it ignores the joint distribution $p(\xb)$. Natural images lie on a low-dimensional manifold $\mathcal{M} \subset \mathcal{B}$, characterized by specific local correlations, $1/f$ power spectra, and sparse structural features. When the utility gradient pushes a region of pixels beyond the boundary, clipping flattens these structured gradients into uniform blocks. The resulting image resides on the boundary of $\mathcal{B}$ but far from the manifold $\mathcal{M}$, thus failing to serve as a valid physiological stimulus.
+
+\subsection{The Score Function as a Structural Restoring Force}
+
+Guided diffusion avoids the pitfalls of independent clipping by constraining the optimization path to remain near the natural image manifold $\mathcal{M}$. This is achieved through the action of the score function.
+
+Recall the guided score equation:
+\begin{equation}
+    \nabla_{\xb_t} \log p_t(\xb_t \mid \text{high } U) = \underbrace{\nabla_{\xb_t} \log p_t(\xb_t)}_{\text{Restoring Force}} + \underbrace{w \nabla_{\xb_t} U_t(\xb_t)}_{\text{Utility Force}}
+\end{equation}
+
+The utility force seeks to maximize $U(\xb_t)$, which may push the image off $\mathcal{M}$ and toward pixel extremes. However, the restoring force, $\nabla_{\xb_t} \log p_t(\xb_t)$, points strictly in the direction of steepest ascent of the log-probability density of natural images.
+
+Because the score operates on the joint distribution of all pixels, it does not merely "clamp" values. Instead, if a patch of pixels begins to saturate and lose its natural power spectrum, the probability $p_t(\xb_t)$ drops precipitously. The restoring force then exerts a highly structured gradient that counteracts the saturation, continuously rearranging pixel values to maintain natural correlations (e.g., textures and edges) while accommodating the bias introduced by the utility force. 
+
+\subsection{Limitations and Out-of-Distribution Vulnerability}
+
+While theoretically robust, the restoring force is approximated by a neural network $\eb_\theta(\xb_t, t)$, which introduces practical limitations. 
+
+The network is trained exclusively on images that follow the forward diffusion trajectory (natural images corrupted by specific levels of Gaussian noise). If the guidance weight $w$ is excessively large, the utility force can push the intermediate state $\xb_t$ far out-of-distribution (OOD) relative to the training data. In such OOD regions, the network $\eb_\theta$ is forced to extrapolate, and the predicted restoring force may become highly inaccurate or produce artifacts. 
+
+Therefore, successful guided optimization relies on selecting a guidance weight $w$ that is strong enough to explore high-utility regions, but small enough to ensure $\xb_t$ remains within the region of space where the score approximation remains valid.
+
+
+
+  \end{document}

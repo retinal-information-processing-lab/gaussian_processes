@@ -186,12 +186,16 @@ def compare_experiments(exp_dir1, exp_dir2):
             d = tr2 - tr1
             delta = f"{d:+.4f}"
 
+        tr1_s = f"{tr1:.4f}" if tr1 is not None else "-"
+        tr2_s = f"{tr2:.4f}" if tr2 is not None else "-"
+        t1_s = f"{t1:.1f}" if t1 is not None else "-"
+        t2_s = f"{t2:.1f}" if t2 is not None else "-"
         print(f"{config_str:<25} "
-              f"{tr1:.4f if tr1 is not None else '-':>9} "
-              f"{tr2:.4f if tr2 is not None else '-':>9} "
+              f"{tr1_s:>9} "
+              f"{tr2_s:>9} "
               f"{delta:>8} "
-              f"{t1:.1f if t1 is not None else '-':>7} "
-              f"{t2:.1f if t2 is not None else '-':>7}")
+              f"{t1_s:>7} "
+              f"{t2_s:>7}")
 
 
 def list_experiments(experiments_dir):

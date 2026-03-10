@@ -108,7 +108,7 @@ def _get_kernel_type(model):
 # Setup
 # ============================================================================
 
-def setup(kernel_type=None, M_override=None, n_train_override=None):
+def setup(kernel_type=None, M_override=None, n_train_override=None, data_path=None):
     """Train model and return everything needed for exploration.
 
     Args:
@@ -133,6 +133,8 @@ def setup(kernel_type=None, M_override=None, n_train_override=None):
         overrides['n_train'] = n_train_override
     if kernel_type is not None:
         overrides['kernel_type'] = kernel_type
+    if data_path is not None:
+        overrides['data_path'] = data_path
 
     config = build_config_from_defaults(**overrides)
     result = run_single_config(config)

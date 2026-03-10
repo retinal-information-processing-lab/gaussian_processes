@@ -76,7 +76,7 @@ LOG_EVERY = 1            # print every step
 
 # --- Image creation ---
 USE_SYNTHETIC = False    # True: bipartite target + noise start. False: natural + smoothing.
-TARGET_INDEX = 0         # pool image index for natural target
+TARGET_INDEX = 5         # pool image index for natural target
 SIGMA_SMOOTH = 1.0       # Gaussian smoothing sigma for natural target perturbation
 DARK_GRAY = -0.5         # synthetic bipartite: one half pixel value
 LIGHT_GRAY = 0.5         # synthetic bipartite: other half pixel value
@@ -499,14 +499,16 @@ def plot_results(x_target, x_perturbed, x_final,
 # Main
 # ============================================================================
 
-def main(kernel_type=None):
+def main(kernel_type=None, M_override=None, n_train_override=None, target_index=None):
+    if target_index is None:
+        target_index = TARGET_INDEX
     # === Step 1: Train model ===
     ktype_label = kernel_type or 'default'
     print("=" * 70)
-    print(f"Step 1: Training model (kernel_type={ktype_label})")
+    print(f"Step 1: Training model (kernel_type={ktype_label}, M={M_override}, n_train={n_train_override})")
     print("=" * 70)
 
-    env = setup(kernel_type=kernel_type)
+    env = setup(kernel_type=kernel_type, M_override=M_override, n_train_override=n_train_override)
     model = env['model']
     likelihood = env['likelihood']
     X_pool = env['X_pool']
@@ -571,7 +573,7 @@ def main(kernel_type=None):
         print(f"Start: random noise (amp={NOISE_AMP})")
     else:
         # Natural image experiment
-        x_target = X_pool[TARGET_INDEX]
+        x_target = X_pool[target_index]
 
         x_target_2d = x_target.cpu().numpy().reshape(n_px_side, n_px_side)
         x_smoothed_2d = gaussian_filter(x_target_2d, sigma=SIGMA_SMOOTH)
@@ -580,7 +582,7 @@ def main(kernel_type=None):
         )
 
         start_label = f"smoothed (sigma={SIGMA_SMOOTH})"
-        print(f"Target: pool image {TARGET_INDEX}")
+        print(f"Target: pool image {target_index}")
         print(f"Start: Gaussian smoothing sigma={SIGMA_SMOOTH}")
 
     pixel_dist = (x_perturbed - x_target).norm().item()
@@ -658,7 +660,7 @@ def main(kernel_type=None):
         rf_mask, kernel, config,
         vmin_dataset, vmax_dataset, test_r, reliability,
         start_label, kernel_type, n_px_side,
-        out_path=_script_dir / f'gradient_{kernel_type}.png',
+        out_path=_script_dir / f'gradient_{kernel_type}_M{config["M"]}.png',
     )
 
 
@@ -667,5 +669,12 @@ if __name__ == '__main__':
     parser.add_argument('--kernel-type', type=str, default=None,
                         choices=['arc_cosine', 'arc_sine', 'rbf'],
                         help='Kernel type (default: from default_params.json)')
+    parser.add_argument('--M', type=int, default=None,
+                        help='Number of inducing points (default: from default_params.json)')
+    parser.add_argument('--n-train', type=int, default=None,
+                        help='Number of training points (default: from default_params.json)')
+    parser.add_argument('--target-index', type=int, default=TARGET_INDEX,
+                        help=f'Pool image index for target (default: {TARGET_INDEX})')
     args = parser.parse_args()
-    main(kernel_type=args.kernel_type)
+    main(kernel_type=args.kernel_type, M_override=args.M,
+         n_train_override=args.n_train, target_index=args.target_index)

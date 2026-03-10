@@ -1,0 +1,68 @@
+experiment:
+  modes:
+  - default_gpy
+  inducing_points:
+  - 50
+  n_train:
+  - 50
+  seeds:
+  - 123
+  cells:
+  - 8
+  n_iterations: 50
+kernel:
+  sigma_0: 1.0
+  Amp: 1.0
+  beta: 0.1
+  rho: 0.1
+  eps_0x: null
+  eps_0y: null
+  gradient_mode: autograd
+  use_mask: true
+kernel_bounds:
+  mask_threshold: 0.001
+  Amp_max: 1000.0
+  beta_min: 0.01
+  beta_max: 1.0
+  rho_min: 0.01
+  rho_max: 0.5
+  eps_min: -1.0
+  eps_max: 1.0
+likelihood:
+  A_init: 0.01
+  lambda0_init: 1.0
+training:
+  n_estep: 10
+  n_fstep: 10
+  n_mstep: 10
+  lr: 0.1
+  optimizer: lbfgs
+optimizer:
+  lbfgs_tolerance_change: 1.0e-09
+  lbfgs_tolerance_grad: 1.0e-07
+  lbfgs_history_size: 100
+  lbfgs_line_search: strong_wolfe
+  gpy_lbfgs_max_iter: 20
+early_stopping:
+  enabled: true
+  window: 20
+  threshold: 0.005
+  min_iterations: 10
+numerical:
+  jitter: 0.0001
+  cholesky_max_tries: 3
+  eigval_tol: 0.0001
+  lambda_var_clamp: 1.0e-06
+  stability_threshold: 1000
+  dtype: float32
+  device: cuda
+inducing:
+  selection_method: pivoted
+  n_candidates: null
+  n_samples_sta: null
+utility:
+  n_mc_samples: 200
+  r_max: 100
+data:
+  n_px_side: 108
+  use_cache: true

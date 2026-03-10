@@ -1,0 +1,8 @@
+name: jitter_fix_default_gpy_m50_n50
+full_name: 2026-02-07_jitter_fix_default_gpy_m50_n50
+description: 'Quick exploratory run: jitter_fix_default_gpy_m50_n50'
+created: '2026-02-07T16:05:15'
+git_commit: '2397467'
+git_dirty: true
+source_config: configs/quick.yaml
+type: exploratory

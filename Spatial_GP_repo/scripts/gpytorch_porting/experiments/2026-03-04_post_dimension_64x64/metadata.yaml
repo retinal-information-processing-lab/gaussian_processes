@@ -1,0 +1,8 @@
+name: post_dimension_64x64
+full_name: 2026-03-04_post_dimension_64x64
+description: first 64x64 results
+created: '2026-03-04T14:14:51'
+git_commit: 9acf4c0
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/canonical.yaml
+type: canonical

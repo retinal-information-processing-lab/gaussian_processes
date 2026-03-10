@@ -50,6 +50,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
+from scipy.ndimage import gaussian_filter
 
 # ---------------------------------------------------------------------------
 # Path setup
@@ -94,12 +95,15 @@ LOG_EVERY = 1            # print every step
 
 # --- Image selection ---
 TARGET_INDEX = 5         # pool image index for single-target mode
+SIGMA_SMOOTH = 5.0       # Gaussian smoothing sigma for starting image (at 108x108)
+PNAS_SIZE = 108          # original PNAS image size (for sigma scaling)
 
 # --- Multi-conditioning mode ---
-N_COND = 1               # 1 = single-target mode. >1 = multi-conditioning.
+N_COND = 5               # 1 = single-target mode. >1 = multi-conditioning.
 COND_SEED = 42           # seed for reproducible conditioning sample selection
-START_SEED = 123         # seed for random start image selection (multi-cond only)
 GRAD_CHUNK_SIZE = 30     # images per gradient accumulation chunk (GPU memory)
+SAMPLE_LAMBDA = False    # True = sample lambda(x) from GP posterior (per LaTeX formula).
+                         # False = use posterior mean (deterministic, stabler gradients).
 
 # --- PCA-specific ---
 DEFAULT_VAR_THRESHOLD = 0.95  # fraction of variance to retain
@@ -400,7 +404,8 @@ def compute_combined(X_images, kernel, rf_mask, var_threshold=0.95,
 def gradient_ascent(model, likelihood, z_start, x_samples,
                     basis, offset, rf_mask, r_max, f_max,
                     n_pixels, dtype, device, n_steps, lr,
-                    z_max_norm=None, x_target_for_pearson=None):
+                    z_max_norm=None, x_target_for_pearson=None,
+                    sample_lambda=False):
     """LBFGS gradient ascent maximizing U_DA in subspace.
 
     The optimization variable is z in R^K. The image is x* = offset + basis @ z
@@ -420,6 +425,9 @@ def gradient_ascent(model, likelihood, z_start, x_samples,
         z_max_norm: if set, project z onto ||z|| <= z_max_norm after each step
         x_target_for_pearson: (n_pixels,) image to compute Pearson r against
             (single-target: the target, multi-cond: the start image)
+        sample_lambda: If True, sample lambda(x_i) from GP posterior at each
+            conditioning image (per the DA utility formula). If False, use
+            posterior mean (deterministic, stabler LBFGS gradients).
 
     Returns:
         x_final: (n_pixels,) optimized image
@@ -462,7 +470,7 @@ def gradient_ascent(model, likelihood, z_start, x_samples,
         result_start = distribution_aware_utility(
             model, likelihood,
             x_start_eval.unsqueeze(0), x_samples,
-            r_max=r_max, adaptive_r_max=False, sample_lambda=False,
+            r_max=r_max, adaptive_r_max=False, sample_lambda=sample_lambda,
         )
         u_start = result_start['utility'].item()
         cur_rf_norm_start = x_start_eval[rf_mask].norm().item()
@@ -498,7 +506,7 @@ def gradient_ascent(model, likelihood, z_start, x_samples,
                     x_samples,
                     r_max=r_max,
                     adaptive_r_max=False,
-                    sample_lambda=False,
+                    sample_lambda=sample_lambda,
                 )
                 mu_g = result['mu_g_marg']
                 if torch.exp(mu_g).item() > f_max:
@@ -523,7 +531,7 @@ def gradient_ascent(model, likelihood, z_start, x_samples,
                         x_chunk,
                         r_max=r_max,
                         adaptive_r_max=False,
-                        sample_lambda=False,
+                        sample_lambda=sample_lambda,
                     )
 
                     if chunk_idx == 0:
@@ -1054,10 +1062,8 @@ def main():
                              f'(default: {N_COND}, 1 = single target)')
     parser.add_argument('--cond-seed', type=int, default=COND_SEED,
                         help=f'Seed for conditioning image selection (default: {COND_SEED})')
-    parser.add_argument('--start-index', type=int, default=None,
-                        help='Pool image index for starting point (multi-cond)')
-    parser.add_argument('--start-seed', type=int, default=START_SEED,
-                        help=f'Seed for random start image (default: {START_SEED})')
+    parser.add_argument('--data-path', type=str, default=None,
+                        help='Dataset path (default: from default_params.json)')
     args = parser.parse_args()
 
     t0 = time.time()
@@ -1077,7 +1083,8 @@ def main():
     print("=" * 70)
 
     env = setup(kernel_type=args.kernel_type,
-                M_override=args.M, n_train_override=args.n_train)
+                M_override=args.M, n_train_override=args.n_train,
+                data_path=args.data_path)
     model = env['model']
     likelihood = env['likelihood']
     X_pool = env['X_pool']
@@ -1166,14 +1173,27 @@ def main():
 
     x_target = None       # only set for single-target
     x_target_proj = None   # target projected into subspace
-    actual_start_index = None
 
-    # Compute dataset mean image (used as universal starting point)
-    mu_image = X_all.mean(dim=0)  # (n_pixels,)
+    # --- Smoothed target as universal starting point ---
+    # Gaussian-smoothed version of the target image, projected into subspace.
+    # Retains spatial structure for meaningful gradient signal while removing
+    # fine detail the optimizer should discover.
+    x_target_raw = X_pool[args.target_index]
+    sigma_scaled = SIGMA_SMOOTH * (PNAS_SIZE / n_px_side)
+    x_target_2d = x_target_raw.cpu().numpy().reshape(n_px_side, n_px_side)
+    x_smoothed_2d = gaussian_filter(x_target_2d, sigma=sigma_scaled)
+    x_start_np = x_target_2d.copy().reshape(-1)
+    rf_mask_np_start = rf_mask.cpu().numpy()
+    x_start_np[rf_mask_np_start] = x_smoothed_2d.reshape(-1)[rf_mask_np_start]
+    x_smoothed_full = torch.tensor(x_start_np, dtype=dtype, device=device)
+
+    z_start = image_to_z(x_smoothed_full, basis, offset, rf_mask)
+    x_start = z_to_image(z_start, basis, offset, rf_mask,
+                         n_pixels, dtype, device)
 
     if n_cond == 1:
         # --- Single-target mode ---
-        x_target = X_pool[args.target_index]
+        x_target = x_target_raw
         x_samples = x_target.unsqueeze(0)  # (1, n_pixels)
 
         # Project target into subspace for visualization
@@ -1187,12 +1207,8 @@ def main():
         print(f"  Target: pool image {args.target_index}")
         print(f"  Reconstruction error: {recon_err:.4f} "
               f"(relative: {recon_err / target_norm:.4f})")
-
-        # Universal start: dataset mean projected into subspace
-        z_start = image_to_z(mu_image, basis, offset, rf_mask)
-        x_start = z_to_image(z_start, basis, offset, rf_mask,
-                             n_pixels, dtype, device)
-        print(f"  Start: dataset mean projected into {method_label} subspace")
+        print(f"  Start: smoothed target (sigma={sigma_scaled:.2f}, "
+              f"base={SIGMA_SMOOTH}, scaled by {PNAS_SIZE}/{n_px_side})")
         print(f"  |z_start| = {z_start.norm().item():.4f}")
         print(f"  Norm constraint: NONE (unconstrained)")
 
@@ -1203,35 +1219,13 @@ def main():
         cond_indices = torch.randperm(n_pool, generator=rng)[:n_cond]
         x_samples = X_pool[cond_indices]  # (n_cond, n_pixels)
 
-        # Select starting image
-        if args.start_index is not None:
-            actual_start_index = args.start_index
-            x_start_raw = X_pool[args.start_index].clone()
-        else:
-            start_rng = torch.Generator(device='cpu').manual_seed(args.start_seed)
-            cond_set = set(cond_indices.tolist())
-            remaining = sorted(set(range(n_pool)) - cond_set)
-            rand_idx = remaining[
-                torch.randint(len(remaining), (1,), generator=start_rng).item()
-            ]
-            actual_start_index = rand_idx
-            x_start_raw = X_pool[rand_idx].clone()
-
-        x_start_raw = x_start_raw.to(device=device, dtype=dtype)
-
-        # Project start into subspace and reconstruct
-        z_start = image_to_z(x_start_raw, basis, offset, rf_mask)
-        x_start = z_to_image(z_start, basis, offset, rf_mask,
-                              n_pixels, dtype, device)
-
-        overlap = set(cond_indices.tolist()) & {actual_start_index}
         print(f"  Mode: multi-conditioning (n_cond={n_cond})")
         print(f"  Conditioning: {n_cond} images from pool "
               f"(seed={args.cond_seed})")
-        print(f"  Start: pool image {actual_start_index}"
-              f"{'  (user-specified)' if args.start_index is not None else f'  (random, seed={args.start_seed})'}")
-        print(f"  Start in conditioning set: "
-              f"{'YES' if overlap else 'no'}")
+        print(f"  Start: smoothed target pool[{args.target_index}] "
+              f"(sigma={sigma_scaled:.2f}, "
+              f"base={SIGMA_SMOOTH}, scaled by {PNAS_SIZE}/{n_px_side})")
+        print(f"  |z_start| = {z_start.norm().item():.4f}")
 
     print(f"  Dataset RF pixel range: [{vmin_dataset:.3f}, {vmax_dataset:.3f}]")
 
@@ -1268,6 +1262,7 @@ def main():
         n_pixels, dtype, device, N_STEPS, LR,
         z_max_norm=None,
         x_target_for_pearson=pearson_ref,
+        sample_lambda=SAMPLE_LAMBDA,
     )
 
     # === Step 6: Diagnostics ===
@@ -1357,7 +1352,8 @@ def main():
             threshold_suffix = '_nofilter'
         else:
             threshold_suffix = f'_thresh{eigen_rel_threshold:.0e}'
-    out_name = f'subspace_{method}{kernel_suffix}{cond_suffix}{threshold_suffix}.png'
+    m_suffix = f'_M{args.M}'
+    out_name = f'subspace_{method}{kernel_suffix}{m_suffix}{cond_suffix}{threshold_suffix}.png'
 
     if n_cond == 1:
         # Compute utility for target (original and projected)
@@ -1397,7 +1393,7 @@ def main():
             vmin_dataset, vmax_dataset, test_r,
             n_px_side,
             out_path=_script_dir / out_name,
-            start_index=actual_start_index,
+            start_index=args.target_index,
         )
 
     elapsed = time.time() - t0

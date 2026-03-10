@@ -1,10 +1,17 @@
 # Session Log
 
-## 2026-03-09: Inference package for external user
-**Handoff**: `.claude/handoffs/HANDOFF_2026-03-09_inference-package.md`
-**Status**: Continuing — conda env creation untested
+## 2026-03-10: Synthetic image generator — scoping finalized, handed off to diffusion worktree
+**Handoff (this repo)**: `.claude/handoffs/HANDOFF_2026-03-09_synthetic-image-generator-package.md`
+**Handoff (diffusion worktree)**: `../gpytorch_imagenet_diffusion/.../gpytorch_porting/.claude/handoffs/HANDOFF_2026-03-10_synthetic-image-generator-package.md`
+**Plan**: `.claude/plans/giggly-riding-cook.md`
+**Status**: Continuing in new session (diffusion worktree)
 
-Created inference package tarball (329 MB) with pre-trained checkpoints for all 41 cells x 2 image sizes. Code done and committed. Remaining: test `conda env create -f environment.yml` from scratch.
+Finalized all decisions for diffusion image generator package: separate tarball, NPZ output with selectable pixel range (--pixel-range {uint8, pnas}), finetuned model only, synthetic dataset script deferred. Explored diffusion worktree structure, read existing generate_samples.py and model docs. Decided new session should work directly in diffusion worktree (../gpytorch_imagenet_diffusion/). Created comprehensive technical handoff there with all decisions, pixel conventions, environment.yml pattern, draft implementation steps, and verification checklist.
+
+## 2026-03-09: Inference package validated
+**Status**: GP package complete (~/gp_neural_fitting.tar.gz, 329 MB)
+
+Validated GP inference package end-to-end: fixed environment.yml (conda-only failed, switched to pip for torch/gpytorch/linear_operator), tested conda env creation + inference from scratch, rebuilt tarball. Cleaned up test env.
 
 ## 2026-03-03: Diffusion model investigation planning
 **Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_diffusion-model-training-investigation.md`
