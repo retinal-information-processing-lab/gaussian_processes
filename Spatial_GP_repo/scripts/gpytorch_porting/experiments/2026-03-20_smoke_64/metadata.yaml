@@ -1,0 +1,8 @@
+name: smoke_64
+full_name: 2026-03-20_smoke_64
+description: 'Smoke test: 64x64, cells [0,40], seed 1, M=[300,2910], n_iter=3'
+created: '2026-03-20T18:28:34'
+git_commit: 7e4d48c
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/smoke_test_64.yaml
+type: canonical

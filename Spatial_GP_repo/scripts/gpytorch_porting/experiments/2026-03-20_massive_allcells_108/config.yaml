@@ -1,0 +1,107 @@
+# Massive All-Cells Experiment — 108x108
+#
+# All 41 cells, M=[300,2910], ntrain=2910, seeds=[1,2,3], both modes.
+# Non-experiment sections identical to canonical.yaml.
+#
+# Usage:
+#   python create_experiment.py --name massive_allcells_108 --config configs/massive_allcells_108.yaml --desc "..."
+#   python run_experiment.py --exp massive_allcells_108 --resume
+
+# ===== EXPERIMENT MATRIX (what varies across runs) =====
+experiment:
+  modes: [vargp_direct, default_gpy]
+  inducing_points: [300, 2910]
+  n_train: [2910]
+  seeds: [1, 2, 3]
+  cells: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+  n_iterations: 50
+
+# ===== KERNEL INITIALIZATION =====
+kernel:
+  type: arc_cosine            # arc_cosine | arc_sine | rbf
+  sigma_0: 1.0
+  Amp: 1.0
+  beta: 0.1
+  rho: 0.1
+  eps_0x: null              # null = compute from STA
+  eps_0y: null              # null = compute from STA
+  gradient_mode: autograd   # autograd | vjp | jacobian
+  use_mask: true
+  bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
+  n_sigma_rf_bounds: 3.0     # allowed deviation in units of sigma_rf = beta * sqrt(2)
+  lengthscale: 100.0         # only used when type=rbf; initial RBF lengthscale
+
+# ===== KERNEL BOUNDS =====
+# Clamping limits for kernel hyperparameters during optimization.
+# HARDCODED in kernels.py (class attributes). Listed here for documentation.
+# Changing these values here has NO EFFECT until wired (future work).
+kernel_bounds:
+  mask_threshold: 0.001     # kernels.py:120 MASK_THRESHOLD
+  Amp_max: 1000.0           # kernels.py:123 AMP_MAX
+  beta_min: 0.01            # kernels.py:126 BETA_MIN
+  beta_max: 1.0             # kernels.py:127 BETA_MAX
+  rho_min: 0.01             # kernels.py:132 RHO_MIN
+  rho_max: 0.5              # kernels.py:133 RHO_MAX
+  eps_min: -1.0             # kernels.py:140 EPS_MIN
+  eps_max: 1.0              # kernels.py:141 EPS_MAX
+
+# ===== LIKELIHOOD =====
+likelihood:
+  A_init: 0.01
+  lambda0_init: 1.0
+
+# ===== TRAINING =====
+training:
+  n_estep: 10
+  n_fstep: 10
+  n_mstep: 10
+  lr: 0.1
+  optimizer: lbfgs           # lbfgs | adam (for default_gpy mode)
+
+# ===== OPTIMIZER DETAILS =====
+# LBFGS settings used in eigenspace M-step, F-step, and default_gpy training.
+optimizer:
+  lbfgs_tolerance_change: 1.0e-9   # HARDCODED eigenspace_mstep.py:57,174
+  lbfgs_tolerance_grad: 1.0e-7     # HARDCODED eigenspace_mstep.py:58,175
+  lbfgs_history_size: 100          # HARDCODED eigenspace_mstep.py:59,176
+  lbfgs_line_search: strong_wolfe  # HARDCODED eigenspace_mstep.py:60,177
+  gpy_lbfgs_max_iter: 20           # WIRED via gpy_training.py lbfgs_max_iter param
+
+# ===== EARLY STOPPING =====
+early_stopping:
+  enabled: true
+  window: 20
+  threshold: 5.0e-3
+  min_iterations: 10
+
+# ===== NUMERICAL =====
+numerical:
+  jitter: 1.0e-4                   # WIRED via run_single_config + gpy_training cholesky_jitter
+  cholesky_max_tries: 3            # WIRED via gpy_training context manager
+  eigval_tol: 1.0e-4               # WIRED via DirectVGPModel constructor
+  lambda_var_clamp: 1.0e-6         # WIRED via model.lambda_var_clamp + function params
+  stability_threshold: 1000        # WIRED via config -> training functions
+  dtype: float32
+  device: cuda
+
+# ===== INDUCING POINT SELECTION =====
+inducing:
+  selection_method: pivoted        # WIRED via run_single_config: pivoted | random
+  n_candidates: null               # WIRED: null = all available images
+  n_samples_sta: null              # WIRED: null = all available images for STA
+
+# ===== UTILITY / ACQUISITION =====
+utility:
+  n_mc_samples: 200
+  r_max: 100
+  adaptive_r_max: false
+  adaptive_safety_k: 3.0
+  adaptive_max_rmax: 10000
+  adaptive_min_rmax: 200
+  f_max: 100.0
+
+# ===== DATA =====
+data:
+  path: "datasets/PNAS_108x108_original.npz"
+  n_px_side: null           # null = auto-detect from loaded data; set explicitly to validate
+  use_cache: true

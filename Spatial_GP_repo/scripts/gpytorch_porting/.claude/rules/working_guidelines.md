@@ -237,6 +237,14 @@ Sessions dedicated to codebase exploration or bug investigation require TIDYNESS
 - Use a dedicated folder with explicit name in the gpytorch_porting/investigations path.
 - Keep track of files you create and if they need to be cleaned up afterwards
 
+### 3.14 Long-Running GPU Experiments
+
+When preparing batch experiments that run many GPU tasks in a single process:
+
+- **GPU memory stability**: Smoke tests must monitor GPU memory across runs, not just check correctness. A leak that only surfaces after 50+ runs won't be caught by a short smoke test. Verify memory stays flat with `nvidia-smi` between runs.
+- **Phantom process check**: Before launching a background process, verify no stale GPU processes from prior attempts exist. A failed `nohup` can still spawn a child — two processes on the same GPU and results file corrupts everything.
+- **Memory cleanup between runs**: Any loop that repeatedly creates and destroys GPU models must explicitly free memory (`del`, `gc.collect()`, `torch.cuda.empty_cache()`) after each iteration.
+
 
 
 

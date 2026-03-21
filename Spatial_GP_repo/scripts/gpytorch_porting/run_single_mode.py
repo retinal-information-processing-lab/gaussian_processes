@@ -1128,6 +1128,22 @@ def run_single_config(config):
 # =========================================================================
 
 def main():
+    # --from-config: subprocess mode for run_experiment.py
+    # Reads a flat config JSON, runs training, prints result as JSON on stdout.
+    # This allows each experiment combo to run in a separate process for GPU
+    # memory isolation.
+    if len(sys.argv) == 3 and sys.argv[1] == '--from-config':
+        config_path = sys.argv[2]
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        result = run_single_config(config)
+        if result is None:
+            sys.exit(1)
+        # Build serializable result (drop non-serializable GPU objects)
+        serializable = {k: v for k, v in result.items() if not k.startswith('_')}
+        print(f"RESULT_JSON:{json.dumps(serializable)}")
+        sys.exit(0)
+
     # Load default parameters
     defaults_path = Path(__file__).parent / 'default_params.json'
     with open(defaults_path, 'r') as f:

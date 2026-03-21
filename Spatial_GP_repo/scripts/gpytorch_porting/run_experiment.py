@@ -4,6 +4,7 @@ run_experiment.py - Run a canonical or exploratory experiment.
 
 Canonical: reads frozen config.yaml from an experiment folder created by
 create_experiment.py and runs all (mode x M x seed x cell) combinations.
+Each combo runs as a separate subprocess for GPU memory isolation.
 
 Exploratory (--quick): creates a folder in experiments/exploratory/, freezes
 config from configs/quick.yaml with optional CLI overrides, and runs immediately.
@@ -25,6 +26,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -103,10 +105,63 @@ def load_completed_combos(results_path):
     return completed
 
 
+def run_single_combo_subprocess(flat_config, script_dir):
+    """Run a single experiment combo in a subprocess for GPU memory isolation.
+
+    Writes flat_config to a temp JSON file, spawns run_single_mode.py with
+    --from-config, captures the JSON result from stdout.
+
+    Returns:
+        result dict on success, or None on failure. On failure, the error
+        message is printed to stderr (visible in the parent's output).
+    """
+    # Write config to temp file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', dir=script_dir,
+                                      delete=False) as f:
+        json.dump(flat_config, f)
+        config_path = f.name
+
+    try:
+        python = sys.executable
+        proc = subprocess.run(
+            [python, str(script_dir / 'run_single_mode.py'),
+             '--from-config', config_path],
+            capture_output=True, text=True, cwd=script_dir,
+            timeout=7200,  # 2 hour timeout per run
+        )
+
+        # Print the subprocess stdout (training progress) so it appears in the log
+        if proc.stdout:
+            print(proc.stdout, end='')
+        if proc.stderr:
+            print(proc.stderr, end='', file=sys.stderr)
+
+        if proc.returncode != 0:
+            return None
+
+        # Parse the JSON result from the last line of stdout
+        # run_single_mode.py --from-config prints "RESULT_JSON:" followed by JSON
+        for line in reversed(proc.stdout.splitlines()):
+            if line.startswith('RESULT_JSON:'):
+                return json.loads(line[len('RESULT_JSON:'):])
+
+        return None
+
+    except subprocess.TimeoutExpired:
+        print(f"  TIMEOUT (2h limit)", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"  Subprocess error: {e}", file=sys.stderr)
+        return None
+    finally:
+        Path(config_path).unlink(missing_ok=True)
+
+
 def run_canonical(exp_dir, resume=False):
     """Run a canonical experiment from a frozen config."""
     config_path = exp_dir / 'config.yaml'
     results_path = exp_dir / 'results.jsonl'
+    script_dir = Path(__file__).parent
 
     if not config_path.exists():
         print(f"ERROR: No config.yaml in {exp_dir}")
@@ -151,8 +206,7 @@ def run_canonical(exp_dir, resume=False):
         print("All combos already completed. Nothing to do.")
         return 0
 
-    # Import here (after printing config) to avoid slow import if just checking
-    from run_single_mode import run_single_config, flatten_yaml_config
+    from run_single_mode import flatten_yaml_config
 
     passed = 0
     failed = 0
@@ -165,66 +219,54 @@ def run_canonical(exp_dir, resume=False):
 
         flat_config = flatten_yaml_config(config, mode, M, n_train, seed, cell)
 
-        try:
-            result = run_single_config(flat_config)
-            if result is None:
-                print(f"  FAILED (returned None)")
-                failed += 1
-                # Record failure
-                fail_record = {
-                    'mode': mode, 'M': M, 'n_train': n_train,
-                    'seed': seed, 'cell': cell, 'status': 'failed',
-                    'timestamp': datetime.now().isoformat(timespec='seconds'),
-                }
-                with open(results_path, 'a') as f:
-                    f.write(json.dumps(fail_record) + '\n')
-                continue
+        result = run_single_combo_subprocess(flat_config, script_dir)
 
-            # Build JSONL record (matching plan schema)
-            record = {
-                'mode': result['mode'],
-                'M': result['M'],
-                'n_train': result['n_train'],
-                'seed': result['seed'],
-                'cell': result['cell'],
-                'status': 'success',
-                'test_r': round(result['test_r'], 4) if result['test_r'] is not None else None,
-                'explained_var': round(result['explained_var'], 4) if result['explained_var'] is not None else None,
-                'final_loss': round(result['final_loss'], 4) if result['final_loss'] is not None else None,
-                'time_total_s': round(result['train_time'], 2),
-                'time_estep_s': round(result['time_estep_s'], 2) if result['time_estep_s'] is not None else None,
-                'time_mstep_s': round(result['time_mstep_s'], 2) if result['time_mstep_s'] is not None else None,
-                'final_A': round(result['final_A'], 6),
-                'final_lambda0': round(result['final_lambda0'], 6),
-                'final_Amp': round(result['final_Amp'], 6),
-                'final_beta': round(result['final_beta'], 6),
-                'final_rho': round(result['final_rho'], 6),
-                'final_sigma_0': round(result['final_sigma_0'], 6),
-                'final_eps_0x': round(result['final_eps_0x'], 6),
-                'final_eps_0y': round(result['final_eps_0y'], 6),
-                'gradient_mode': result.get('gradient_mode'),
-                'n_iterations_run': result.get('n_iterations_run'),
-                'stopped_early': result.get('stopped_early', False),
-                'timestamp': result.get('timestamp', datetime.now().isoformat(timespec='seconds')),
-            }
-
-            with open(results_path, 'a') as f:
-                f.write(json.dumps(record) + '\n')
-
-            print(f"  test_r={record['test_r']}, time={record['time_total_s']}s")
-            passed += 1
-
-        except Exception as e:
-            print(f"  ERROR: {e}")
+        if result is None:
+            print(f"  FAILED (subprocess returned no result)")
             failed += 1
             fail_record = {
                 'mode': mode, 'M': M, 'n_train': n_train,
                 'seed': seed, 'cell': cell, 'status': 'error',
-                'error': str(e),
+                'error': 'subprocess returned no result',
                 'timestamp': datetime.now().isoformat(timespec='seconds'),
             }
             with open(results_path, 'a') as f:
                 f.write(json.dumps(fail_record) + '\n')
+            continue
+
+        # Build JSONL record
+        record = {
+            'mode': result['mode'],
+            'M': result['M'],
+            'n_train': result['n_train'],
+            'seed': result['seed'],
+            'cell': result['cell'],
+            'status': 'success',
+            'test_r': round(result['test_r'], 4) if result['test_r'] is not None else None,
+            'explained_var': round(result['explained_var'], 4) if result['explained_var'] is not None else None,
+            'final_loss': round(result['final_loss'], 4) if result['final_loss'] is not None else None,
+            'time_total_s': round(result['train_time'], 2),
+            'time_estep_s': round(result['time_estep_s'], 2) if result['time_estep_s'] is not None else None,
+            'time_mstep_s': round(result['time_mstep_s'], 2) if result['time_mstep_s'] is not None else None,
+            'final_A': round(result['final_A'], 6),
+            'final_lambda0': round(result['final_lambda0'], 6),
+            'final_Amp': round(result['final_Amp'], 6),
+            'final_beta': round(result['final_beta'], 6),
+            'final_rho': round(result['final_rho'], 6),
+            'final_sigma_0': round(result['final_sigma_0'], 6),
+            'final_eps_0x': round(result['final_eps_0x'], 6),
+            'final_eps_0y': round(result['final_eps_0y'], 6),
+            'gradient_mode': result.get('gradient_mode'),
+            'n_iterations_run': result.get('n_iterations_run'),
+            'stopped_early': result.get('stopped_early', False),
+            'timestamp': result.get('timestamp', datetime.now().isoformat(timespec='seconds')),
+        }
+
+        with open(results_path, 'a') as f:
+            f.write(json.dumps(record) + '\n')
+
+        print(f"  test_r={record['test_r']}, time={record['time_total_s']}s")
+        passed += 1
 
     print(f"\n{'='*60}")
     print(f"Experiment complete: {passed} passed, {failed} failed")

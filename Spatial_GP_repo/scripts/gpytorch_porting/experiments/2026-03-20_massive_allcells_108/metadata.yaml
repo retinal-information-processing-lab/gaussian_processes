@@ -1,0 +1,9 @@
+name: massive_allcells_108
+full_name: 2026-03-20_massive_allcells_108
+description: All 41 cells, 108x108, M=[300,2910], ntrain=2910, seeds=[1,2,3], both
+  modes
+created: '2026-03-20T18:28:35'
+git_commit: 7e4d48c
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/massive_allcells_108.yaml
+type: canonical
