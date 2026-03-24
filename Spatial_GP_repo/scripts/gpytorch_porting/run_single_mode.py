@@ -1011,18 +1011,29 @@ def run_single_config(config):
         print(f"  lambda0: {likelihood.lambda0.item():.4f}")
 
         print("\nEvaluating on test data...")
-        predictions = predict(model, likelihood, X_test, device=device,
-                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'],
-                              lambda_var_clamp=lambda_var_clamp)
-        f_pred = predictions['f_pred']
+        try:
+            predictions = predict(model, likelihood, X_test, device=device,
+                                  jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'],
+                                  lambda_var_clamp=lambda_var_clamp)
+            f_pred = predictions['f_pred']
 
-        r_test_mean = r_test.mean(dim=0)
-        test_corr = compute_pearson_correlation(r_test_mean, f_pred)
-        explained_var, reliability = compute_explained_variance(r_test, f_pred)
+            r_test_mean = r_test.mean(dim=0)
+            test_corr = compute_pearson_correlation(r_test_mean, f_pred)
+            explained_var, reliability = compute_explained_variance(r_test, f_pred)
 
-        train_preds = predict(model, likelihood, X_train, device=device,
-                              jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
-        train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+            train_preds = predict(model, likelihood, X_train, device=device,
+                                  jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
+            train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+        except RuntimeError as e:
+            print(f"  Prediction failed: {e}")
+            print("  Recording NaN metrics.")
+            f_pred = torch.full((X_test.shape[0],), float('nan'), device=device)
+            predictions = {'f_pred': f_pred}
+            r_test_mean = r_test.mean(dim=0)
+            test_corr = float('nan')
+            explained_var = float('nan')
+            reliability = compute_explained_variance(r_test, f_pred)[1]
+            train_corr = float('nan')
 
         pred_mean = f_pred.mean().item()
         pred_std = f_pred.std().item()
@@ -1055,7 +1066,7 @@ def run_single_config(config):
     print(f"  Test Pearson r:  {test_corr:.4f}")
     print(f"  Reliability:     {reliability:.4f}")
     print(f"  Explained var:   {explained_var:.4f}")
-    print(f"  Final loss:      {losses[-1]:.2f}")
+    print(f"  Final loss:      {losses[-1]:.2f}" if losses else "  Final loss:      N/A (no iterations completed)")
     print(f"  Prediction stats: mean={pred_mean:.3f}, std={pred_std:.3f}, range=[{pred_min:.3f}, {pred_max:.3f}]")
 
     # Print kernel call stats if analytical gradients were used
@@ -1087,7 +1098,7 @@ def run_single_config(config):
         'test_r': float(test_corr) if not np.isnan(test_corr) else None,
         'explained_var': float(explained_var) if not np.isnan(explained_var) else None,
         'reliability': float(reliability) if not np.isnan(reliability) else None,
-        'final_loss': float(losses[-1]) if not np.isnan(losses[-1]) else None,
+        'final_loss': float(losses[-1]) if losses and not np.isnan(losses[-1]) else None,
         'pred_std': pred_std,
         'time_estep_s': time_estep,
         'time_mstep_s': time_mstep,
@@ -1140,7 +1151,14 @@ def main():
         if result is None:
             sys.exit(1)
         # Build serializable result (drop non-serializable GPU objects)
-        serializable = {k: v for k, v in result.items() if not k.startswith('_')}
+        # Replace NaN/inf with None for valid JSON serialization
+        import math
+        def _sanitize(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return None
+            return v
+        serializable = {k: _sanitize(v) for k, v in result.items()
+                        if not k.startswith('_')}
         print(f"RESULT_JSON:{json.dumps(serializable)}")
         sys.exit(0)
 

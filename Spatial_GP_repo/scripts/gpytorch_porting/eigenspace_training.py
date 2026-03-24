@@ -186,6 +186,10 @@ def train_eigenspace(
         start_estep = time.time()
 
         for i_estep in range(n_estep):
+            # Save state before Newton step for revert on divergence
+            m_b_prev = model.state.m_b.clone()
+            V_b_prev = model.state.V_b.clone()
+
             estep_eigenspace(model, r, f_mean)
 
             posterior = model(model.X_train)
@@ -199,9 +203,15 @@ def train_eigenspace(
                     estep_idx=i_estep
                 ))
 
-            if f_mean.mean().item() > stability_threshold:
-                if verbose:
-                    print(f"  E-step {i_estep}: f_mean unstable ({f_mean.mean().item():.1f})")
+            # Check for divergence: f_mean.max() catches localized blowup.
+            # Revert to pre-step state if triggered (matches original varGP).
+            if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+                model.update_variational_params(m_b_prev, V_b_prev)
+                posterior = model(model.X_train)
+                lambda_m, lambda_var = posterior.mean, posterior.variance
+                f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
+                print(f"  E-step {i_estep}: f_mean diverged "
+                      f"(max={f_mean.max().item():.1f}), reverted")
                 break
 
         # ===== F-step: Optimize A =====
@@ -244,6 +254,13 @@ def train_eigenspace(
 
         # ===== Compute and record loss =====
         elbo = compute_elbo_eigenspace(model.state, r, lambda_m, lambda_var, A, lambda0)
+
+        # Detect training divergence (NaN/inf loss)
+        if torch.isnan(elbo) or torch.isinf(elbo):
+            print(f"Training diverged at iteration {iteration}: elbo={elbo.item()}")
+            stopped_early = True
+            break
+
         loss = -elbo.item()
         losses.append(loss)
         final_iteration = iteration

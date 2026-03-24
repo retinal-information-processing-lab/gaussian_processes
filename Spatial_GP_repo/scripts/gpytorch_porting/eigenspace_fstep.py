@@ -79,11 +79,15 @@ def fstep_eigenspace(
             lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
             likelihood.lambda0.copy_(lambda0.reshape(likelihood.lambda0.shape))
 
+        # Reject if lambda0 overflowed (A too large for current lambda_m/lambda_var)
+        if torch.isinf(lambda0) or torch.isnan(lambda0):
+            return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
+
         # Compute f_mean
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        # Stability check
-        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+        # Stability check: max catches localized blowup, NaN catches overflow
+        if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Log-likelihood (negative for minimization)
@@ -99,13 +103,27 @@ def fstep_eigenspace(
 
         return -log_lik
 
-    optimizer.step(closure)
+    # Save pre-step state for revert on divergence
+    raw_A_prev = likelihood.raw_A.detach().clone()
+    lambda0_prev = likelihood.lambda0.detach().clone()
+
+    try:
+        optimizer.step(closure)
+    except (IndexError, RuntimeError) as e:
+        import warnings
+        warnings.warn(f"F-step LBFGS crashed: {e}. Keeping pre-step parameters.")
 
     # Clamp likelihood parameters to valid bounds after step
     likelihood.clamp_params()
 
-    # Final lambda0 update
+    # Final lambda0 update — check for overflow and revert if needed
     with torch.no_grad():
         A = likelihood.A.squeeze()
         new_lambda0 = lambda0_given_A(A, r, lambda_m, lambda_var)
-        likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))
+        if torch.isinf(new_lambda0) or torch.isnan(new_lambda0):
+            # A is too large for the current posterior — revert to pre-step values
+            likelihood.raw_A.copy_(raw_A_prev)
+            likelihood.lambda0.copy_(lambda0_prev)
+            print(f"  F-step: lambda0 overflowed at A={A.item():.4f}, reverted")
+        else:
+            likelihood.lambda0.copy_(new_lambda0.reshape(likelihood.lambda0.shape))

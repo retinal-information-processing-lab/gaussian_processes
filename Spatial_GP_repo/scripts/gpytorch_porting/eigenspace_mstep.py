@@ -135,7 +135,13 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
 
         return loss
 
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except (IndexError, RuntimeError) as e:
+        # LBFGS line search can crash (IndexError in _strong_wolfe) when
+        # NaN/inf propagates into the search state. Treat as failed step.
+        import warnings
+        warnings.warn(f"M-step LBFGS crashed: {e}. Keeping pre-step parameters.")
     kernel.clamp_hyperparameters()
 
 
@@ -323,5 +329,9 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
 
         return loss
 
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except (IndexError, RuntimeError) as e:
+        import warnings
+        warnings.warn(f"M-step analytical LBFGS crashed: {e}. Keeping pre-step parameters.")
     kernel.clamp_hyperparameters()

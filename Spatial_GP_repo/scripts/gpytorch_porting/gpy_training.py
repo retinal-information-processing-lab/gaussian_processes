@@ -153,7 +153,12 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
          lo_settings.cholesky_max_tries(cholesky_max_tries):
         for i in range(n_iterations):
             if optimizer_name == 'lbfgs':
-                optimizer.step(closure)
+                try:
+                    optimizer.step(closure)
+                except (IndexError, RuntimeError) as e:
+                    warnings.warn(f"LBFGS crashed at iteration {i+1}: {e}. Stopping training.")
+                    stopped_early = True
+                    break
                 loss = last_loss[0]
                 expected_log_lik = last_ell[0]
                 kl_div = last_kl[0]
@@ -174,6 +179,15 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
             if hasattr(likelihood, 'clamp_params'):
                 likelihood.clamp_params()
 
+            # Detect divergence: loss is None (all LBFGS evals rejected) or NaN/inf
+            if loss is None:
+                print(f"Training diverged at iteration {i+1}: all LBFGS evaluations rejected")
+                stopped_early = True
+                break
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"Training diverged at iteration {i+1}: loss={loss.item()}")
+                stopped_early = True
+                break
             current_loss = loss.item()
             losses.append(current_loss)
             final_iteration = i + 1

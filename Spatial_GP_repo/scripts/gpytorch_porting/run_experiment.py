@@ -235,27 +235,30 @@ def run_canonical(exp_dir, resume=False):
             continue
 
         # Build JSONL record
+        def _round(val, n):
+            return round(val, n) if val is not None else None
+
         record = {
             'mode': result['mode'],
             'M': result['M'],
             'n_train': result['n_train'],
             'seed': result['seed'],
             'cell': result['cell'],
-            'status': 'success',
-            'test_r': round(result['test_r'], 4) if result['test_r'] is not None else None,
-            'explained_var': round(result['explained_var'], 4) if result['explained_var'] is not None else None,
-            'final_loss': round(result['final_loss'], 4) if result['final_loss'] is not None else None,
-            'time_total_s': round(result['train_time'], 2),
-            'time_estep_s': round(result['time_estep_s'], 2) if result['time_estep_s'] is not None else None,
-            'time_mstep_s': round(result['time_mstep_s'], 2) if result['time_mstep_s'] is not None else None,
-            'final_A': round(result['final_A'], 6),
-            'final_lambda0': round(result['final_lambda0'], 6),
-            'final_Amp': round(result['final_Amp'], 6),
-            'final_beta': round(result['final_beta'], 6),
-            'final_rho': round(result['final_rho'], 6),
-            'final_sigma_0': round(result['final_sigma_0'], 6),
-            'final_eps_0x': round(result['final_eps_0x'], 6),
-            'final_eps_0y': round(result['final_eps_0y'], 6),
+            'status': 'diverged' if result.get('test_r') is None else 'success',
+            'test_r': _round(result['test_r'], 4),
+            'explained_var': _round(result['explained_var'], 4),
+            'final_loss': _round(result['final_loss'], 4),
+            'time_total_s': _round(result['train_time'], 2),
+            'time_estep_s': _round(result['time_estep_s'], 2),
+            'time_mstep_s': _round(result['time_mstep_s'], 2),
+            'final_A': _round(result['final_A'], 6),
+            'final_lambda0': _round(result['final_lambda0'], 6),
+            'final_Amp': _round(result['final_Amp'], 6),
+            'final_beta': _round(result['final_beta'], 6),
+            'final_rho': _round(result['final_rho'], 6),
+            'final_sigma_0': _round(result['final_sigma_0'], 6),
+            'final_eps_0x': _round(result['final_eps_0x'], 6),
+            'final_eps_0y': _round(result['final_eps_0y'], 6),
             'gradient_mode': result.get('gradient_mode'),
             'n_iterations_run': result.get('n_iterations_run'),
             'stopped_early': result.get('stopped_early', False),
@@ -265,7 +268,10 @@ def run_canonical(exp_dir, resume=False):
         with open(results_path, 'a') as f:
             f.write(json.dumps(record) + '\n')
 
-        print(f"  test_r={record['test_r']}, time={record['time_total_s']}s")
+        if record['status'] == 'diverged':
+            print(f"  DIVERGED (test_r=None), time={record['time_total_s']}s")
+        else:
+            print(f"  test_r={record['test_r']}, time={record['time_total_s']}s")
         passed += 1
 
     print(f"\n{'='*60}")
