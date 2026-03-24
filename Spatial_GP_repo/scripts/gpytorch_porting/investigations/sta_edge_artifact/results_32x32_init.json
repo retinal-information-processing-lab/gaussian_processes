@@ -1,0 +1,110 @@
+[
+  {
+    "dataset": "108",
+    "cell": 0,
+    "baseline_r": 0.6615,
+    "r_32x32_init": 0.662,
+    "delta": 0.0005,
+    "eps_0x": -0.1402,
+    "eps_0y": 0.1589
+  },
+  {
+    "dataset": "108",
+    "cell": 5,
+    "baseline_r": 0.6476,
+    "r_32x32_init": 0.6471,
+    "delta": -0.0005,
+    "eps_0x": 0.0093,
+    "eps_0y": -0.1776
+  },
+  {
+    "dataset": "108",
+    "cell": 6,
+    "baseline_r": 0.0385,
+    "r_32x32_init": 0.8383,
+    "delta": 0.7998,
+    "eps_0x": -0.1402,
+    "eps_0y": 0.0841
+  },
+  {
+    "dataset": "108",
+    "cell": 15,
+    "baseline_r": -0.3178,
+    "r_32x32_init": 0.6774,
+    "delta": 0.9952,
+    "eps_0x": 0.1028,
+    "eps_0y": -0.215
+  },
+  {
+    "dataset": "108",
+    "cell": 22,
+    "baseline_r": 0.0449,
+    "r_32x32_init": 0.8125,
+    "delta": 0.7676,
+    "eps_0x": -0.0654,
+    "eps_0y": 0.0467
+  },
+  {
+    "dataset": "108",
+    "cell": 39,
+    "baseline_r": 0.0962,
+    "r_32x32_init": 0.5531,
+    "delta": 0.4569,
+    "eps_0x": 0.1963,
+    "eps_0y": 0.0093
+  },
+  {
+    "dataset": "64",
+    "cell": 0,
+    "baseline_r": 0.683,
+    "r_32x32_init": 0.6832,
+    "delta": 0.0002,
+    "eps_0x": -0.2381,
+    "eps_0y": 0.2698
+  },
+  {
+    "dataset": "64",
+    "cell": 5,
+    "baseline_r": 0.6354,
+    "r_32x32_init": 0.6392,
+    "delta": 0.0038,
+    "eps_0x": 0.0159,
+    "eps_0y": -0.3016
+  },
+  {
+    "dataset": "64",
+    "cell": 6,
+    "baseline_r": 0.1175,
+    "r_32x32_init": 0.2566,
+    "delta": 0.1391,
+    "eps_0x": -0.2381,
+    "eps_0y": 0.1429
+  },
+  {
+    "dataset": "64",
+    "cell": 15,
+    "baseline_r": 0.7056,
+    "r_32x32_init": 0.7183,
+    "delta": 0.0127,
+    "eps_0x": 0.1746,
+    "eps_0y": -0.3651
+  },
+  {
+    "dataset": "64",
+    "cell": 22,
+    "baseline_r": 0.8196,
+    "r_32x32_init": 0.818,
+    "delta": -0.0016,
+    "eps_0x": -0.1111,
+    "eps_0y": 0.0794
+  },
+  {
+    "dataset": "64",
+    "cell": 39,
+    "baseline_r": 0.4159,
+    "r_32x32_init": 0.4996,
+    "delta": 0.0837,
+    "eps_0x": 0.3333,
+    "eps_0y": 0.0159
+  }
+]

@@ -79,6 +79,8 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
 
+**STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
+
 ---
 
 ## Parameter Matching Table (PREVENTS BUGS)

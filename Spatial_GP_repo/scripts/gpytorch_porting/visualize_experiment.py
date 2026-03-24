@@ -222,8 +222,9 @@ def plot_performance(records, output_path, dataset_label, seed, mean_seeds):
 
         valid_cells = [c for c, r in zip(cells, test_rs) if r is not None]
         valid_rs = [r for r in test_rs if r is not None]
+        avg_r = np.mean(valid_rs) if valid_rs else float('nan')
         ax.plot(valid_cells, valid_rs, marker=marker, color=color,
-                label=f'{mode} M={M}', linewidth=1, markersize=5, alpha=0.8)
+                label=f'{mode} M={M} (avg={avg_r:.3f})', linewidth=1, markersize=5, alpha=0.8)
 
         if failed_cells:
             ax.scatter(failed_cells, [0] * len(failed_cells),
@@ -270,8 +271,9 @@ def plot_cross_dataset(records_108, records_64, output_path,
 
         valid_cells = [c for c, r in zip(cells, test_rs) if r is not None]
         valid_rs = [r for r in test_rs if r is not None]
+        avg_r = np.mean(valid_rs) if valid_rs else float('nan')
         ax.plot(valid_cells, valid_rs, marker=marker, color=color,
-                label=f'{ds_label}', linewidth=1.5, markersize=6, alpha=0.8)
+                label=f'{ds_label} (avg={avg_r:.3f})', linewidth=1.5, markersize=6, alpha=0.8)
 
         if failed_cells:
             ax.scatter(failed_cells, [0] * len(failed_cells),
