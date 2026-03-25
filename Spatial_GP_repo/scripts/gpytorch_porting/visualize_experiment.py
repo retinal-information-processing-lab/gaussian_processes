@@ -248,16 +248,17 @@ def plot_performance(records, output_path, dataset_label, seed, mean_seeds):
     print(f"  Saved: {output_path}")
 
 
-def plot_cross_dataset(records_108, records_64, output_path,
+def plot_cross_dataset(dataset_entries, output_path,
                        mode, M, seed, mean_seeds):
-    """Plot test_r for 108x108 vs 64x64 side by side."""
+    """Plot test_r across multiple datasets side by side.
+
+    Args:
+        dataset_entries: list of (records, ds_label, marker, color) tuples
+    """
     fig, ax = plt.subplots(figsize=(18, 6))
     cells = list(range(N_CELLS))
 
-    for records, ds_label, marker, color in [
-        (records_108, '108x108', 'o', 'tab:blue'),
-        (records_64, '64x64', 's', 'tab:orange'),
-    ]:
+    for records, ds_label, marker, color in dataset_entries:
         test_rs = []
         failed_cells = []
         for cell_id in cells:
@@ -331,6 +332,7 @@ def main():
     DATASET_MAP = {
         '108': 'datasets/PNAS_108x108_original.npz',
         '64': 'datasets/PNAS_64x64_center_crop_no_renorm.npz',
+        '48': 'datasets/PNAS_48x48_center_crop_no_renorm.npz',
     }
 
     all_exp_data = {}
@@ -390,12 +392,23 @@ def main():
             'ds_label': ds_label,
         }
 
-    # Cross-dataset comparison (if both 108 and 64 are available)
-    if '108' in all_exp_data and '64' in all_exp_data:
+    # Cross-dataset comparison (if 2+ datasets available)
+    if len(all_exp_data) >= 2:
         print(f"\nCross-dataset comparison...")
+        styles = {
+            '108': ('o', 'tab:blue'),
+            '64': ('s', 'tab:orange'),
+            '48': ('^', 'tab:green'),
+        }
+        entries = []
+        for ds_key in ['108', '64', '48']:
+            if ds_key in all_exp_data:
+                marker, color = styles[ds_key]
+                entries.append((all_exp_data[ds_key]['records'],
+                                all_exp_data[ds_key]['ds_label'],
+                                marker, color))
         plot_cross_dataset(
-            all_exp_data['108']['records'],
-            all_exp_data['64']['records'],
+            entries,
             experiments_dir / 'performance_cross_dataset.png',
             args.mode, args.M, args.seed, args.mean_seeds,
         )

@@ -11,3 +11,7 @@ __pycache__/
 
 # Images (output artifacts)
 imgs/*.png
+
+# Large datasets (NPZ/pkl files tracked via symlinks or README)
+datasets/*.npz
+datasets/samuele_data/

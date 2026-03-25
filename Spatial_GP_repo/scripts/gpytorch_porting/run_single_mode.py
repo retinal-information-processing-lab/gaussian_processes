@@ -1111,6 +1111,7 @@ def run_single_config(config):
         'final_eps_0y': final_eps_0y,
         'final_sigma_0': final_sigma_0,
         'gradient_mode': gradient_mode if mode != 'vargp_old' else None,
+        'n_px_side': n_px_side,
         'n_iterations_run': final_iteration,
         'stopped_early': stopped_early,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
@@ -1196,8 +1197,8 @@ def main():
                         help=f'RBF lengthscale, only used with --kernel-type rbf (default: {defaults["kernel"]["lengthscale"]})')
     parser.add_argument('--beta', type=float, default=defaults['kernel']['beta'], help=f'RF size (default: {defaults["kernel"]["beta"]})')
     parser.add_argument('--rho', type=float, default=defaults['kernel']['rho'], help=f'Smoothness (default: {defaults["kernel"]["rho"]})')
-    parser.add_argument('--eps-0x', type=float, default=defaults['kernel']['eps_0x'], help=f'RF center x (default: {defaults["kernel"]["eps_0x"]})')
-    parser.add_argument('--eps-0y', type=float, default=defaults['kernel']['eps_0y'], help=f'RF center y (default: {defaults["kernel"]["eps_0y"]})')
+    parser.add_argument('--eps-0x', type=float, default=None, help='RF center x (default: compute from STA)')
+    parser.add_argument('--eps-0y', type=float, default=None, help='RF center y (default: compute from STA)')
 
     # Link function parameters
     parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
@@ -1277,9 +1278,10 @@ def main():
 
     args = parser.parse_args()
 
-    # Handle eps_0x/eps_0y: if still at default (0.0), set to None so STA is used
-    eps_0x = args.eps_0x if args.eps_0x != defaults['kernel']['eps_0x'] else None
-    eps_0y = args.eps_0y if args.eps_0y != defaults['kernel']['eps_0y'] else None
+    # eps_0x/eps_0y: None (not provided) → compute from STA.
+    # Any float value (including 0.0) → use that value.
+    eps_0x = args.eps_0x  # None if not passed, float if passed
+    eps_0y = args.eps_0y
 
     # Build config from default_params.json, then overlay CLI args.
     # All argparse defaults already come from the same JSON, so only
