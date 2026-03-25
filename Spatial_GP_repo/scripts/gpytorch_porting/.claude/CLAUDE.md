@@ -81,6 +81,8 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
 
+**LSTA ground-truth RF centers**: `datasets/rf_centers_lsta.npz` contains ground-truth RF centers for all 41 cells from LSTA (Local Spike-Triggered Average) ellipse fits. Source: `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 LSTA grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md` for full documentation.
+
 ---
 
 ## Parameter Matching Table (PREVENTS BUGS)
