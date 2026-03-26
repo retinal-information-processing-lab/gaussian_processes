@@ -247,6 +247,7 @@ def run_canonical(exp_dir, resume=False):
             'status': 'diverged' if result.get('test_r') is None else 'success',
             'test_r': _round(result['test_r'], 4),
             'explained_var': _round(result['explained_var'], 4),
+            'adjusted_r2': _round(result.get('adjusted_r2'), 4),
             'final_loss': _round(result['final_loss'], 4),
             'time_total_s': _round(result['train_time'], 2),
             'time_estep_s': _round(result['time_estep_s'], 2),

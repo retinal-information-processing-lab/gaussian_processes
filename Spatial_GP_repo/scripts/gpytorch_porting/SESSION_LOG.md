@@ -1,5 +1,21 @@
 # Session Log
 
+## 2026-03-24: All-cells fitting, STA edge artifact investigation, stability fixes
+
+**Experiments run**: 1476 fits across 108x108, 64x64, 48x48 (41 cells x 3 seeds x 2 modes x 2 M values per dataset). Plus 123-run LSTA-init experiment on 64x64.
+
+**STA edge artifact**: 6/41 cells (0,5,6,15,22,39) get spurious STA peaks at image edges on 108x108 due to natural image correlation leakage. Confirmed via 32x32 crop STA, whitening analysis, and controlled re-initialization. Center crops (48x48, 64x64) avoid the artifact. Ground-truth RF centers from white noise ellipses (`datasets/rf_centers_ground_truth.npz`) fix initialization for all cells. Investigation: `investigations/sta_edge_artifact/`.
+
+**Stability fixes**: Subprocess isolation for GPU memory in `run_experiment.py`. F-step lambda0 overflow revert in `eigenspace_fstep.py` (root cause: LBFGS pushes A too high for low-firing cells). E-step f_mean revert. LBFGS crash guards. NaN graceful handling. `status: diverged` tracking. Working guidelines updated (rule 3.14: GPU smoke test discipline).
+
+**New dataset**: `PNAS_48x48_center_crop_no_renorm.npz` created. `rf_centers_ground_truth.npz` with RF centers from white noise/checkerboard ellipses for all 41 cells (72x72 LSTA grid, scale factor 1.5 to 108x108).
+
+**Metrics**: Added `compute_adjusted_r_squared` to `metrics.py` — Goldin et al. 2023 PNAS Eq. 5. Documented distinction from existing `compute_explained_variance`. Both tracked in results.jsonl.
+
+**Bug fixes**: `--eps-0x 0.0` sentinel bug (couldn't distinguish from "not provided"). Missing `n_px_side` in result dict for vargp_direct/default_gpy. `visualize_experiment.py` 48x48 support.
+
+**Pending for next session**: (1) Rerun 108x108, 64x64, 48x48 experiments with ground-truth RF init (only 64x64 done so far). (2) Training parameter exploration to maximize test_r (deferred). (3) The 108/64/48 experiments in `experiments/2026-03-24_massive_allcells_*` used STA init — compare with ground-truth init to quantify full benefit.
+
 ## 2026-03-10: Synthetic image generator — scoping finalized, handed off to diffusion worktree
 **Handoff (this repo)**: `.claude/handoffs/HANDOFF_2026-03-09_synthetic-image-generator-package.md`
 **Handoff (diffusion worktree)**: `../gpytorch_imagenet_diffusion/.../gpytorch_porting/.claude/handoffs/HANDOFF_2026-03-10_synthetic-image-generator-package.md`

@@ -7,7 +7,8 @@ implementations. These are pure functions with no mode-specific dependencies.
 Functions:
 - compute_r_squared: R² coefficient of determination
 - compute_pearson_correlation: Pearson correlation coefficient
-- compute_explained_variance: Explained variance normalized by cell reliability
+- compute_explained_variance: Explained variance (correlation ratio, NOT the paper's adjusted R²)
+- compute_adjusted_r_squared: Adjusted R² from Goldin et al. 2023 PNAS, Eq. 5
 
 Extracted from train.py during codebase reorganization (2025-02).
 """
@@ -73,20 +74,24 @@ def compute_pearson_correlation(y_true, y_pred):
 def compute_explained_variance(r_test, f_pred):
     """Compute explained variance normalized by cell reliability.
 
-    This matches the reference implementation in utils.py:explained_variance().
+    NOTE: This is NOT the adjusted R² from Goldin et al. 2023 (Eq. 5).
+    Use compute_adjusted_r_squared() for that metric.
 
-    Explained variance = (Pearson r with predictions) / (cell reliability)
+    explained_var = mean_accuracy / reliability
 
-    where reliability is the correlation between even and odd trial halves.
-    A perfect model achieves explained_variance = 1.0.
+    This is a correlation ratio: it divides by reliability directly (not
+    sqrt(reliability)) and is not squared. Relationship to adjusted R²:
+        adjusted_r2 = explained_var² * reliability
+
+    Matches the reference implementation in utils.py:explained_variance().
 
     Args:
         r_test: Test responses with repetitions, shape (n_repeats, n_images)
         f_pred: Predicted firing rates, shape (n_images,)
 
     Returns:
-        explained_var: Fraction of explainable variance captured (scalar)
-        reliability: Cell reliability (scalar)
+        explained_var: Fraction of explainable correlation captured (scalar)
+        reliability: Cell reliability = |corr(r_even, r_odd)| (scalar)
     """
     r_test = r_test.float()
     f_pred = f_pred.float()
@@ -107,3 +112,56 @@ def compute_explained_variance(r_test, f_pred):
     explained_var = accuracy / reliability
 
     return explained_var.item(), reliability.item()
+
+
+def compute_adjusted_r_squared(r_test, f_pred):
+    """Adjusted R² from Goldin et al. 2023 PNAS, Eq. 5.
+
+    Reference: "Scalable Gaussian process inference of neural responses to
+    natural images", Goldin et al., PNAS 2023 (doi:10.1073/pnas.2301150120).
+
+    Adjusted R² = (mean_accuracy / sqrt(reliability))²
+                = mean_accuracy² / reliability
+
+    where:
+        mean_accuracy = 0.5 * (corr(f_pred, r_even) + corr(f_pred, r_odd))
+        reliability   = corr(r_even, r_odd)
+
+    Based on the Spearman-Brown correction: the observed correlation between
+    prediction and noisy response is attenuated by sqrt(reliability). Dividing
+    by sqrt(reliability) recovers the correlation with the true (noise-free)
+    signal. Squaring gives the fraction of true signal variance explained.
+
+    A value of 1.0 means the model explains all signal variance given the
+    noise ceiling. Always >= 0 by construction (squared ratio).
+
+    This differs from compute_explained_variance(), which returns a correlation
+    ratio (not squared) and divides by reliability (not sqrt):
+        adjusted_r2 = explained_var² * reliability
+
+    Args:
+        r_test: Test responses with repetitions, shape (n_repeats, n_images)
+        f_pred: Predicted firing rates, shape (n_images,)
+
+    Returns:
+        adjusted_r2: Adjusted R² value (scalar)
+    """
+    r_test = r_test.float()
+    f_pred = f_pred.float()
+
+    # Split into even and odd repetitions
+    r_even = r_test[0::2, :].mean(dim=0)
+    r_odd = r_test[1::2, :].mean(dim=0)
+
+    # Reliability = correlation between even and odd halves
+    reliability = torch.corrcoef(torch.stack([r_even, r_odd]))[0, 1]
+
+    # Accuracy = average correlation with each half
+    accuracy_even = torch.corrcoef(torch.stack([f_pred, r_even]))[0, 1]
+    accuracy_odd = torch.corrcoef(torch.stack([f_pred, r_odd]))[0, 1]
+    mean_accuracy = 0.5 * (accuracy_even + accuracy_odd)
+
+    # Adjusted R² = mean_accuracy² / reliability
+    adjusted_r2 = mean_accuracy ** 2 / reliability
+
+    return adjusted_r2.item()

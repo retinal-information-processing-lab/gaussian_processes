@@ -81,7 +81,7 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
 
-**LSTA ground-truth RF centers**: `datasets/rf_centers_lsta.npz` contains ground-truth RF centers for all 41 cells from LSTA (Local Spike-Triggered Average) ellipse fits. Source: `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 LSTA grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md` for full documentation.
+**Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
 ---
 
@@ -147,7 +147,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 |------|---------|
 | `kernels.py` | ArcCosineKernel with RF structure, masking, gradient modes. ArcCosineKernelNormalized, ArcSineKernel, LocalRBFKernel. `create_kernel()` factory, `KERNEL_TYPES`. `params_in_bounds()` + `clamp_hyperparameters()` for LBFGS defense. |
 | `likelihoods.py` | PoissonLikelihood with A, lambda0. `params_in_bounds()` + `clamp_params()` for LBFGS defense. Bounds: A_MAX=10, lambda0 in [-50, 50]. |
-| `metrics.py` | Evaluation functions (r², Pearson r, explained variance) |
+| `metrics.py` | Evaluation functions (Pearson r, explained variance, adjusted R² per Goldin et al. 2023 Eq. 5) |
 | `utils.py` | Shared utilities (lambda0_given_A, compute_f_mean, STA-based RF center) |
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |

@@ -1,0 +1,8 @@
+name: massive_allcells_108
+full_name: 2026-03-24_massive_allcells_108
+description: 'Rerun with F-step fix: all 41 cells, 108x108, M=[300,2910], seeds=[1,2,3]'
+created: '2026-03-24T12:58:49'
+git_commit: a0787f1
+git_dirty: true
+source_config: /home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting/configs/massive_allcells_108.yaml
+type: canonical

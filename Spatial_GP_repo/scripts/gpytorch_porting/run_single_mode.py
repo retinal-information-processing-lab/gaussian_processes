@@ -54,7 +54,7 @@ from kernels import GRADIENT_MODES, KERNEL_TYPES, create_kernel
 from likelihoods import PoissonLikelihood
 from gpy_model import VariationalGPModel
 from gpy_training import train_gpy_default, predict
-from metrics import compute_pearson_correlation, compute_explained_variance
+from metrics import compute_pearson_correlation, compute_explained_variance, compute_adjusted_r_squared
 from eigenspace_training import train_eigenspace, predict_eigenspace
 from eigenspace_model import DirectVGPModel
 from eigenspace_utils import EIGVAL_TOL
@@ -827,6 +827,7 @@ def run_single_config(config):
         r_test_mean = r_test.mean(dim=0)
         test_corr = compute_pearson_correlation(r_test_mean.float(), f_pred.float())
         explained_var, reliability = compute_explained_variance(r_test.float(), f_pred.float())
+        adjusted_r2 = compute_adjusted_r_squared(r_test.float(), f_pred.float())
         train_corr = float('nan')
 
         final_loss = fit_model.get('loss', 0.0)
@@ -929,6 +930,7 @@ def run_single_config(config):
         r_test_mean = r_test.mean(dim=0)
         test_corr = compute_pearson_correlation(r_test_mean, f_pred)
         explained_var, reliability = compute_explained_variance(r_test, f_pred)
+        adjusted_r2 = compute_adjusted_r_squared(r_test, f_pred)
 
         train_preds = predict_eigenspace(model, X_train)
         train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
@@ -1020,6 +1022,7 @@ def run_single_config(config):
             r_test_mean = r_test.mean(dim=0)
             test_corr = compute_pearson_correlation(r_test_mean, f_pred)
             explained_var, reliability = compute_explained_variance(r_test, f_pred)
+            adjusted_r2 = compute_adjusted_r_squared(r_test, f_pred)
 
             train_preds = predict(model, likelihood, X_train, device=device,
                                   jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
@@ -1032,6 +1035,7 @@ def run_single_config(config):
             r_test_mean = r_test.mean(dim=0)
             test_corr = float('nan')
             explained_var = float('nan')
+            adjusted_r2 = float('nan')
             reliability = compute_explained_variance(r_test, f_pred)[1]
             train_corr = float('nan')
 
@@ -1097,6 +1101,7 @@ def run_single_config(config):
         'train_r': float(train_corr) if not np.isnan(train_corr) else None,
         'test_r': float(test_corr) if not np.isnan(test_corr) else None,
         'explained_var': float(explained_var) if not np.isnan(explained_var) else None,
+        'adjusted_r2': float(adjusted_r2) if not np.isnan(adjusted_r2) else None,
         'reliability': float(reliability) if not np.isnan(reliability) else None,
         'final_loss': float(losses[-1]) if losses and not np.isnan(losses[-1]) else None,
         'pred_std': pred_std,
