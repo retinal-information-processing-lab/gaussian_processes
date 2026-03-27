@@ -114,8 +114,8 @@ Use `--gradient-mode MODE` in CLI:
 
 | Mode | Description |
 |------|-------------|
-| `vargp_old` | Original varGP implementation (reference baseline) |
-| `vargp_direct` | Eigenspace projection, exact match to varGP (use --float32) |
+| `vargp_old` | utils.py varGP() -- our approximation of the paper (NOT identical to paper's code, see Reference Code section) |
+| `vargp_direct` | Eigenspace reimplementation, same algorithm as vargp_old but with GPyTorch patterns |
 | `default_gpy` | Standard GPyTorch variational inference with LBFGS (use --float32)|
 
 **Note**: `vargp_style` mode has been deprecated and moved to `deprecated/` folder. Use `vargp_direct` or `default_gpy` instead.
@@ -282,7 +282,19 @@ See `EIGENSPACE_REFERENCE.md` for full implementation details.
 
 ## Reference Code
 
-### Original varGP (utils.py)
+### Three Codebases (IMPORTANT DISTINCTION)
+
+There are three distinct implementations. They are NOT equivalent:
+
+1. **Paper's actual code** (Goldin et al. 2023 GitHub notebook): `Variational GP-Single change-GPU-ver2.0.ipynb`. We cannot run it but extracted its structure. Key unique features: F-step interleaved inside E-step (damped Newton), no Amp parameter, no eigenspace projection, scipy L-BFGS-B, float64.
+
+2. **vargp_old** (`utils.py:varGP()`): Our approximation of the paper's approach. Has modifications NOT in the paper: Amp parameter, eigenspace projection. Does NOT interleave F-step (hardcoded `for i_estep in range(1)` loop). Uses torch LBFGS, float32.
+
+3. **vargp_direct** (`eigenspace_*.py`): GPyTorch-based reimplementation. Same algorithmic structure as vargp_old but with GPyTorch patterns (softplus constraints, autograd gradients).
+
+See `investigations/paper_gap/INVESTIGATION_LOG.md` Finding 18 for the full three-way comparison table.
+
+### Original varGP (utils.py) -- vargp_old
 | Function | Location | Purpose |
 |----------|----------|---------|
 | `varGP()` | utils.py:5291 | Main training function |

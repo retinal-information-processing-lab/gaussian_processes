@@ -22,7 +22,7 @@ contribute a few percent. Listed roughly by category, not priority.
 | O6 | E-step divergence recovery (old lowers logA, ours reverts) | NOT TESTED | Unknown |
 | O7 | Early stopping criteria difference (relative vs absolute) | NOT ISOLATED | Unknown |
 | O8 | LBFGS history size in F-step (n_fstep vs fixed 100 in M-step) | NOT TESTED | Likely small |
-| O9 | F-step interleaving: paper updates A INSIDE each E-step iter | CONFIRMED DIFFERENT | Likely large (see Finding 14-15) |
+| O9 | F-step interleaving: paper updates A INSIDE each E-step iter | PAPER ONLY (neither vargp_old nor direct has this) | Unknown (see Finding 18) |
 | O10 | Amp parameter: paper has NO Amp, ours adds it to C matrix | CONFIRMED | fix_Amp works; free Amp grows 5-284x |
 | O11 | M-step optimizer: paper uses scipy L-BFGS-B, ours torch LBFGS | CONFIRMED DIFFERENT | Unknown |
 | O12 | Float64 M-step (paper) vs float32 (ours) | CONFIRMED DIFFERENT | Unknown |
@@ -74,11 +74,11 @@ contribute a few percent. Listed roughly by category, not priority.
 | U6 | Paper's LBFGS settings | Was UNKNOWN | RESOLVED: scipy L-BFGS-B, default history |
 
 ### Interaction effects
-- **I3 + O9 (chicken-and-egg)**: Paper's A=1e-4 only works because the paper
-  interleaves A updates inside E-step. Our separate F-step can't bootstrap A fast
-  enough, so kernel params get near-zero gradients and M-step is stuck.
+- ~~I3 + O9 (chicken-and-egg)~~: FALSIFIED. M-step stagnation was caused by
+  LBFGS Hessian corruption (O13), not A being too small.
 - O3 + O10: sigma_0 stuck + Amp absorbing scale = kernel expressiveness reduced
 - I1 + O10: tight beta + free Amp = Amp explodes to compensate for small kernel values
+- O13 + O10: Frozen Amp corrupts LBFGS for ALL other params (bug, now fixed)
 
 ---
 
@@ -400,12 +400,14 @@ Paper's code (Jupyter notebook) vs our code:
 
 **Critical**: Paper has NO Amp. Our utils.py added it.
 
-## Finding 14: F-step Interleaving
+## Finding 14: F-step Structure (CORRECTED in Finding 18)
 
 Paper: (A, lambda0) updated via damped Newton (alpha=0.25) at EVERY E-step
-iteration (50x per EM cycle). A bootstraps during E-step, enabling kernel learning.
+iteration. This is a PAPER-ONLY feature.
 
-Ours: logA updated ONCE per EM cycle after E-step. A stays frozen during E-step.
+BOTH vargp_old and vargp_direct update A ONCE per EM cycle, after all Newton
+steps. The vargp_old `for i_estep in range(1)` loop is hardcoded to 1.
+See Finding 18 for the full three-way comparison.
 
 ## Experiment 4: Paper Init (Amp free)
 
@@ -461,11 +463,76 @@ Tested A=0.01 (our default, 100x larger than paper's 1e-4) with fix_Amp.
 M-step still frozen (before LBFGS fix). The issue was NOT A being too small
 for gradient signal -- it was the corrupted LBFGS.
 
+## Finding 18: Three-Way Codebase Comparison (CRITICAL CORRECTION)
+
+There are THREE distinct codebases, not two:
+1. **Paper (GitHub notebook)**: The actual published code. We cannot run it.
+2. **vargp_old (utils.py)**: Our APPROXIMATION of the paper, with modifications.
+3. **vargp_direct (eigenspace_*)**: Our GPyTorch-based reimplementation.
+
+vargp_old is NOT the paper's code. It was written to replicate the paper but
+has significant modifications. Key differences between all three:
+
+### F-step Location (MAJOR CORRECTION)
+
+vargp_old does NOT interleave the F-step inside the E-step. The outer loop
+`for i_estep in range(1)` is HARDCODED TO 1 (comment: "NOTE THAT THIS LOOP
+IS FAKE. ITS A HARD CODED 1", utils.py line 5649).
+
+| Code | F-step location |
+|------|----------------|
+| Paper | INSIDE each E-step Newton iter (damped Newton, alpha=0.25) |
+| vargp_old | AFTER all Newton steps (LBFGS on logA, once per EM cycle) |
+| vargp_direct | AFTER all Newton steps (LBFGS on raw_A, once per EM cycle) |
+
+vargp_old and vargp_direct have the SAME F-step structure. Only the paper
+interleaves. F-step interleaving is a paper-only feature neither of our codes has.
+
+### Full Three-Way Comparison
+
+| Feature | Paper (GitHub) | vargp_old (utils.py) | vargp_direct |
+|---------|---------------|---------------------|--------------|
+| F-step | Inside each Newton iter | After all Newton steps | After all Newton steps |
+| F-step method | Damped Newton (2x2 Hessian) | LBFGS on logA | LBFGS on raw_A |
+| F-step threshold | N/A (self-regulating) | f_mean.mean() > 100 | f_mean.max() > 1000 |
+| Amp | NO | YES (direct, unconstrained) | YES (softplus) |
+| sigma_0 | exp(sigma_b) stored as sigma_b | direct (unconstrained) | exp(raw_sigma_0) |
+| Eigenspace | NONE (full M x M) | YES (EIGVAL_TOL=1e-4) | YES (same) |
+| M-step optimizer | scipy L-BFGS-B | torch LBFGS | torch LBFGS |
+| Float precision | float64 | float32 | float32 |
+| Diverge recovery | Damped Newton self-reg | Lowers logA actively | Reverts m,V only |
+| E-step convergence | Unknown | norm < 1e-5 break | None (runs all) |
+| Default nEstep | 50 | 50 (but we pass 10) | 10 |
+| Default nMstep | 20 (scipy internal) | 20 | 10 |
+| Kernel params | 5 (no Amp) | 6 (with Amp) | 6 (with Amp) |
+
+### What Explains Each Performance Gap
+
+**Gap: vargp_old (0.678) vs vargp_direct (0.638) = +0.040**
+
+Both have same F-step structure. Differences that explain the gap:
+- sigma_0: direct vs exp transform (sigma_0 learns in old, stuck in direct)
+- Amp: direct vs softplus (old Amp grows to 5-13, direct Amp more constrained)
+- Diverge recovery: old actively lowers logA (safety mechanism)
+- F-step threshold: old more conservative (mean>100 vs max>1000)
+
+**Gap: paper vs vargp_old = UNKNOWN (can't run paper code)**
+
+Additional differences that could explain further gap:
+- F-step interleaving (paper only)
+- No Amp (paper only)
+- No eigenspace projection (paper only)
+- scipy L-BFGS-B (paper only)
+- Float64 precision (paper only)
+
 ## Current Status
 
-vargp_old with paper config still outperforms (avg 0.678 vs our best 0.638).
-Remaining differences to test:
-- **F-step interleaving** (paper: A/lambda0 updated inside each E-step iter)
-- Amp as extra parameter (even with softplus, vargp_old's Amp grows to 5-13)
-- E-step divergence recovery (old lowers logA)
-- scipy L-BFGS-B vs torch LBFGS
+To close Gap A (vargp_direct → vargp_old, +0.040), the most impactful changes:
+1. sigma_0 direct parameterization (matching vargp_old)
+2. Conservative F-step threshold (mean>100)
+3. Divergence recovery (lower logA on instability)
+
+To close Gap B (vargp_old → paper, unknown magnitude):
+4. F-step interleaving (paper-only, NEW capability)
+5. Remove Amp parameter (match paper architecture)
+6. Optionally: remove eigenspace projection when M is small
