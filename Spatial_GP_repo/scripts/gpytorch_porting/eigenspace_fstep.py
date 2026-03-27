@@ -88,8 +88,10 @@ def fstep_eigenspace(
         # Compute f_mean
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        # Stability check: max catches localized blowup, NaN catches overflow
-        if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+        # Stability check: mean>100 catches global blowup (matching varGP),
+        # max>500 catches localized blowup, NaN catches overflow
+        if (f_mean.mean().item() > 100 or f_mean.max().item() > 500
+                or torch.any(torch.isnan(f_mean))):
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
         # Log-likelihood (negative for minimization)
@@ -229,7 +231,8 @@ def damped_newton_update_A_lambda0(
             if trial_linear.max().item() > 80.0:
                 break
             trial_f = torch.exp(trial_linear)
-            if trial_f.max().item() > stability_threshold or torch.any(torch.isnan(trial_f)):
+            if (trial_f.mean().item() > 100 or trial_f.max().item() > 500
+                    or torch.any(torch.isnan(trial_f))):
                 break
 
             # Accept step

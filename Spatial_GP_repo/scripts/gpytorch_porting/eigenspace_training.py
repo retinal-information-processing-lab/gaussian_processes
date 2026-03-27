@@ -226,9 +226,10 @@ def train_eigenspace(
                     estep_idx=i_estep
                 ))
 
-            # Check for divergence: f_mean.max() catches localized blowup.
-            # Revert to pre-step state if triggered (matches original varGP).
-            if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+            # Check for divergence: mean>100 catches global blowup (matching varGP F-step),
+            # max>500 catches localized blowup. Both trigger revert.
+            if (f_mean.mean().item() > 100 or f_mean.max().item() > 500
+                    or torch.any(torch.isnan(f_mean))):
                 model.update_variational_params(m_b_prev, V_b_prev)
                 if interleave_fstep:
                     with torch.no_grad():

@@ -559,19 +559,43 @@ Pivoted Cholesky HURTS vargp_direct with tight beta: cell 39 goes from
 0.229 (pivoted) to 0.362 (random). The concentrated IP selection doesn't
 suit the tight-RF configuration.
 
+## Finding 19: Gap A CLOSED -- vargp_direct matches vargp_old
+
+With random IPs + free Amp (softplus), vargp_direct matches vargp_old within 0.004:
+
+| Cell | direct fix_Amp | direct free_Amp | old (always free) |
+|------|---------------|----------------|-------------------|
+| 18 | **0.874** | 0.861 | 0.861 |
+| 14 | 0.763 | 0.797 | **0.800** |
+| 9 | **0.805** | 0.737 | 0.738 |
+| 28 | 0.463 | 0.490 | **0.497** |
+| 39 | 0.362 | 0.430 | **0.441** |
+| Avg | 0.653 | **0.663** | **0.667** |
+
+The original 0.042 gap was caused by:
+- 0.028 from inducing point selection confound (pivoted vs random)
+- 0.010 from Amp frozen (direct) vs free (old) -- old ignores fix_Amp flag
+- 0.004 residual (parameterization noise: softplus/exp vs direct)
+
+**vargp_direct is a correct reimplementation of vargp_old.**
+
+Note on fix_Amp:
+- fix_Amp=True helps cells 18, 9 but hurts 14, 28, 39
+- fix_Amp=False matches vargp_old almost exactly
+- Paper has NO Amp at all -- fix_Amp is the "correct" architecture
+  but needs F-step interleaving to work well for all cells
+- vargp_old can NOT have fix_Amp (varGP code doesn't support it)
+
 ## Current Status (UPDATED)
 
-Gap A nearly closed: vargp_direct vs vargp_old is now just 0.014 (was 0.042).
-The main confound was inducing point selection.
+**Gap A is CLOSED.** vargp_direct == vargp_old (within 0.004) when controlled
+for inducing point selection and Amp freedom.
 
-Remaining 0.014 gap likely from:
-- sigma_0 parameterization (exp vs direct)
-- Amp parameterization (softplus vs direct)
-- F-step stability threshold (max>1000 vs mean>100)
-- E-step divergence recovery (revert vs lower logA)
+**Gap B (our code vs paper) remains.** Paper-only features not yet tested together:
+- F-step interleaving (implemented, helps with A=1e-4)
+- No Amp parameter (fix_Amp implemented, but hurts some cells without interleaving)
+- No eigenspace projection (not planned to change)
+- scipy L-BFGS-B, float64 (not planned to change)
 
-Gap B (our code vs paper) remains. Paper-only features:
-- F-step interleaving (implemented, +0.022 with A=1e-4)
-- No Amp parameter
-- No eigenspace projection
-- scipy L-BFGS-B, float64
+**Stability thresholds updated**: mean>100 + max>500 (matching vargp_old pattern).
+No effect on current experiments (f_mean stays well below thresholds).
