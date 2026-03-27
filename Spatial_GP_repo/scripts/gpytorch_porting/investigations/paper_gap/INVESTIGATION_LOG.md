@@ -559,43 +559,60 @@ Pivoted Cholesky HURTS vargp_direct with tight beta: cell 39 goes from
 0.229 (pivoted) to 0.362 (random). The concentrated IP selection doesn't
 suit the tight-RF configuration.
 
-## Finding 19: Gap A CLOSED -- vargp_direct matches vargp_old
+## Finding 19: Gap A FULLY CLOSED -- vargp_direct matches vargp_old
 
-With random IPs + free Amp (softplus), vargp_direct matches vargp_old within 0.004:
+Controlled experiment: same random IPs, free Amp, paper init (beta=0.0452,
+rho=0.0821, A=1e-4, lambda0=-1), 108x108, M=250, n_train=3160, 80 iters.
 
-| Cell | direct fix_Amp | direct free_Amp | old (always free) |
-|------|---------------|----------------|-------------------|
-| 18 | **0.874** | 0.861 | 0.861 |
-| 14 | 0.763 | 0.797 | **0.800** |
-| 9 | **0.805** | 0.737 | 0.738 |
-| 28 | 0.463 | 0.490 | **0.497** |
-| 39 | 0.362 | 0.430 | **0.441** |
-| Avg | 0.653 | **0.663** | **0.667** |
+Three configurations tested to isolate each factor:
 
-The original 0.042 gap was caused by:
-- 0.028 from inducing point selection confound (pivoted vs random)
-- 0.010 from Amp frozen (direct) vs free (old) -- old ignores fix_Amp flag
-- 0.004 residual (parameterization noise: softplus/exp vs direct)
+| Cell | direct (exp sig0) | direct (identity sig0) | vargp_old |
+|------|-------------------|----------------------|-----------|
+| 18 | 0.861 | **0.864** | 0.861 |
+| 14 | 0.797 | **0.817** | 0.800 |
+| 9 | 0.737 | 0.740 | 0.738 |
+| 28 | 0.490 | 0.490 | **0.497** |
+| 39 | 0.430 | 0.434 | **0.441** |
+| Avg | 0.663 | **0.669** | **0.667** |
 
-**vargp_direct is a correct reimplementation of vargp_old.**
+With identity (direct) sigma_0 parameterization: **avg difference = +0.002** (within noise).
+Cell 14 improved notably (0.797 -> 0.817) because sigma_0 can now learn (0.893 vs stuck at 0.985).
 
-Note on fix_Amp:
-- fix_Amp=True helps cells 18, 9 but hurts 14, 28, 39
-- fix_Amp=False matches vargp_old almost exactly
+**The original 0.042 gap was caused by three confounds:**
+
+| Source | Contribution | How identified |
+|--------|-------------|----------------|
+| Inducing point selection (pivoted vs random) | ~0.028 | Finding 18 |
+| Frozen vs free Amp | ~0.010 | fix_Amp experiment |
+| sigma_0 exp vs direct parameterization | ~0.004 | This experiment |
+| **Total explained** | **~0.042** | |
+
+**CONCLUSION: vargp_direct is a correct reimplementation of vargp_old.**
+The training algorithms produce equivalent results when given identical inputs.
+All differences were in the preprocessing/configuration pipeline, not the math.
 - Paper has NO Amp at all -- fix_Amp is the "correct" architecture
   but needs F-step interleaving to work well for all cells
 - vargp_old can NOT have fix_Amp (varGP code doesn't support it)
 
 ## Current Status (UPDATED)
 
-**Gap A is CLOSED.** vargp_direct == vargp_old (within 0.004) when controlled
-for inducing point selection and Amp freedom.
+**Gap A FULLY CLOSED.** vargp_direct matches vargp_old within 0.002 avg adj_r2
+when given identical inputs (random IPs, free Amp, direct sigma_0 parameterization).
+The original 0.042 gap was entirely from confounds, not algorithm bugs.
+See Finding 19 for the full decomposition.
 
-**Gap B (our code vs paper) remains.** Paper-only features not yet tested together:
-- F-step interleaving (implemented, helps with A=1e-4)
-- No Amp parameter (fix_Amp implemented, but hurts some cells without interleaving)
-- No eigenspace projection (not planned to change)
-- scipy L-BFGS-B, float64 (not planned to change)
+**Gap B (our code vs paper) is now the sole focus.** Our best avg on 5-cell
+subset is 0.669 (matching vargp_old). Paper claims 36/41 cells > 0.8 adj_r2.
 
-**Stability thresholds updated**: mean>100 + max>500 (matching vargp_old pattern).
-No effect on current experiments (f_mean stays well below thresholds).
+Paper-only features not yet fully tested:
+- F-step interleaving (implemented, +0.022 with A=1e-4, inconsistent with A=0.01)
+- No Amp parameter (fix_Amp available, reduces avg ~0.01 vs free Amp)
+- No eigenspace projection (would need major refactor)
+- scipy L-BFGS-B (vs torch LBFGS)
+- float64 (vs float32)
+
+**Changes to apply permanently after investigation concludes:**
+- sigma_0: switch from exp to direct (identity) parameterization (stash saved)
+- LBFGS: filter requires_grad=False params (already committed)
+- f_mean thresholds: mean>100 + max>500 (already in code)
+- ip_selection: document that vargp_old forces random regardless of config
