@@ -50,8 +50,8 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
     if n_mstep == 0:
         return
 
-    # Get kernel parameters
-    kernel_params = list(kernel.parameters())
+    # Get kernel parameters (exclude frozen params to avoid LBFGS Hessian corruption)
+    kernel_params = [p for p in kernel.parameters() if p.requires_grad]
 
     optimizer = torch.optim.LBFGS(
         kernel_params,
