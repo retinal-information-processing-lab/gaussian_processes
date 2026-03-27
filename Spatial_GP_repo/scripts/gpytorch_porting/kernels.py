@@ -197,8 +197,10 @@ class ArcCosineKernel(Kernel):
             name='raw_sigma_0',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        # Register positivity constraint
-        self.register_constraint('raw_sigma_0', Positive())
+        # Register positivity constraint with exp transform (not softplus)
+        # Exp transform: raw = log(value), so LBFGS optimizes in log-space directly.
+        # Softplus warps the optimization landscape and causes sigma_0 to get stuck.
+        self.register_constraint('raw_sigma_0', Positive(transform=torch.exp, inv_transform=torch.log))
 
         # Now set the actual value via the property (applies inverse transform)
         self.sigma_0 = sigma_0
@@ -977,7 +979,7 @@ class SimpleArcCosineKernel(Kernel):
             name='raw_sigma_0',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        self.register_constraint('raw_sigma_0', Positive())
+        self.register_constraint('raw_sigma_0', Positive(transform=torch.exp, inv_transform=torch.log))
         self.sigma_0 = sigma_0
 
     @property
@@ -1050,7 +1052,7 @@ class SimpleArcCosineNormalizedKernel(Kernel):
             name='raw_sigma_0',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        self.register_constraint('raw_sigma_0', Positive())
+        self.register_constraint('raw_sigma_0', Positive(transform=torch.exp, inv_transform=torch.log))
         self.sigma_0 = sigma_0
 
     @property
@@ -1141,9 +1143,9 @@ def test_params_in_bounds():
     kernel = ArcCosineKernel(n_px_side=10, sigma_0=1.0, Amp=1.0)
     assert kernel.params_in_bounds(), "Fresh kernel should be in bounds"
 
-    # Push Amp above AMP_MAX (Positive() uses softplus: softplus(x) ≈ x for large x)
+    # Push Amp above AMP_MAX (exp transform: exp(1100) >> AMP_MAX=1000)
     with torch.no_grad():
-        kernel.raw_Amp.fill_(1100.0)  # softplus(1100) ≈ 1100 > AMP_MAX=1000
+        kernel.raw_Amp.fill_(10.0)  # exp(10) ≈ 22026 > AMP_MAX=1000
     assert not kernel.params_in_bounds(), "Amp >> AMP_MAX should be out of bounds"
 
     # Reset

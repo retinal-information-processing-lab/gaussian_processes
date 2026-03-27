@@ -903,6 +903,7 @@ def run_single_config(config):
                 stop_thresh=stop_thresh,
                 min_iterations=min_iterations,
                 stability_threshold=stability_threshold,
+                fix_Amp=config.get('fix_Amp', False),
             )
 
         train_time = time.time() - start_time
@@ -1123,8 +1124,8 @@ def run_single_config(config):
         # Keep references for plotting (not serialized to JSON)
         '_predictions': predictions,
         '_r_test_mean': r_test_mean,
-        '_model': model,
-        '_likelihood': likelihood,
+        '_model': model if mode != 'vargp_old' else None,
+        '_likelihood': likelihood if mode != 'vargp_old' else None,
         '_indices_train': indices_train,
         '_STA_init_2d': STA_init_2d,
         '_STA_train_2d': _compute_sta_2d(X[indices_train], r[indices_train], n_px_side),

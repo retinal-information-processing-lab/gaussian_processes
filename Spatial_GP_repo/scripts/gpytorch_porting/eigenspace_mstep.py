@@ -316,9 +316,9 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
             warnings.warn(f"M-step: {nan_grad_count} gradients contain NaN/Inf")
 
         # ===== 7. Set parameter gradients =====
-        # Apply softplus transform correction for sigma_0 and Amp
-        # softplus'(x) = sigmoid(x)
-        kernel.raw_sigma_0.grad = dL['sigma_0'] * torch.sigmoid(kernel.raw_sigma_0)
+        # sigma_0: exp transform -> d(exp(raw))/d(raw) = exp(raw) = sigma_0
+        kernel.raw_sigma_0.grad = dL['sigma_0'] * kernel.sigma_0
+        # Amp: softplus transform -> d(softplus(raw))/d(raw) = sigmoid(raw)
         kernel.raw_Amp.grad = dL['Amp'] * torch.sigmoid(kernel.raw_Amp)
 
         # Direct gradients for other parameters

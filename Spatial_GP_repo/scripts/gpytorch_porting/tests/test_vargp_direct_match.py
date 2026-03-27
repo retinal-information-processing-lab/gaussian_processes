@@ -105,9 +105,10 @@ def test_softplus_chain_rule(verbose=False):
     not the full ELBO. Uses finite differences as ground truth.
 
     d(K.sum())/d(raw_sigma_0) should equal:
-        d(K.sum())/d(sigma_0) * sigmoid(raw_sigma_0)
+        d(K.sum())/d(sigma_0) * exp(raw_sigma_0) = d(K.sum())/d(sigma_0) * sigma_0
+    For Amp (softplus): d(K.sum())/d(raw_Amp) = d(K.sum())/d(Amp) * sigmoid(raw_Amp)
     """
-    print("\n=== Test 1: Softplus Chain Rule Verification ===")
+    print("\n=== Test 1: Constraint Chain Rule Verification ===")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dtype = torch.float64
@@ -149,9 +150,14 @@ def test_softplus_chain_rule(verbose=False):
             print(f"    SKIP: {param_name} not in dK")
             continue
 
-        # Apply chain rule: dK/d(raw) = dK/d(param) * sigmoid(raw)
-        sigmoid_raw = torch.sigmoid(raw_val)
-        analytical_draw = analytical_dparam * sigmoid_raw
+        # Apply chain rule: depends on constraint type
+        # sigma_0 uses exp: d(exp(raw))/d(raw) = exp(raw) = sigma_0
+        # Amp uses softplus: d(softplus(raw))/d(raw) = sigmoid(raw)
+        if param_name == 'sigma_0':
+            chain_factor = transformed_val  # exp(raw) = sigma_0
+        else:  # Amp
+            chain_factor = torch.sigmoid(raw_val.squeeze())
+        analytical_draw = analytical_dparam * chain_factor
 
         # Compute finite difference gradient w.r.t. raw parameter
         with torch.no_grad():

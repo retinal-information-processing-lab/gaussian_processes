@@ -101,7 +101,8 @@ def train_eigenspace(
     stop_window: int = 20,
     stop_thresh: float = 5e-3,
     min_iterations: int = 10,
-    stability_threshold: float = 1000
+    stability_threshold: float = 1000,
+    fix_Amp: bool = False,
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -148,6 +149,11 @@ def train_eigenspace(
     n_b = len(state.eigvals_b)
     M = model.X_tilde.shape[0]
     print(f"Eigenspace dimension: n_b={n_b} (from M={M} inducing points)")
+
+    # Freeze Amp if requested (paper's code has no Amp parameter)
+    if fix_Amp:
+        model.kernel.raw_Amp.requires_grad_(False)
+        print(f"  Amp FROZEN at {model.kernel.Amp.item():.4f} (fix_Amp=True)")
 
     time_estep_total = 0.0
     time_mstep_total = 0.0
