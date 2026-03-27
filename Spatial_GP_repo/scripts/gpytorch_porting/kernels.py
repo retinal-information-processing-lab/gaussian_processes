@@ -197,10 +197,12 @@ class ArcCosineKernel(Kernel):
             name='raw_sigma_0',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        # Register positivity constraint with exp transform (not softplus)
-        # Exp transform: raw = log(value), so LBFGS optimizes in log-space directly.
-        # Softplus warps the optimization landscape and causes sigma_0 to get stuck.
-        self.register_constraint('raw_sigma_0', Positive(transform=torch.exp, inv_transform=torch.log))
+        # INVESTIGATION: Direct parameterization (identity transform) matching vargp_old.
+        # raw_sigma_0 = sigma_0 directly. Positivity via clamp(min=1e-10).
+        # Revert to exp transform after testing: Positive(transform=torch.exp, inv_transform=torch.log)
+        _clamp = lambda x: x.clamp(min=1e-10)
+        _identity = lambda x: x
+        self.register_constraint('raw_sigma_0', Positive(transform=_clamp, inv_transform=_identity))
 
         # Now set the actual value via the property (applies inverse transform)
         self.sigma_0 = sigma_0
