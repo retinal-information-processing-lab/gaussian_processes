@@ -2,8 +2,13 @@
 """
 Parameter sweep: find best vargp_direct configuration.
 
+All 41 cells x 3 seeds x 6 configs = 738 runs.
+
 Designed to run unattended in background:
   nohup python investigations/paper_gap/run_sweep.py > investigations/paper_gap/sweep.log 2>&1 &
+
+RESUME-SAFE: If interrupted and restarted, skips already-completed runs
+by checking sweep_results.jsonl for existing (config_name, cell, seed) tuples.
 
 Results saved to:
   investigations/paper_gap/sweep_results.jsonl  (machine-readable, one JSON per run)
@@ -16,14 +21,15 @@ Investigation rules (MANDATORY):
 
 All configs use lambda0_init=-1 (paper's value).
 """
-import sys, os, json, subprocess, time, tempfile, datetime
+import sys, os, json, subprocess, time, tempfile, datetime, gc
 import numpy as np
 
 PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJ)
 from run_single_mode import build_config_from_defaults
 
-CELLS = [18, 14, 9, 28, 39]
+CELLS = list(range(41))
+SEEDS = [1, 2, 3]
 DATA_108 = os.path.join(PROJ, 'datasets', 'PNAS_108x108_original.npz')
 RF_PATH = os.path.join(PROJ, 'datasets', 'rf_centers_ground_truth.npz')
 RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sweep_results.jsonl')
@@ -71,7 +77,22 @@ CONFIGS = [
 BETA_TO_RHO = {0.0452: 0.0821, 0.1: 0.1}
 
 
-def run_single_cell(cell_id, cfg):
+def load_completed_runs():
+    """Load already-completed (config_name, cell, seed) tuples from results file."""
+    completed = set()
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    key = (r.get('config_name'), r.get('cell'), r.get('seed'))
+                    completed.add(key)
+                except json.JSONDecodeError:
+                    continue
+    return completed
+
+
+def run_single_cell(cell_id, seed, cfg):
     """Run a single cell fit as subprocess. Returns result dict or None."""
     eps_0x, eps_0y = rf['norm_108'][cell_id]
     rho = BETA_TO_RHO[cfg['beta']]
@@ -80,7 +101,7 @@ def run_single_cell(cell_id, cfg):
         mode='vargp_direct',
         M=250,
         n_train=3160,
-        seed=1,
+        seed=seed,
         cell=cell_id,
         data_path=DATA_108,
         eps_0x=float(eps_0x),
@@ -114,15 +135,15 @@ def run_single_cell(cell_id, cfg):
                 result['config_name'] = cfg['name']
                 return result
 
-        print(f"    ERROR: No RESULT_JSON for cell {cell_id}, config {cfg['name']}")
+        print(f"    ERROR: No RESULT_JSON for cell {cell_id} seed {seed} config {cfg['name']}")
         if proc.stderr:
             print(f"    STDERR: {proc.stderr[-300:]}")
         return None
     except subprocess.TimeoutExpired:
-        print(f"    TIMEOUT: cell {cell_id}, config {cfg['name']} (>600s)")
+        print(f"    TIMEOUT: cell {cell_id} seed {seed} config {cfg['name']} (>600s)")
         return None
     except Exception as e:
-        print(f"    EXCEPTION: cell {cell_id}, config {cfg['name']}: {e}")
+        print(f"    EXCEPTION: cell {cell_id} seed {seed} config {cfg['name']}: {e}")
         return None
     finally:
         try:
@@ -137,9 +158,10 @@ def write_summary(all_results):
     lines.append("=" * 80)
     lines.append("PARAMETER SWEEP SUMMARY")
     lines.append(f"Generated: {datetime.datetime.now().isoformat(timespec='seconds')}")
-    lines.append(f"Cells: {CELLS}")
+    lines.append(f"Cells: 0-40 (all 41)")
+    lines.append(f"Seeds: {SEEDS}")
     lines.append(f"Rules: ip_selection=random, fix_Amp=True, sigma_0=direct")
-    lines.append(f"Fixed: 108x108, M=250, n_train=3160, seed=1, ground-truth RF, lambda0=-1")
+    lines.append(f"Fixed: 108x108, M=250, n_train=3160, ground-truth RF, lambda0=-1")
     lines.append("=" * 80)
 
     # Config descriptions
@@ -149,53 +171,72 @@ def write_summary(all_results):
         lines.append(f"  {cfg['name']:<22} beta={cfg['beta']}, A={cfg['A_init']}, "
                       f"intl={intl}, {cfg['n_estep']}/{cfg['n_mstep']}/{cfg['n_iterations']}")
 
-    # Results table
-    lines.append(f"\n{'Config':<22} | ", )
-    header = f"{'Config':<22} |"
-    for c in CELLS:
-        header += f" C{c:>2} |"
-    header += f" {'Avg':>6} |"
-    lines.append(header)
-    lines.append("-" * len(header))
+    # Compute per-cell mean adj_r2 (averaged over seeds)
+    lines.append("\n\nPer-config summary (mean over cells and seeds):")
+    lines.append(f"{'Config':<22} | {'mean':>6} {'median':>7} {'std':>6} | {'n>0.8':>5} {'n>0.6':>5} | {'n_runs':>6}")
+    lines.append("-" * 75)
 
-    config_avgs = {}
+    config_stats = {}
     for cfg in CONFIGS:
         name = cfg['name']
         cr = [r for r in all_results if r.get('config_name') == name]
-        vals = {r['cell']: r['adjusted_r2'] for r in cr}
-        row = f"{name:<22} |"
-        cell_vals = []
-        for c in CELLS:
-            v = vals.get(c, None)
-            if v is not None:
-                row += f" {v:>.3f} |"
-                cell_vals.append(v)
-            else:
-                row += f" {'FAIL':>5} |"
-        avg = np.mean(cell_vals) if cell_vals else 0
-        config_avgs[name] = avg
-        row += f" {avg:>6.3f} |"
-        lines.append(row)
+        if not cr:
+            continue
+
+        # Average over seeds per cell, then stats over cells
+        cell_means = {}
+        for cell_id in CELLS:
+            cell_runs = [r['adjusted_r2'] for r in cr if r['cell'] == cell_id]
+            if cell_runs:
+                cell_means[cell_id] = np.mean(cell_runs)
+
+        if not cell_means:
+            continue
+
+        vals = list(cell_means.values())
+        avg = np.mean(vals)
+        med = np.median(vals)
+        std = np.std(vals)
+        n_above_08 = sum(1 for v in vals if v > 0.8)
+        n_above_06 = sum(1 for v in vals if v > 0.6)
+        config_stats[name] = {'mean': avg, 'median': med, 'n_above_08': n_above_08,
+                               'n_cells': len(vals), 'n_runs': len(cr)}
+
+        lines.append(f"{name:<22} | {avg:>6.3f} {med:>7.3f} {std:>6.3f} | "
+                      f"{n_above_08:>5}/41 {n_above_06:>5}/41 | {len(cr):>6}")
 
     # Best config
-    if config_avgs:
-        best_name = max(config_avgs, key=config_avgs.get)
-        lines.append(f"\nBest config: {best_name} (avg adj_r2 = {config_avgs[best_name]:.4f})")
+    if config_stats:
+        best_name = max(config_stats, key=lambda k: config_stats[k]['mean'])
+        best = config_stats[best_name]
+        lines.append(f"\nBest config: {best_name}")
+        lines.append(f"  mean adj_r2 = {best['mean']:.4f}, {best['n_above_08']}/41 cells > 0.8")
+
+    # Per-cell breakdown for best config
+    if config_stats:
+        best_results = [r for r in all_results if r.get('config_name') == best_name]
+        if best_results:
+            lines.append(f"\nPer-cell results for best config ({best_name}):")
+            lines.append(f"  {'Cell':>4} {'mean_adj_r2':>11} {'std':>6} {'mean_test_r':>11} "
+                          f"{'mean_A':>8} {'mean_sig0':>9} {'mean_beta':>9}")
+            lines.append("  " + "-" * 65)
+            for cell_id in CELLS:
+                cr = [r for r in best_results if r['cell'] == cell_id]
+                if cr:
+                    adj = np.mean([r['adjusted_r2'] for r in cr])
+                    adj_std = np.std([r['adjusted_r2'] for r in cr])
+                    tr = np.mean([r['test_r'] for r in cr])
+                    A = np.mean([r['final_A'] for r in cr])
+                    sig0 = np.mean([r['final_sigma_0'] for r in cr])
+                    beta = np.mean([r['final_beta'] for r in cr])
+                    marker = " *" if adj > 0.8 else ""
+                    lines.append(f"  {cell_id:>4} {adj:>11.4f} {adj_std:>6.4f} {tr:>11.4f} "
+                                  f"{A:>8.5f} {sig0:>9.3f} {beta:>9.4f}{marker}")
 
     # Comparison baselines
     lines.append("\nReference baselines:")
-    lines.append("  Previous baseline (64x64, M=2910, defaults): avg adj_r2 = 0.720, 13/41 > 0.8")
+    lines.append("  Previous baseline (64x64, M=2910, our defaults): avg adj_r2 = 0.720, 13/41 > 0.8")
     lines.append("  Paper target: 36/41 cells > 0.8 adj_r2")
-
-    # Trained hyperparameters for best config
-    if config_avgs:
-        best_results = [r for r in all_results if r.get('config_name') == best_name]
-        if best_results:
-            lines.append(f"\nTrained hyperparameters for best config ({best_name}):")
-            lines.append(f"  {'Cell':>4} {'adj_r2':>8} {'A':>10} {'sig0':>8} {'beta':>8} {'rho':>8}")
-            for r in sorted(best_results, key=lambda x: x['cell']):
-                lines.append(f"  {r['cell']:>4} {r['adjusted_r2']:>8.4f} {r['final_A']:>10.6f} "
-                              f"{r['final_sigma_0']:>8.3f} {r['final_beta']:>8.4f} {r['final_rho']:>8.4f}")
 
     lines.append("\n" + "=" * 80)
     lines.append("SWEEP COMPLETE")
@@ -207,21 +248,33 @@ def write_summary(all_results):
 
 def main():
     start_time = time.time()
-    print(f"=== Parameter Sweep: {len(CONFIGS)} configs x {len(CELLS)} cells = {len(CONFIGS)*len(CELLS)} runs ===")
-    print(f"Started: {datetime.datetime.now().isoformat(timespec='seconds')}")
-    print(f"Results: {RESULTS_FILE}")
-    print(f"Summary: {SUMMARY_FILE}")
+    total = len(CONFIGS) * len(CELLS) * len(SEEDS)
+
+    print(f"=== Parameter Sweep ===")
+    print(f"  {len(CONFIGS)} configs x {len(CELLS)} cells x {len(SEEDS)} seeds = {total} runs")
+    print(f"  Started: {datetime.datetime.now().isoformat(timespec='seconds')}")
+    print(f"  Results: {RESULTS_FILE}")
+    print(f"  Summary: {SUMMARY_FILE}")
+
+    # Load already-completed runs for resume
+    completed = load_completed_runs()
+    if completed:
+        print(f"  Resuming: {len(completed)} runs already completed, {total - len(completed)} remaining")
     print()
 
-    # Clean results file for fresh sweep
-    if os.path.exists(RESULTS_FILE):
-        backup = RESULTS_FILE + '.bak'
-        os.rename(RESULTS_FILE, backup)
-        print(f"  Previous results backed up to {backup}")
-
     all_results = []
-    total = len(CONFIGS) * len(CELLS)
-    done = 0
+    # Reload existing results for summary computation
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE) as f:
+            for line in f:
+                try:
+                    all_results.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+    done = len(completed)
+    skipped = 0
+    failed = 0
 
     for cfg in CONFIGS:
         intl = "yes" if cfg['interleave_fstep'] else "no"
@@ -229,32 +282,46 @@ def main():
               f"{cfg['n_estep']}/{cfg['n_mstep']}/{cfg['n_iterations']}) ---")
 
         for cell_id in CELLS:
-            done += 1
-            print(f"  [{done}/{total}] Cell {cell_id}...", end=' ', flush=True)
-            t0 = time.time()
-            result = run_single_cell(cell_id, cfg)
-            elapsed = time.time() - t0
+            for seed in SEEDS:
+                key = (cfg['name'], cell_id, seed)
 
-            if result:
-                adj = result.get('adjusted_r2', 0)
-                tr = result.get('test_r', 0)
-                print(f"adj_r2={adj:.4f}, test_r={tr:.4f}, time={elapsed:.1f}s")
-                all_results.append(result)
-                # Append to JSONL immediately (crash-safe)
-                with open(RESULTS_FILE, 'a') as f:
-                    f.write(json.dumps(result) + '\n')
-            else:
-                print(f"FAILED ({elapsed:.1f}s)")
+                # Skip if already completed (resume support)
+                if key in completed:
+                    skipped += 1
+                    continue
+
+                done += 1
+                print(f"  [{done}/{total}] {cfg['name']} cell={cell_id} seed={seed}...",
+                      end=' ', flush=True)
+                t0 = time.time()
+                result = run_single_cell(cell_id, seed, cfg)
+                elapsed = time.time() - t0
+
+                if result:
+                    adj = result.get('adjusted_r2', 0)
+                    tr = result.get('test_r', 0)
+                    print(f"adj_r2={adj:.4f}, test_r={tr:.4f}, time={elapsed:.1f}s")
+                    all_results.append(result)
+                    # Append to JSONL immediately (crash-safe)
+                    with open(RESULTS_FILE, 'a') as f:
+                        f.write(json.dumps(result) + '\n')
+                else:
+                    failed += 1
+                    print(f"FAILED ({elapsed:.1f}s)")
+
+                # Explicit cleanup between runs
+                gc.collect()
 
     total_time = time.time() - start_time
-    print(f"\n\nTotal sweep time: {total_time:.0f}s ({total_time/60:.1f} min)")
-    print(f"Successful runs: {len(all_results)}/{total}")
+    print(f"\n\n{'=' * 60}")
+    print(f"Sweep finished in {total_time:.0f}s ({total_time/60:.1f} min, {total_time/3600:.1f} hr)")
+    print(f"  Completed: {len(all_results)}, Skipped (resume): {skipped}, Failed: {failed}")
 
     # Write summary
     write_summary(all_results)
     print(f"\nSummary written to: {SUMMARY_FILE}")
 
-    # Also print summary to stdout
+    # Print summary to stdout too
     with open(SUMMARY_FILE) as f:
         print(f.read())
 
