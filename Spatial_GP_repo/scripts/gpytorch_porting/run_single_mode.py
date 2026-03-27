@@ -904,6 +904,7 @@ def run_single_config(config):
                 min_iterations=min_iterations,
                 stability_threshold=stability_threshold,
                 fix_Amp=config.get('fix_Amp', False),
+                interleave_fstep=config.get('interleave_fstep', False),
             )
 
         train_time = time.time() - start_time

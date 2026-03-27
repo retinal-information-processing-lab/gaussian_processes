@@ -11,6 +11,11 @@
 The gap is likely not a single cause but multiple compounding factors. Each may
 contribute a few percent. Listed roughly by category, not priority.
 
+**INVESTIGATION RULE: All experiments MUST use `ip_selection='random'`.**
+Pivoted Cholesky is not supported by vargp_old, so it silently falls back to
+random -- confounding all mode comparisons. With random IPs the gap between
+vargp_direct and vargp_old narrows from 0.042 to 0.014 (Finding 18).
+
 ### Optimization / Training Procedure
 | # | Factor | Status | Effect |
 |---|--------|--------|--------|
@@ -40,7 +45,7 @@ contribute a few percent. Listed roughly by category, not priority.
 ### Model / Architecture
 | # | Factor | Status | Effect |
 |---|--------|--------|--------|
-| M1 | Inducing point selection (pivoted Cholesky vs random+noise) | CONFIRMED DIFFERENT | Paper uses random + 1e-6 noise |
+| M1 | Inducing point selection (pivoted vs random) | **CONFOUND FOUND** | Pivoted HURTS with tight beta; gap 0.042->0.014 when controlled |
 | M2 | Eigenvalue truncation (paper: NONE, ours: 1e-4) | TESTED 1e-4 to 1e-6 | No effect (n_b matters less than LBFGS bug) |
 | M3 | lambda_var clamping (ours: 1e-6, old: none) | NOT TESTED | Likely small |
 | M4 | V initialization (both: V=K_tilde, same) | SAME | Not a factor |
@@ -533,14 +538,40 @@ Additional differences that could explain further gap:
 - scipy L-BFGS-B (paper only)
 - Float64 precision (paper only)
 
-## Current Status
+## Finding 18: Inducing Point Selection Confound (CRITICAL)
 
-To close Gap A (vargp_direct → vargp_old, +0.040), the most impactful changes:
-1. sigma_0 direct parameterization (matching vargp_old)
-2. Conservative F-step threshold (mean>100)
-3. Divergence recovery (lower logA on instability)
+vargp_old ALWAYS uses random IP selection (line 672: `mode != 'vargp_old'`
+bypasses pivoted Cholesky). vargp_direct uses pivoted Cholesky by default.
+All prior M=250 comparisons between modes used DIFFERENT inducing points.
 
-To close Gap B (vargp_old → paper, unknown magnitude):
-4. F-step interleaving (paper-only, NEW capability)
-5. Remove Amp parameter (match paper architecture)
-6. Optionally: remove eigenspace projection when M is small
+With SAME random IPs, the gap narrows from 0.042 to 0.014:
+
+| Cell | direct (random) | old (random) | Diff |
+|------|----------------|-------------|------|
+| 18 | **0.874** | 0.861 | +0.013 |
+| 14 | 0.763 | **0.800** | -0.037 |
+| 9 | **0.805** | 0.738 | +0.067 |
+| 28 | 0.463 | **0.497** | -0.034 |
+| 39 | 0.362 | **0.441** | -0.079 |
+| Avg | 0.653 | 0.667 | -0.014 |
+
+Pivoted Cholesky HURTS vargp_direct with tight beta: cell 39 goes from
+0.229 (pivoted) to 0.362 (random). The concentrated IP selection doesn't
+suit the tight-RF configuration.
+
+## Current Status (UPDATED)
+
+Gap A nearly closed: vargp_direct vs vargp_old is now just 0.014 (was 0.042).
+The main confound was inducing point selection.
+
+Remaining 0.014 gap likely from:
+- sigma_0 parameterization (exp vs direct)
+- Amp parameterization (softplus vs direct)
+- F-step stability threshold (max>1000 vs mean>100)
+- E-step divergence recovery (revert vs lower logA)
+
+Gap B (our code vs paper) remains. Paper-only features:
+- F-step interleaving (implemented, +0.022 with A=1e-4)
+- No Amp parameter
+- No eigenspace projection
+- scipy L-BFGS-B, float64

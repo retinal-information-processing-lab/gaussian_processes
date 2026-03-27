@@ -103,6 +103,7 @@ def train_eigenspace(
     min_iterations: int = 10,
     stability_threshold: float = 1000,
     fix_Amp: bool = False,
+    interleave_fstep: bool = False,
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -138,7 +139,7 @@ def train_eigenspace(
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
     from eigenspace_estep import estep_eigenspace
-    from eigenspace_fstep import fstep_eigenspace
+    from eigenspace_fstep import fstep_eigenspace, damped_newton_update_A_lambda0
     from eigenspace_mstep import mstep_eigenspace_autograd, mstep_eigenspace_analytical
     from utils import compute_f_mean
 
@@ -154,6 +155,9 @@ def train_eigenspace(
     if fix_Amp:
         model.kernel.raw_Amp.requires_grad_(False)
         print(f"  Amp FROZEN at {model.kernel.Amp.item():.4f} (fix_Amp=True)")
+
+    if interleave_fstep:
+        print(f"  F-step INTERLEAVED: damped Newton (alpha=0.25) at each E-step iteration")
 
     time_estep_total = 0.0
     time_mstep_total = 0.0
@@ -195,12 +199,25 @@ def train_eigenspace(
             # Save state before Newton step for revert on divergence
             m_b_prev = model.state.m_b.clone()
             V_b_prev = model.state.V_b.clone()
+            if interleave_fstep:
+                raw_A_prev = model.likelihood.raw_A.detach().clone()
+                lambda0_prev = model.likelihood.lambda0.detach().clone()
 
             estep_eigenspace(model, r, f_mean)
 
             posterior = model(model.X_train)
             lambda_m, lambda_var = posterior.mean, posterior.variance
-            f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
+
+            if interleave_fstep:
+                # Paper's approach: update A, lambda0 at every E-step iteration
+                f_mean = damped_newton_update_A_lambda0(
+                    model, r, lambda_m, lambda_var,
+                    stability_threshold=stability_threshold,
+                )
+                A = model.likelihood.A.squeeze()
+                lambda0 = model.likelihood.lambda0.squeeze()
+            else:
+                f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(
@@ -213,6 +230,12 @@ def train_eigenspace(
             # Revert to pre-step state if triggered (matches original varGP).
             if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
                 model.update_variational_params(m_b_prev, V_b_prev)
+                if interleave_fstep:
+                    with torch.no_grad():
+                        model.likelihood.raw_A.copy_(raw_A_prev)
+                        model.likelihood.lambda0.copy_(lambda0_prev)
+                    A = model.likelihood.A.squeeze()
+                    lambda0 = model.likelihood.lambda0.squeeze()
                 posterior = model(model.X_train)
                 lambda_m, lambda_var = posterior.mean, posterior.variance
                 f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
@@ -221,8 +244,9 @@ def train_eigenspace(
                 break
 
         # ===== F-step: Optimize A =====
-        fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
-                         stability_threshold=stability_threshold)
+        if not interleave_fstep:
+            fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
+                             stability_threshold=stability_threshold)
 
         A = model.likelihood.A.squeeze()
         lambda0 = model.likelihood.lambda0.squeeze()
