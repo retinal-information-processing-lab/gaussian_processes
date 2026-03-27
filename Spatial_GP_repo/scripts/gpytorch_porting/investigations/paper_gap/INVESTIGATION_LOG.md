@@ -130,14 +130,14 @@ NOT in the paper:
 
 All these details must come from the CODE, not the paper.
 
-## Finding 3: Paper Has No Separate F-step
+## Finding 3: Paper's Optimization Structure (CORRECTED in Finding 18)
 
-Paper describes TWO steps, not three:
-- E-step: update m, V
-- M-step: update ALL hyperparameters (kernel params + A + lambda0) via "gradient descent"
+The paper TEXT describes two steps (E-step, M-step) but the actual CODE has:
+- E-step: Newton on (m,V) with interleaved damped Newton on (A, lambda0)
+- M-step: kernel hyperparameters only (NOT A/lambda0) via scipy L-BFGS-B
 
-We separate into E-step + F-step (LBFGS for A, analytical lambda0) + M-step (LBFGS for kernel).
-This could cause convergence differences -- joint vs separate optimization.
+Our structure: E-step (m,V only) -> F-step (A via LBFGS, lambda0 analytical) -> M-step (kernel).
+See Finding 18 for the full three-way comparison.
 
 ## Finding 4: The Amp Parameter Question
 
@@ -148,7 +148,8 @@ The paper's kernel is defined up to "proportionality" -- no explicit amplitude.
 In the paper, the overall scale is controlled by A (gain).
 In our code, BOTH A and Amp control scale, creating a potential identifiability issue.
 
-NEEDS VERIFICATION: Does the original varGP() code in utils.py have an Amp parameter?
+VERIFIED: vargp_old (utils.py) DOES have Amp. The paper's code does NOT.
+Amp was added to utils.py as a modification. See Finding 18.
 
 ## Finding 5: 64x64 Dataset Has Shifted Statistics
 
@@ -211,16 +212,16 @@ sigma_0 barely moves from init (stays ~1.0). Amp learns significantly (1.0 -> ~1
 
 ---
 
-## Priority Hypotheses (UPDATED after code analysis)
+## Priority Hypotheses (SUPERSEDED -- see Finding 18 for current status)
 
-1. **CRITICAL: Inner iteration counts** -- 5x fewer E-steps, 2x fewer M-steps than paper defaults.
-   This is the single most likely cause. Easy to test.
-2. **Undertraining** -- 50 outer EM iterations may be too few. Combined with fewer inner steps,
-   total gradient steps is much less than paper's code.
-3. **F-step threshold difference** -- our 1000 vs paper's 100 may allow A to overshoot.
-4. **sigma_0 stagnation** -- not learning. Softplus transform or insufficient M-steps?
-5. **Image resolution** -- 108x108 vs 64x64 (user thinks unlikely, test on 108 too).
-6. **Amp identifiability** -- Amp and A both control scale. Paper has Amp too, so probably OK.
+~~These were written before the paper's GitHub code was analyzed. Several are wrong.~~
+
+1. ~~Inner iteration counts~~ -> TESTED, small effect (+0.016)
+2. ~~Undertraining~~ -> modest effect (+0.015 at 200 iter)
+3. F-step threshold -> NOT TESTED, still valid (O5)
+4. ~~sigma_0 stagnation via softplus~~ -> exp transform applied, sigma_0 still barely moves
+5. ~~Image resolution~~ -> no effect
+6. ~~"Paper has Amp too"~~ -> **WRONG**: paper has NO Amp (Finding 13/18)
 
 ---
 
@@ -314,7 +315,7 @@ The old code optimizes sigma_0 directly (unconstrained).
 Note: cell 39 has BOTH sigma_0 stuck AND the largest performance gap, but
 sigma_0 doesn't move in EITHER mode for cell 39. So sigma_0 is not the full story.
 
-## Experiment 4 Results: vargp_old with 200 Iterations
+## Experiment 3b Results: vargp_old with 200 Iterations
 
 Config: 108x108, M=250, n_train=3160, nEstep=50, nMstep=20, 200 EM iterations.
 
@@ -333,34 +334,39 @@ More iterations help modestly for vargp_old (+0.015 avg). Cell 39 benefits most
 Cell 28: sigma_0 moves to 3.22 at 200 iter (was 1.65 at 50 iter). Large learning.
 Cell 39: sigma_0 STILL doesn't move (0.97) despite more iterations.
 
-## Finding 12: sigma_0 Softplus -- Root Cause Analysis
+## Finding 12: sigma_0 Parameterization (PARTIALLY ADDRESSED)
 
-The sigma_0 stagnation in vargp_direct is caused by the softplus parameterization
-(GPyTorch Positive() constraint). In vargp_old, sigma_0 is optimized directly.
+The sigma_0 stagnation in vargp_direct was initially attributed to the softplus
+parameterization. We applied the exp transform fix (O3).
 
-The softplus transform warps the LBFGS optimization landscape:
-- Gradient attenuation: d(softplus)/d(raw) = sigmoid(raw) = 0.63 at init
-- Curvature distortion: LBFGS Hessian approximation in raw-space doesn't match
-  the true Hessian in sigma_0-space
-- Scale mismatch: sigma_0 and Amp use softplus, other params are direct
+**Result**: sigma_0 now uses exp(raw_sigma_0) -- same as the paper's code uses
+exp(sigma_b). But sigma_0 STILL barely moves in vargp_direct experiments.
 
-**Minimal fix (Option A)**: Change softplus to exp transform in kernels.py:
-```
-Positive(transform=torch.exp, inv_transform=torch.log)
-```
-This is a single-line change per parameter. Needs analytical gradient correction
-in eigenspace_mstep.py (sigmoid -> sigma_0).
+In vargp_old, sigma_0 is optimized directly (no transform, unconstrained with
+lower bound 0 checked by M-step closure). sigma_0 learns well there (1.0 -> 1.77).
 
-## Summary: Master Comparison Table
+The exp transform is mathematically equivalent to the paper's parameterization,
+but vargp_old's DIRECT parameterization (no transform at all) works even better.
+This suggests the issue is not just the transform function but possibly the
+interaction with other differences (M-step gradient computation, autograd vs
+analytical, or other factors). Further investigation needed.
 
-| Config | Cell 18 | Cell 14 | Cell 9 | Cell 28 | Cell 39 | Avg |
-|--------|---------|---------|--------|---------|---------|-----|
-| baseline (direct,64,M=2910,10/10/50) | 0.870 | 0.769 | 0.663 | 0.535 | 0.354 | 0.638 |
-| paper_like inner (direct,64,50/20/50) | 0.878 | 0.787 | 0.699 | 0.575 | 0.330 | 0.654 |
-| direct_paper (108,M=250,50/20/50) | 0.862 | 0.806 | 0.731 | 0.531 | 0.256 | 0.637 |
-| old_paper (108,M=250,50/20/50) | 0.857 | 0.835 | 0.756 | 0.524 | 0.421 | 0.678 |
-| old_paper_200 (108,M=250,50/20/200) | 0.859 | 0.839 | 0.753 | 0.534 | 0.482 | 0.693 |
-| **PAPER TARGET** | >0.8 | >0.8 | >0.8 | ? | ? | **36/41>0.8** |
+## Summary: Master Comparison Table (all adjusted_r2)
+
+All paper-config rows: 108x108, M=250, n_train=3160, nEstep=50, nMstep=20.
+
+| # | Config | C18 | C14 | C9 | C28 | C39 | Avg |
+|---|--------|-----|-----|-----|-----|-----|-----|
+| 1 | baseline (direct,64,M=2910,10/10/50) | 0.870 | 0.769 | 0.663 | 0.535 | 0.354 | **0.638** |
+| 1 | +paper inner iters (50/20/50) | 0.878 | 0.787 | 0.699 | 0.575 | 0.330 | 0.654 |
+| 3 | direct, paper config (our init) | 0.862 | 0.806 | 0.731 | 0.531 | 0.256 | 0.637 |
+| 3 | vargp_old, paper config (our init) | 0.857 | 0.835 | 0.756 | 0.524 | 0.421 | **0.678** |
+| 3b | vargp_old, 200 iter | 0.859 | 0.839 | 0.753 | 0.534 | 0.482 | 0.693 |
+| 4 | direct, paper init, Amp free (exp) | 0.871 | 0.810 | 0.773 | 0.573 | 0.215 | 0.648 |
+| 4 | vargp_old, paper init, Amp free | 0.861 | 0.800 | 0.738 | 0.497 | 0.441 | 0.667 |
+| 5 | direct, paper init, fixAmp (broken LBFGS) | 0.890 | 0.792 | 0.789 | 0.379 | 0.232 | 0.616 |
+| 6b | direct, paper init, fixAmp, LBFGS fixed | 0.878 | 0.773 | 0.796 | 0.471 | 0.222 | 0.628 |
+| | **PAPER TARGET** | >0.8 | >0.8 | >0.8 | ? | ? | **36/41>0.8** |
 
 ## Hypotheses Eliminated
 
@@ -371,34 +377,36 @@ in eigenspace_mstep.py (sigmoid -> sigma_0).
 5. ~~More outer iterations~~ -- modest effect with vargp_old (+0.015 at 200 iter)
 6. ~~Parameter bounds~~ -- not hitting bounds
 
-## Active Hypotheses
+## Active Hypotheses (SUPERSEDED -- see Finding 18 "Current Status")
 
-A. **sigma_0 softplus stagnation** -- explains part of Gap A (direct vs old).
-   Fix: change to exp transform. Easy to test.
-B. **Something else in M=250 regime** -- vargp_direct degrades much more than
-   vargp_old when M < n_train. Possibly eigenspace truncation, inducing point
-   selection, or other numerical differences.
-C. **Gap B partially explained** -- paper's GitHub code reveals MASSIVE differences
-   from our defaults (Findings 13-15 below). Our utils.py ADDED Amp to the paper's code.
+A. ~~sigma_0 softplus stagnation~~ -> exp transform applied (O3). sigma_0 still
+   barely moves. Exp transform is necessary but not sufficient. vargp_old uses
+   direct (unconstrained) parameterization, which works better.
+B. Gap A (vargp_old vs vargp_direct) explained by: sigma_0 direct vs exp,
+   Amp direct vs softplus, F-step threshold, divergence recovery. See Finding 18.
+C. Gap B (vargp_old vs paper) partially explained: F-step interleaving,
+   no Amp, no eigenspace, scipy optimizer, float64. See Finding 18.
 
 ## Finding 13: Paper's GitHub Code -- Fundamental Differences
 
-Paper's code (Jupyter notebook) vs our code:
+Paper vs BOTH our implementations (vargp_old and vargp_direct share these defaults):
 
-| Parameter | Paper | Ours | Impact |
-|-----------|-------|------|--------|
+| Parameter | Paper (GitHub) | vargp_old AND vargp_direct | Impact |
+|-----------|---------------|---------------------------|--------|
 | beta init | beta_nat=0.0452 (RF ~3.5px) | 0.1 (RF ~7.6px) | RF 2.2x wider |
 | rho init | rho_nat=0.0821 | 0.1 | smoothness 1.2x wider |
 | A init | 1e-4 | 0.01 | 100x larger |
 | lambda0 init | -1 | +1 | opposite sign |
-| Amp | DOES NOT EXIST | 1.0 (learnable) | identifiability issue |
+| Amp | DOES NOT EXIST | 1.0 (learnable, in both) | identifiability issue |
 | maxiter | 80 | 50 | 60% more iterations |
-| F-step | Newton inside EACH E-step iter | LBFGS once after E-step | structural |
-| M-step optimizer | scipy L-BFGS-B | torch LBFGS | different impl |
-| Precision | float64 (M-step) | float32 | less precision |
-| Eigenspace | NONE | eigenspace projection | fundamental |
+| F-step | Inside each E-step Newton iter | After all Newton steps (both) | paper-only |
+| M-step optimizer | scipy L-BFGS-B | torch LBFGS (both) | different impl |
+| Precision | float64 | float32 (both) | less precision |
+| Eigenspace | NONE | EIGVAL_TOL=1e-4 (both) | fundamental |
 
-**Critical**: Paper has NO Amp. Our utils.py added it.
+**Critical**: Paper has NO Amp. Both vargp_old and vargp_direct added it.
+See Finding 18 for the full three-way comparison including differences
+BETWEEN vargp_old and vargp_direct.
 
 ## Finding 14: F-step Structure (CORRECTED in Finding 18)
 
