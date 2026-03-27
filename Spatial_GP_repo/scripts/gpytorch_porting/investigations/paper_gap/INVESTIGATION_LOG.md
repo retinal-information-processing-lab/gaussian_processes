@@ -23,9 +23,10 @@ contribute a few percent. Listed roughly by category, not priority.
 | O7 | Early stopping criteria difference (relative vs absolute) | NOT ISOLATED | Unknown |
 | O8 | LBFGS history size in F-step (n_fstep vs fixed 100 in M-step) | NOT TESTED | Likely small |
 | O9 | F-step interleaving: paper updates A INSIDE each E-step iter | CONFIRMED DIFFERENT | Likely large (see Finding 14-15) |
-| O10 | Amp parameter: paper has NO Amp, ours adds it to C matrix | CONFIRMED | fix_Amp=True flag added; tested in exp 5 |
+| O10 | Amp parameter: paper has NO Amp, ours adds it to C matrix | CONFIRMED | fix_Amp works; free Amp grows 5-284x |
 | O11 | M-step optimizer: paper uses scipy L-BFGS-B, ours torch LBFGS | CONFIRMED DIFFERENT | Unknown |
 | O12 | Float64 M-step (paper) vs float32 (ours) | CONFIRMED DIFFERENT | Unknown |
+| O13 | LBFGS corrupted by frozen params (fix_Amp broke M-step) | **BUG FIXED** | Filter requires_grad=True |
 
 ### Data / Preprocessing
 | # | Factor | Status | Effect |
@@ -40,7 +41,7 @@ contribute a few percent. Listed roughly by category, not priority.
 | # | Factor | Status | Effect |
 |---|--------|--------|--------|
 | M1 | Inducing point selection (pivoted Cholesky vs random+noise) | CONFIRMED DIFFERENT | Paper uses random + 1e-6 noise |
-| M2 | Eigenvalue truncation tolerance (1e-4, same in both codes) | N/A | Paper has NO eigenspace projection |
+| M2 | Eigenvalue truncation (paper: NONE, ours: 1e-4) | TESTED 1e-4 to 1e-6 | No effect (n_b matters less than LBFGS bug) |
 | M3 | lambda_var clamping (ours: 1e-6, old: none) | NOT TESTED | Likely small |
 | M4 | V initialization (both: V=K_tilde, same) | SAME | Not a factor |
 | M5 | Kernel bounds (ours: finite bounds, old: unbounded) | NOT HITTING BOUNDS | Not a factor currently |
@@ -424,10 +425,47 @@ Amp EXPLODED in vargp_direct (16-284). Exp transform backfired for Amp.
 Cell 18 best-ever (0.890). But M-step STUCK: beta=0.0452 unchanged, sigma_0=1.0
 unchanged. Only F-step (A, lambda0) learned. Kernel frozen at init.
 
-## Finding 15: Chicken-and-Egg Problem
+## Finding 15: LBFGS Hessian Corruption Bug (FIXED)
 
-With paper init (A=1e-4, tight beta, no Amp):
-1. A is tiny -> E-step gradient signal ~ A^2 = 1e-8 -> kernel params get zero grad
-2. Kernel params frozen -> kernel uninformative -> A can't grow effectively
-3. Paper breaks this by updating A INSIDE each E-step iteration
-4. Our code can't break out because A is frozen during entire E-step
+When fix_Amp=True freezes raw_Amp (requires_grad=False), including it in the
+LBFGS parameter list corrupted the Hessian approximation. ALL kernel params
+got zero effective step size. The M-step was silently a no-op.
+
+**Fix**: Filter kernel.parameters() to only include requires_grad=True.
+Applied to both autograd and analytical M-step paths.
+
+After the fix, kernel params learn again with frozen Amp:
+beta 0.0452 -> 0.049-0.098, rho 0.0821 -> 0.025-0.043, sigma_0 moves slightly.
+
+## Experiment 6b: Paper Init + Amp Fixed + LBFGS Fix
+
+| Config | C18 | C14 | C9 | C28 | C39 | Avg |
+|--------|-----|-----|-----|-----|-----|-----|
+| baseline (our defaults) | 0.870 | 0.769 | 0.663 | 0.535 | 0.354 | 0.638 |
+| exp5 (fix_Amp, broken LBFGS) | 0.890 | 0.792 | 0.789 | 0.379 | 0.232 | 0.616 |
+| exp6b (fix_Amp, LBFGS fixed) | 0.878 | 0.773 | **0.796** | 0.471 | 0.222 | 0.628 |
+
+M-step now works but avg (0.628) still doesn't beat baseline (0.638).
+Paper init values aren't universally better -- cell 9 beta grew to 0.098
+(nearly our default 0.1), showing the optimizer wants broader RF.
+
+## Finding 16: Eigenspace Truncation NOT the Issue
+
+Tested EIGVAL_TOL = 1e-4, 1e-5, 1e-6. No difference (all give avg ~0.62).
+With tight beta, n_b = 36/250 at 1e-4, 250/250 at 1e-5. Full eigenspace
+doesn't help when LBFGS is broken (Finding 15).
+
+## Finding 17: Chicken-and-Egg Hypothesis FALSIFIED
+
+Tested A=0.01 (our default, 100x larger than paper's 1e-4) with fix_Amp.
+M-step still frozen (before LBFGS fix). The issue was NOT A being too small
+for gradient signal -- it was the corrupted LBFGS.
+
+## Current Status
+
+vargp_old with paper config still outperforms (avg 0.678 vs our best 0.638).
+Remaining differences to test:
+- **F-step interleaving** (paper: A/lambda0 updated inside each E-step iter)
+- Amp as extra parameter (even with softplus, vargp_old's Amp grows to 5-13)
+- E-step divergence recovery (old lowers logA)
+- scipy L-BFGS-B vs torch LBFGS
