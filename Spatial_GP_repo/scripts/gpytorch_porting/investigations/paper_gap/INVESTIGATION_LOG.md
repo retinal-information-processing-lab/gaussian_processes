@@ -594,25 +594,72 @@ All differences were in the preprocessing/configuration pipeline, not the math.
   but needs F-step interleaving to work well for all cells
 - vargp_old can NOT have fix_Amp (varGP code doesn't support it)
 
-## Current Status (UPDATED)
+## Finding 20: Full 41-Cell Sweep Results (6 configs x 41 cells x 3 seeds)
+
+Sweep script: `investigations/paper_gap/run_sweep.py`
+Results: `investigations/paper_gap/sweep_results.jsonl`, `sweep_summary.txt`
+
+All configs used: fix_Amp=True, ip_selection=random, sigma_0=direct,
+108x108, M=250, n_train=3160, ground-truth RF, lambda0=-1, no early stopping.
+
+| Config | beta | A_init | intl | inner | Mean | Median | n>0.8 | n>0.6 |
+|--------|------|--------|------|-------|------|--------|-------|-------|
+| our_defaults | 0.1 | 0.01 | no | 10/10/50 | 0.678 | 0.717 | 11/41 | 28/41 |
+| our+paper_inner | 0.1 | 0.01 | no | 50/20/80 | 0.695 | 0.735 | 13/41 | 29/41 |
+| paper_init | 0.0452 | 1e-4 | no | 50/20/80 | 0.700 | 0.759 | 13/41 | 30/41 |
+| paper+interleave | 0.0452 | 1e-4 | yes | 50/20/80 | 0.713 | 0.706 | **17/41** | 30/41 |
+| **broad+interleave** | 0.1 | 1e-4 | yes | 50/20/80 | **0.730** | **0.751** | 15/41 | **34/41** |
+| broad+A01+intl | 0.1 | 0.01 | yes | 50/20/80 | 0.609 | 0.684 | 11/41 | 25/41 |
+
+**Best config: broad+interleave** (beta=0.1, A=1e-4, interleave_fstep=True, 50/20/80).
+Mean adj_r2=0.730, 15/41 > 0.8, 34/41 > 0.6.
+
+**Key observations from sweep:**
+1. More inner iterations help modestly: our_defaults (0.678) -> our+paper_inner (0.695), +0.017.
+2. Paper init alone is comparable: paper_init (0.700) vs our+paper_inner (0.695).
+3. Interleaving with tight beta helps: paper+interleave (0.713) vs paper_init (0.700), +0.013.
+   Gets most cells above 0.8 (17/41) but some cells collapse with tight beta.
+4. Interleaving with broad beta is best overall: broad+interleave (0.730), best mean and n>0.6.
+5. A=0.01 + interleaving is unstable: broad+A01+intl (0.609). Damped Newton (alpha=0.25)
+   too conservative for A=0.01 -- often converges immediately without updating.
+6. The best combo uses our broad beta + paper's small A init + interleaving.
+
+**Paper target (36/41 > 0.8) still far.** Our best is 15-17/41. The remaining
+gap is likely from architectural differences we cannot easily change:
+no eigenspace projection, scipy L-BFGS-B, float64, and possibly undocumented
+training details in the paper.
+
+## Current Status
 
 **Gap A FULLY CLOSED.** vargp_direct matches vargp_old within 0.002 avg adj_r2
-when given identical inputs (random IPs, free Amp, direct sigma_0 parameterization).
-The original 0.042 gap was entirely from confounds, not algorithm bugs.
-See Finding 19 for the full decomposition.
+when given identical inputs. The 0.042 gap was from confounds (Finding 19).
 
-**Gap B (our code vs paper) is now the sole focus.** Our best avg on 5-cell
-subset is 0.669 (matching vargp_old). Paper claims 36/41 cells > 0.8 adj_r2.
+**Gap B partially closed.** Best result: avg adj_r2 = 0.730 (was 0.678 with
+defaults). Improved from 11/41 to 15/41 cells > 0.8. Paper claims 36/41.
 
-Paper-only features not yet fully tested:
-- F-step interleaving (implemented, +0.022 with A=1e-4, inconsistent with A=0.01)
-- No Amp parameter (fix_Amp available, reduces avg ~0.01 vs free Amp)
-- No eigenspace projection (would need major refactor)
-- scipy L-BFGS-B (vs torch LBFGS)
-- float64 (vs float32)
+**Permanent code changes made on this branch (pietro/investigate-paper-gap):**
+- sigma_0 direct (identity) parameterization -- committed
+- LBFGS frozen-param filter (M-step) -- committed
+- f_mean thresholds: mean>100 + max>500 -- committed
+- fix_Amp flag for freezing Amp at 1.0 -- committed
+- interleave_fstep flag for damped Newton inside E-step -- committed
+- vargp_old model/likelihood reference bug fix -- committed
 
-**Changes to apply permanently after investigation concludes:**
-- sigma_0: switch from exp to direct (identity) parameterization (stash saved)
-- LBFGS: filter requires_grad=False params (already committed)
-- f_mean thresholds: mean>100 + max>500 (already in code)
-- ip_selection: document that vargp_old forces random regardless of config
+**Investigation rules established:**
+- ip_selection='random' for all mode comparisons (pivoted silently differs for vargp_old)
+- fix_Amp=True for paper comparisons (paper has no Amp parameter)
+
+## Three-Way Codebase Comparison (Finding 18 addendum)
+
+| Feature | Paper (GitHub notebook) | vargp_old (utils.py) | vargp_direct |
+|---------|------------------------|---------------------|--------------|
+| F-step | Inside each E-step iter (damped Newton) | After all E-steps (LBFGS) | After (LBFGS) or inside (damped Newton via interleave_fstep) |
+| Amp | NO | YES (direct, learnable) | YES (softplus, learnable, or frozen via fix_Amp) |
+| Eigenspace | NONE | YES (EIGVAL_TOL=1e-4) | YES (same) |
+| sigma_0 | exp(sigma_b) | direct | direct (identity, after investigation fix) |
+| M-step | scipy L-BFGS-B | torch LBFGS | torch LBFGS |
+| Precision | float64 | float32 | float32 |
+| IP selection | random + 1e-6 noise | random (forced) | random or pivoted |
+| Init A | 1e-4 | from config | from config |
+| Init beta | 0.0452 (tight) | from config | from config |
+| Init lambda0 | -1 | from config | from config |
