@@ -3,3 +3,8 @@ checkpoints/
 
 # Generated sample images
 samples/
+
+# Output plots from optimization/generation scripts
+guided_reverse_*.png
+noise_g_guided_reverse_*.png
+guided_optimization_*.png

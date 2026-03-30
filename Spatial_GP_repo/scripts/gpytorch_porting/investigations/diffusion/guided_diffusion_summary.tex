@@ -1,0 +1,447 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+
+\title{Guided Reverse Diffusion for Optimal Stimulus Generation}
+\author{Internal Reference Document}
+\date{March 2026}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe a method for generating natural-looking images that maximize the
+information gained about a neuron's response properties, by combining a
+denoising diffusion model with a Gaussian Process (GP) utility function.
+The diffusion model acts as a learned prior over natural images, while the GP
+utility gradient steers the generation toward informative stimuli.
+This document is self-contained: it covers the diffusion model, the GP utility,
+and how they are combined.
+\end{abstract}
+
+%% ============================================================
+\section{Problem Setup}
+
+We have a neuron whose firing rate $f(x)$ depends on a visual stimulus
+$x \in \R^{d}$ (a $64 \times 64$ grayscale image, so $d = 4096$).
+We model the log-firing rate via a Gaussian Process:
+\[
+  \lambda(x) \sim \mathcal{GP}(\mu(x), k(x, x')),
+  \qquad
+  f(x) = \exp\bigl(A \cdot \lambda(x) + \lambda_0\bigr),
+\]
+where $A$ and $\lambda_0$ are learned likelihood parameters.
+Given a training set of stimulus--response pairs, we fit the GP and obtain a
+posterior $q(\lambda \mid D)$.
+
+\medskip
+\noindent\textbf{Goal.}
+Generate a new image $x^*$ that:
+\begin{enumerate}
+  \item Maximizes an information-theoretic utility $U(x^*)$ (how much we learn
+        about the neuron by showing $x^*$), and
+  \item Looks like a natural image (so it can be physically displayed on a
+        projector and is ecologically meaningful).
+\end{enumerate}
+
+Requirement~1 alone can be solved by gradient ascent on $U$ in pixel space,
+but the resulting images are unnatural (black-and-white noise patterns).
+The diffusion model enforces Requirement~2 by constraining the generation
+to the learned manifold of natural images.
+
+
+%% ============================================================
+\section{Background: Denoising Diffusion Models}
+
+A Denoising Diffusion Probabilistic Model (DDPM) learns to reverse a gradual
+noising process.  We summarize the key ideas; see Ho et al.\ (2020) for full
+details.
+
+\subsection{Forward Process}
+
+Starting from a clean image $x_0$, the forward process adds Gaussian noise over
+$T = 1000$ timesteps according to a variance schedule
+$\beta_1, \ldots, \beta_T$:
+\[
+  q(x_t \mid x_0) = \N\!\bigl(x_t;\; \sqrt{\bar\alpha_t}\, x_0,\;
+  (1 - \bar\alpha_t)\, I\bigr),
+\]
+where $\alpha_t = 1 - \beta_t$ and
+$\bar\alpha_t = \prod_{s=1}^{t} \alpha_s$ is the cumulative signal retention.
+
+\medskip
+\noindent\textbf{Noise schedule.}
+We use a linear schedule with $\beta_1 = 10^{-4}$ and $\beta_T = 0.02$.
+At $t = 0$, $\bar\alpha_0 \approx 1$ (clean image);
+at $t = T$, $\bar\alpha_T \approx 0$ (pure noise).
+
+The forward process can be sampled in one step (``reparameterization trick''):
+\begin{equation}\label{eq:forward}
+  x_t = \sqrt{\bar\alpha_t}\, x_0 + \sqrt{1 - \bar\alpha_t}\, \varepsilon,
+  \qquad \varepsilon \sim \N(0, I).
+\end{equation}
+
+\subsection{Reverse Process and the UNet}
+
+A neural network $\varepsilon_\theta(x_t, t)$ --- a UNet with 99.5M parameters
+--- is trained to predict the noise $\varepsilon$ added at step $t$.
+Given a noisy image $x_t$ and the noise prediction $\hat\varepsilon = \varepsilon_\theta(x_t, t)$,
+Tweedie's formula recovers an estimate of the clean image:
+\begin{equation}\label{eq:tweedie}
+  \hat x_0(x_t, t)
+  = \frac{x_t - \sqrt{1 - \bar\alpha_t}\, \hat\varepsilon}{\sqrt{\bar\alpha_t}}.
+\end{equation}
+
+\medskip
+\noindent\textbf{UNet architecture.}
+The UNet has 5 resolution levels with channel widths $[64, 128, 256, 512, 512]$,
+2 ResNet blocks per level, self-attention at intermediate resolutions,
+GroupNorm, and SiLU activations.
+Input and output are single-channel $64 \times 64$ images.
+The model was pretrained on ImageNet (1.28M grayscale images) and finetuned on
+the PNAS natural image dataset (3190 images, 50 epochs).
+
+
+\subsection{DDIM Sampling}
+
+Rather than running all $T = 1000$ reverse steps (slow), we use DDIM
+(Song et al., 2021) which selects a subsequence of $S$ timesteps
+$\tau_S > \tau_{S-1} > \cdots > \tau_1$ (we use $S = 50$, uniformly spaced)
+and takes deterministic steps:
+\begin{equation}\label{eq:ddim}
+  x_{\tau_{i-1}}
+  = \sqrt{\bar\alpha_{\tau_{i-1}}}\; \hat x_0
+  + \sqrt{1 - \bar\alpha_{\tau_{i-1}}}\;
+    \underbrace{\frac{x_{\tau_i} - \sqrt{\bar\alpha_{\tau_i}}\, \hat x_0}
+    {\sqrt{1 - \bar\alpha_{\tau_i}}}}_{\text{predicted noise direction}},
+\end{equation}
+where $\hat x_0 = \hat x_0(x_{\tau_i}, \tau_i)$ from Eq.~\eqref{eq:tweedie}.
+At the final step ($i = 1$), we set $x_0 = \hat x_0$ directly.
+
+DDIM is deterministic given the initial noise $x_T \sim \N(0, I)$, so different
+random seeds produce different images.
+
+
+%% ============================================================
+\section{GP Utility Functions}
+
+We consider two utility functions, both information-theoretic.
+Let $R$ denote the (integer) spike count response of the neuron.
+
+\subsection{Standard Utility}
+
+\begin{equation}\label{eq:utility_standard}
+  U_{\text{std}}(x^*)
+  = H[R \mid x^*, D]
+  - H_{\text{noise}}(x^*),
+\end{equation}
+where $H[R \mid x^*, D]$ is the marginal entropy of the predicted response
+and $H_{\text{noise}}$ is the irreducible Poisson noise entropy.
+This measures how uncertain we are about the neuron's response at $x^*$
+beyond what Poisson noise alone would give.
+
+\subsection{Distribution-Aware (DA) Utility}
+
+\begin{equation}\label{eq:utility_da}
+  U_{\text{DA}}(x^*)
+  = H[R \mid x^*, D]
+  - \E_{\substack{x \sim p(x) \\ \lambda \sim q(\lambda(x) \mid D)}}
+    \bigl[ H[R \mid x^*, \lambda(x), D] \bigr].
+\end{equation}
+
+The second term averages the \emph{conditional} entropy of $R$ at $x^*$
+after hypothetically observing the GP latent $\lambda$ at a random stimulus~$x$
+drawn from the image pool.
+This accounts for the fact that observing a response at~$x^*$
+also reduces uncertainty at nearby points in stimulus space.
+
+\medskip
+\noindent\textbf{Entropy computation.}
+In both cases, we compute the entropy of $R$ via a Laplace approximation
+to the Poisson predictive distribution
+$p(r \mid x^*, D) \approx \sum_r P(r) \log P(r)$,
+truncated at $r_{\max} = 100$.
+
+\medskip
+\noindent\textbf{Differentiability.}
+Both utility functions are differentiable with respect to the input image $x^*$
+(the gradient flows through the GP kernel computation), which is essential
+for the guidance mechanism described next.
+
+
+%% ============================================================
+\section{Guided Reverse Diffusion}
+
+The key idea: at each DDIM denoising step, we compute an estimate of the
+clean image $\hat x_0$, evaluate the GP utility $U(\hat x_0)$, and shift
+$\hat x_0$ in the direction that increases utility.
+This is analogous to classifier guidance (Dhariwal \& Nichol, 2021), but with
+the GP utility replacing the classifier.
+
+\subsection{Guidance Gradient}
+
+At step $i$ with timestep $t = \tau_i$, we have the current noisy image $x_t$.
+We compute the gradient of utility with respect to $x_t$:
+\begin{equation}\label{eq:guidance_grad}
+  g_t = \nabla_{x_t} U\!\bigl(\hat x_0(x_t, t)\bigr).
+\end{equation}
+
+By the chain rule through Tweedie's formula (Eq.~\ref{eq:tweedie}):
+\[
+  g_t
+  = \frac{\partial \hat x_0}{\partial x_t} \cdot \nabla_{\hat x_0} U(\hat x_0)
+  = \frac{1}{\sqrt{\bar\alpha_t}}
+    \left(I - \frac{\sqrt{1 - \bar\alpha_t}}{\sqrt{\bar\alpha_t}}
+    \frac{\partial \varepsilon_\theta}{\partial x_t}\right)
+    \nabla_{\hat x_0} U(\hat x_0).
+\]
+
+\medskip
+\noindent\textbf{Approximate gradient} (default, faster).
+We treat the UNet Jacobian $\partial \varepsilon_\theta / \partial x_t$ as
+negligible (run UNet under \texttt{torch.no\_grad}), giving:
+\begin{equation}\label{eq:approx_grad}
+  g_t^{\text{approx}}
+  \approx \frac{1}{\sqrt{\bar\alpha_t}} \nabla_{\hat x_0} U(\hat x_0).
+\end{equation}
+This halves the compute cost per step.
+
+\subsection{Guided Denoised Estimate}
+
+The utility gradient shifts the Tweedie estimate:
+\begin{equation}\label{eq:guided_x0}
+  \hat x_0^{\text{guided}}
+  = \hat x_0
+  + w \cdot \frac{1 - \bar\alpha_t}{\sqrt{\bar\alpha_t}} \cdot g_t,
+\end{equation}
+where $w$ is the \textbf{guidance scale} (a hyperparameter controlling how
+strongly utility influences the generation).
+
+The ramp factor $(1 - \bar\alpha_t) / \sqrt{\bar\alpha_t}$
+naturally modulates guidance strength across timesteps:
+at high noise ($t \approx T$), the factor is large ($\sim 158$), allowing bold
+exploration; at low noise ($t \approx 0$), the factor is small ($\sim 0.3$),
+preserving fine image details.
+
+\subsection{Firing Rate Guard}
+
+At high-noise timesteps, $\hat x_0$ can be far from any real image, leading to
+extremely high predicted firing rates.
+To prevent the gradient from chasing physiologically impossible rates:
+\[
+  \text{if } \exp(\mu_g) \geq f_{\max}: \quad g_t \leftarrow 0,
+\]
+where $\mu_g = A \cdot \lambda_{\text{mean}} + \lambda_0$ is the predicted
+log-firing rate and $f_{\max} = 100$ Hz.
+This guard is typically active only during the first $\sim 10$ DDIM steps.
+
+
+%% ============================================================
+\section{Full Algorithm}
+
+\begin{algorithm}[H]
+\caption{Guided Reverse Diffusion for Stimulus Generation}
+\label{alg:guided}
+\begin{algorithmic}[1]
+\Require Trained UNet $\varepsilon_\theta$, noise schedule
+  $\{\bar\alpha_t\}_{t=0}^T$, trained GP model,
+  DDIM steps $S$, guidance scale $w$, firing rate cap $f_{\max}$,
+  scale factor $s$
+\State $x_T \sim \N(0, I)$ \Comment{Random initial noise}
+\State $\{\tau_S, \tau_{S-1}, \ldots, \tau_1\} \gets$
+  uniformly spaced subsequence of $\{0, \ldots, T{-}1\}$
+\For{$i = S, S{-}1, \ldots, 1$}
+  \State $t \gets \tau_i$
+  \Statex
+  \Statex \textit{\% --- Step A: Denoise ---}
+  \State $\hat\varepsilon \gets \varepsilon_\theta(x_t, t)$
+    \Comment{UNet predicts the noise (no gradients through UNet)}
+  \State $\hat x_0 \gets
+    (x_t - \sqrt{1 - \bar\alpha_t}\, \hat\varepsilon) / \sqrt{\bar\alpha_t}$
+    \Comment{Tweedie estimate (Eq.~\ref{eq:tweedie})}
+  \Statex
+  \Statex \textit{\% --- Step B: Compute utility gradient w.r.t.\ denoised image ---}
+  \State $\hat x_0^{\text{raw}} \gets \hat x_0 \cdot s$
+    \Comment{Convert to pixel space; must be differentiable}
+  \State $U, \mu_g \gets \text{Utility}(\hat x_0^{\text{raw}})$
+    \Comment{GP utility at current denoised estimate}
+  \State $\nabla_{\hat x_0} U \gets$ gradient of $U$ w.r.t.\ $\hat x_0$
+    \Comment{Flows through: GP kernel $\to$ scale factor $\to$ Tweedie}
+  \Statex
+  \Statex \textit{\% --- Step C: Apply guidance to shift $\hat x_0$ ---}
+  \If{$\exp(\mu_g) < f_{\max}$}
+    \Comment{Firing rate guard: skip if unrealistic}
+    \State $\hat x_0^{\text{guided}} \gets
+      \hat x_0 + w \cdot \frac{1 - \bar\alpha_t}{\sqrt{\bar\alpha_t}}
+      \cdot \nabla_{\hat x_0} U$
+      \Comment{Shift toward higher utility (Eq.~\ref{eq:guided_x0})}
+  \Else
+    \State $\hat x_0^{\text{guided}} \gets \hat x_0$
+    \Comment{No guidance at this step}
+  \EndIf
+  \Statex
+  \Statex \textit{\% --- Step D: DDIM reverse step ---}
+  \If{$i > 1$}
+    \State $t' \gets \tau_{i-1}$
+    \State $d \gets (x_t - \sqrt{\bar\alpha_t}\, \hat x_0^{\text{guided}})
+      / \sqrt{1 - \bar\alpha_t}$
+      \Comment{Predicted noise direction}
+    \State $x_{t'} \gets \sqrt{\bar\alpha_{t'}}\, \hat x_0^{\text{guided}}
+      + \sqrt{1 - \bar\alpha_{t'}}\, d$
+      \Comment{DDIM step (Eq.~\ref{eq:ddim})}
+  \Else
+    \State $x_0 \gets \hat x_0^{\text{guided}}$
+    \Comment{Final denoised image}
+  \EndIf
+\EndFor
+\State \Return $x_0 \cdot s$ \Comment{Generated image in raw pixel space}
+\end{algorithmic}
+\end{algorithm}
+
+\noindent\textbf{Note on the gradient in Step~B.}
+The utility $U$ is evaluated at $\hat x_0^{\text{raw}}$, which depends on
+$\hat x_0$, which depends on $x_t$ via Tweedie's formula
+(Eq.~\ref{eq:tweedie}).
+In the approximate gradient mode (default), the UNet runs without gradient
+tracking, so $\hat\varepsilon$ is treated as a constant.
+The gradient $\nabla_{\hat x_0} U$ then flows only through:
+\[
+  U(\hat x_0^{\text{raw}})
+  \;\xleftarrow{\text{chain rule}}\;
+  \hat x_0^{\text{raw}} = s \cdot \hat x_0
+  \;\xleftarrow{\text{chain rule}}\;
+  \hat x_0 = (x_t - c) / \sqrt{\bar\alpha_t},
+\]
+where $c = \sqrt{1 - \bar\alpha_t}\,\hat\varepsilon$ is a constant (detached).
+This yields the approximate gradient from Eq.~\eqref{eq:approx_grad}:
+$g_t \approx (1/\sqrt{\bar\alpha_t})\, \nabla_{\hat x_0} U$.
+The ramp factor in Step~C absorbs this scaling.
+
+\noindent\textbf{Best-of-$K$ selection.}
+Because different random seeds $x_T$ produce different images with varying
+utility, we run Algorithm~\ref{alg:guided} with $K$ seeds (typically $K = 100$)
+and select the image with the highest final utility.
+
+
+%% ============================================================
+\section{Pixel Space and Physical Constraints}
+
+\subsection{Space Conversion}
+
+The diffusion model operates in a normalized space where pixel values lie
+approximately in $[-1, 1]$.
+The GP operates in the raw pixel space of the PNAS dataset.
+The conversion uses a global scale factor:
+\[
+  s = \max_{i,j} |x^{\text{PNAS}}_{ij}| = 2.478.
+\]
+The Tweedie estimate $\hat x_0$ (model space) is converted to raw pixels via
+$\hat x_0^{\text{raw}} = s \cdot \hat x_0$.
+This multiplication \textbf{must} remain in the computation graph for gradient
+flow.
+
+\subsection{Out-of-Bounds Detection}
+
+The physical display (DMD projector) has a finite range.
+After generation, we check what fraction of pixels fall outside the dataset's
+global $[\min, \max]$ range and flag it as ``OOB'' (out of bounds).
+High OOB indicates the guidance pushed pixels beyond physically realizable
+values --- the image cannot be shown to the neuron as-is.
+
+
+%% ============================================================
+\section{The Role of the RF Mask}
+
+The arc-cosine kernel used in the GP has a receptive field (RF) structure
+controlled by a locality parameter $\beta$.
+The kernel applies a Gaussian spatial envelope:
+\[
+  \alpha_j = \exp\!\left(-\frac{d_j^2}{4\beta^2}\right),
+\]
+where $d_j$ is the distance of pixel $j$ from the RF center.
+Pixels with $\alpha_j < 0.001$ are masked out (set to zero contribution).
+
+\medskip
+\noindent\textbf{Effect on guidance.}
+Because the kernel ignores pixels outside the mask, the utility gradient
+$\nabla_{x^*} U$ is nonzero \emph{only} at RF pixels.
+The guidance therefore only modifies pixels within the RF;
+the diffusion model controls all remaining pixels freely.
+
+\medskip
+\noindent\textbf{Mask size vs.\ $\beta$.}
+The mask radius scales linearly with $\beta$:
+$r_{\text{mask}} = 2\beta\sqrt{\ln(1/\tau)}$ where $\tau = 0.001$.
+The mask \emph{area} (number of included pixels) scales as $\beta^2$.
+For a $64 \times 64$ image:
+
+\begin{center}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+$\beta$ & Mask pixels & Coverage \\
+\midrule
+0.03 & 69 & 1.7\% \\
+0.05 & 221 & 5.4\% \\
+0.10 (default) & 869 & 21.2\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A smaller mask means fewer pixels receive gradient signal, giving the diffusion
+model more control over the final image appearance.
+This creates a natural tradeoff:
+\begin{itemize}
+  \item \textbf{Small $\beta$}: Natural-looking images (low OOB), but limited
+    utility gain (few pixels to optimize).
+  \item \textbf{Large $\beta$}: High utility achievable, but images become
+    distorted (high OOB) as guidance dominates more pixels.
+\end{itemize}
+
+\noindent\textbf{Important:} $\beta$ is a learnable kernel parameter.
+If not frozen during GP training, the optimizer will change it from the
+initial value, and the final mask size will differ from the intended setting.
+
+
+%% ============================================================
+\section{Summary of Key Hyperparameters}
+
+\begin{center}
+\begin{tabular}{@{}llp{7cm}@{}}
+\toprule
+Parameter & Default & Role \\
+\midrule
+$T$ & 1000 & Total diffusion timesteps \\
+$S$ & 50 & DDIM sampling steps \\
+$w$ & varies & Guidance scale (how strongly utility influences generation) \\
+$K$ & 100 & Number of seeds for best-of-$K$ selection \\
+$f_{\max}$ & 100 & Firing rate guard threshold (Hz) \\
+$M$ & 50 & Number of GP inducing points \\
+$\beta$ & 0.1 & RF mask size (kernel locality parameter) \\
+$s$ & 2.478 & Pixel space scale factor (dataset-specific) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+
+%% ============================================================
+\section*{References}
+
+\begin{itemize}
+\item Ho, J., Jain, A., \& Abbeel, P. (2020).
+  Denoising Diffusion Probabilistic Models. \textit{NeurIPS}.
+\item Song, J., Meng, C., \& Ermon, S. (2021).
+  Denoising Diffusion Implicit Models. \textit{ICLR}.
+\item Dhariwal, P. \& Nichol, A. (2021).
+  Diffusion Models Beat GANs on Image Synthesis. \textit{NeurIPS}.
+\end{itemize}
+
+\end{document}
