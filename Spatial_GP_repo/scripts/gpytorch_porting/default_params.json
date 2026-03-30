@@ -14,6 +14,8 @@
     "Amp": 1.0,
     "beta": 0.1,
     "rho": 0.1,
+    "_comment_rf_init": "sta = RF center from natural images STA (smoothed argmax). ground_truth = from white noise/checkerboard ellipse fits (datasets/rf_centers_ground_truth.npz). center = image center (0,0).",
+    "rf_init": "ground_truth",
     "eps_0x": 0.0,
     "eps_0y": 0.0,
     "gradient_mode": "autograd",

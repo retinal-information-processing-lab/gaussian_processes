@@ -304,8 +304,9 @@ def build_config_from_defaults(**overrides):
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'eps_0x': None,                   # None = compute from STA
-        'eps_0y': None,                   # (default_params.json has 0.0 as placeholder)
+        'rf_init': ker['rf_init'],         # 'sta' | 'ground_truth' | 'center'
+        'eps_0x': None,                   # None = determined by rf_init
+        'eps_0y': None,                   # explicit value overrides rf_init
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
         'bound_rf_center': ker['bound_rf_center'],
@@ -417,7 +418,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'eps_0x': ker['eps_0x'],  # null in YAML = None = compute from STA
+        'rf_init': ker.get('rf_init', 'ground_truth'),
+        'eps_0x': ker['eps_0x'],  # null in YAML = None = determined by rf_init
         'eps_0y': ker['eps_0y'],
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
@@ -620,44 +622,68 @@ def run_single_config(config):
     r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
 
     # =========================================================================
-    # Step 1: Compute RF center from STA
+    # Step 1: Determine RF center
     # =========================================================================
-    # STA is computed BEFORE training set selection because pivoted Cholesky
-    # needs the kernel (which needs the RF center). n_samples_sta controls
-    # how many random images are used — mimics a real experiment with limited
-    # initial data. null = use all available data (idealized).
+    # RF center is determined by rf_init config key:
+    #   'sta'          - smoothed argmax of natural images STA
+    #   'ground_truth' - from white noise/checkerboard ellipse fits
+    #   'center'       - image center (0, 0)
+    # Explicit eps_0x/eps_0y values override rf_init.
     from utils import compute_rf_center_from_sta
 
     ip_selection = config['ip_selection']
     n_samples_sta = config['n_samples_sta']
+    rf_init = config.get('rf_init', 'ground_truth')
 
+    # Always compute STA for visualization (needed for plot_fit)
     if n_samples_sta is not None:
         n_sta = min(n_samples_sta, X.shape[0])
         indices_sta = torch.randperm(X.shape[0], device=device)[:n_sta]
         X_sta = X[indices_sta]
         r_sta = r[indices_sta]
-        print(f"\nSTA computed from {n_sta} random images (n_samples_sta={n_samples_sta})")
     else:
         X_sta = X
         r_sta = r
-        print(f"\nSTA computed from all {X.shape[0]} available images")
 
     eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
         X_sta, r_sta, n_px_side, zscore=True
     )
-
-    # Compute STA image for visualization
     STA_init_2d = _compute_sta_2d(X_sta, r_sta, n_px_side)
 
-    # Use STA-computed center if config has None (null in YAML)
-    eps_0x = config['eps_0x'] if config['eps_0x'] is not None else eps_0x_sta
-    eps_0y = config['eps_0y'] if config['eps_0y'] is not None else eps_0y_sta
-
-    print(f"RF center: ({eps_0x:.4f}, {eps_0y:.4f})")
-    if eps_0x == eps_0x_sta and eps_0y == eps_0y_sta:
-        print(f"  (computed from STA)")
+    # Determine RF center
+    if config['eps_0x'] is not None and config['eps_0y'] is not None:
+        # Explicit override from config/CLI
+        eps_0x = config['eps_0x']
+        eps_0y = config['eps_0y']
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from config override, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+    elif rf_init == 'sta':
+        eps_0x = eps_0x_sta
+        eps_0y = eps_0y_sta
+        n_src = n_samples_sta if n_samples_sta is not None else X.shape[0]
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from STA, {n_src} images)")
+    elif rf_init == 'ground_truth':
+        rf_path = Path(__file__).parent / 'datasets' / 'rf_centers_ground_truth.npz'
+        rf_data = np.load(rf_path)
+        rf_key = f'norm_{n_px_side}'
+        if rf_key not in rf_data:
+            raise ValueError(
+                f"Ground-truth RF centers not available for {n_px_side}x{n_px_side}. "
+                f"Available: {[k for k in rf_data.keys() if k.startswith('norm_')]}. "
+                f"Use rf_init='sta' or rf_init='center' instead."
+            )
+        eps_0x = float(rf_data[rf_key][cell][0])
+        eps_0y = float(rf_data[rf_key][cell][1])
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from ground-truth ellipses, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+    elif rf_init == 'center':
+        eps_0x = 0.0
+        eps_0y = 0.0
+        print(f"\nRF center: (0.0000, 0.0000)")
+        print(f"  (image center, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
     else:
-        print(f"  (from config, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+        raise ValueError(f"Unknown rf_init='{rf_init}'. Use 'sta', 'ground_truth', or 'center'.")
 
     # =========================================================================
     # Step 2: Select inducing points
