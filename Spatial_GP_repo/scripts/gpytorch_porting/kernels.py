@@ -197,12 +197,9 @@ class ArcCosineKernel(Kernel):
             name='raw_sigma_0',
             parameter=torch.nn.Parameter(torch.zeros(1))
         )
-        # INVESTIGATION: Direct parameterization (identity transform) matching vargp_old.
-        # raw_sigma_0 = sigma_0 directly. Positivity via clamp(min=1e-10).
-        # Revert to exp transform after testing: Positive(transform=torch.exp, inv_transform=torch.log)
-        _clamp = lambda x: x.clamp(min=1e-10)
-        _identity = lambda x: x
-        self.register_constraint('raw_sigma_0', Positive(transform=_clamp, inv_transform=_identity))
+        # Positivity via exp transform: raw = log(sigma_0), sigma_0 = exp(raw).
+        # Matches paper's parameterization (sigma_0 = exp(sigma_b)).
+        self.register_constraint('raw_sigma_0', Positive(transform=torch.exp, inv_transform=torch.log))
 
         # Now set the actual value via the property (applies inverse transform)
         self.sigma_0 = sigma_0
