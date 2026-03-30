@@ -638,12 +638,29 @@ when given identical inputs. The 0.042 gap was from confounds (Finding 19).
 defaults). Improved from 11/41 to 15/41 cells > 0.8. Paper claims 36/41.
 
 **Permanent code changes made on this branch (pietro/investigate-paper-gap):**
-- sigma_0 direct (identity) parameterization -- committed
+- sigma_0 direct (identity) parameterization -- committed, BUT SEE CAVEAT BELOW
 - LBFGS frozen-param filter (M-step) -- committed
 - f_mean thresholds: mean>100 + max>500 -- committed
 - fix_Amp flag for freezing Amp at 1.0 -- committed
 - interleave_fstep flag for damped Newton inside E-step -- committed
 - vargp_old model/likelihood reference bug fix -- committed
+
+**CAVEAT: sigma_0 direct parameterization may need reverting.**
+sigma_0 appears SQUARED in the kernel: v_x = x^T C x + sigma_0^2. This means:
+- The sign of sigma_0 is irrelevant (symmetric around zero)
+- The gradient vanishes at sigma_0=0 (saddle point)
+- The mathematically natural parameter is sigma_0^2 (or log(sigma_0^2))
+- The paper uses exp(sigma_b), effectively optimizing in log(sigma_0) space
+- Our exp transform (raw = log(sigma_0)) was mathematically equivalent to the paper
+- The +0.006 improvement from direct parameterization was measured AFTER fixing
+  the IP selection and Amp confounds, so it's a clean comparison -- but small
+- It's possible exp was fine all along and the stagnation we saw earlier was
+  caused by the other confounds, not by the transform itself
+
+DEFERRED: Re-evaluate sigma_0 parameterization (exp vs direct vs optimize
+sigma_0^2 directly). Needs a controlled test with all confounds fixed. The
+current direct parameterization works but is not mathematically principled
+for a parameter that enters squared.
 
 **Investigation rules established:**
 - ip_selection='random' for all mode comparisons (pivoted silently differs for vargp_old)
