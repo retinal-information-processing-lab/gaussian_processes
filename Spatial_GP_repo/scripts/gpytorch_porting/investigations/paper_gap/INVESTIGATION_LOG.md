@@ -624,18 +624,52 @@ Mean adj_r2=0.730, 15/41 > 0.8, 34/41 > 0.6.
    too conservative for A=0.01 -- often converges immediately without updating.
 6. The best combo uses our broad beta + paper's small A init + interleaving.
 
-**Paper target (36/41 > 0.8) still far.** Our best is 15-17/41. The remaining
-gap is likely from architectural differences we cannot easily change:
-no eigenspace projection, scipy L-BFGS-B, float64, and possibly undocumented
-training details in the paper.
+**Paper target (36/41 > 0.8) still far on adj_r2.** Our best is 15-17/41.
+BUT see Finding 21 below -- the paper likely reports a different metric.
+
+## Finding 21: Metric Definition Mismatch (PROBABLE)
+
+The paper claims "adjusted R^2 > 0.8 for 36/41 cells" and defines Eq. 5 as:
+  adjusted_r2 = (mean_accuracy / sqrt(reliability))^2
+
+Our best config (broad+interleave) gives:
+  - 15/41 > 0.8 on adjusted_r2 (the squared Eq. 5 formula)
+  - **36/41 > 0.8 on explained_var** (= mean_accuracy / reliability, unsquared)
+
+Evidence that the paper reports the unsquared metric:
+
+1. Figure 2F caption says "explained variance" while y-axis says "adjusted r^2"
+2. Figure 2F shows GP data points ABOVE 1.0 -- the squared formula bounds results
+   more tightly; the unsquared `accuracy/reliability` exceeds 1.0 more easily
+   (needs accuracy > reliability, not accuracy > sqrt(reliability))
+3. The only evaluation code in the repo (`regular_cnn.py:get_model_table()`)
+   computes `accuracy / reliability` (unsquared) -- stored as
+   `explained_variance_fractions_bis`. No code implements the squared Eq. 5.
+4. Our 36/41 count matches the paper's claim exactly on the unsquared metric.
+
+The CNN code also computes a VARIANCE-BASED metric:
+  `explained_variance_fractions` = (var_total - MSE) / (var_total - var_noise)
+which is yet another formula. We did not compute this for our GP fits.
+
+**This is our best hypothesis, NOT confirmed ground truth.** The GP evaluation
+code is not in the public repo (it's in a private `pyretina_systemidentification`
+package). Ways to verify:
+- Refit a CNN on the same data and reproduce Figure 2F
+- Fit a GP with flat prior (C=I) and check if both metrics match their Figure 2F
+  "GP flat prior" column
+- Contact the authors
+- Compute all three metric variants and produce a figure matching Fig 2F layout
+
+Full metric comparison: see `investigations/paper_gap/METRICS_COMPARISON.md`
 
 ## Current Status
 
 **Gap A FULLY CLOSED.** vargp_direct matches vargp_old within 0.002 avg adj_r2
 when given identical inputs. The 0.042 gap was from confounds (Finding 19).
 
-**Gap B partially closed.** Best result: avg adj_r2 = 0.730 (was 0.678 with
-defaults). Improved from 11/41 to 15/41 cells > 0.8. Paper claims 36/41.
+**Gap B likely closed (metric mismatch).** On adjusted_r2 (squared, Eq. 5): our
+best is 15/41 > 0.8. On explained_var (unsquared, likely what the paper reports):
+our best is **36/41 > 0.8**, matching the paper's claim exactly.
 
 **Permanent code changes made on this branch (pietro/investigate-paper-gap):**
 - sigma_0 direct (identity) parameterization -- committed, BUT SEE CAVEAT BELOW
