@@ -75,6 +75,8 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **Known bug**: `_validate_model_params()` in `run_single_mode.py` crashes for `vargp_direct` mode with `AttributeError: 'DirectVGPModel' object has no attribute 'covar_module'`. Training and evaluation complete fine — only the post-training parameter check fails. Needs fixing.
 
+**vargp_old IP selection confound**: `run_single_mode.py` line 672 has `if ip_selection == 'pivoted' and mode != 'vargp_old'` — vargp_old ALWAYS gets random IPs regardless of config. Use `ip_selection='random'` for fair mode comparisons.
+
 **Import side effects**: Importing from old codebase (1D/2D playgrounds, utility.py) can change global state (e.g., `torch.set_default_dtype`). Always guard with save/restore pattern. See `acquisition.py` for example.
 
 **Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
@@ -164,7 +166,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | `eigenspace_gradients.py` | Analytical gradient functions for eigenspace M-step |
 | `eigenspace_training.py` | train_eigenspace(), predict_eigenspace(), compute_elbo_eigenspace() |
 | `eigenspace_estep.py` | E-step: Newton update in eigenspace |
-| `eigenspace_fstep.py` | F-step: LBFGS for A with analytical lambda0 |
+| `eigenspace_fstep.py` | F-step: LBFGS for A with analytical lambda0; `damped_newton_update_A_lambda0()` for interleaved F-step |
 | `eigenspace_mstep.py` | M-step: LBFGS for kernel (autograd & analytical) |
 
 ### GPyTorch Implementation (default_gpy mode)
@@ -207,6 +209,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | Path | Purpose |
 |------|---------|
 | `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
+| `investigations/paper_gap/` | Paper performance gap investigation. 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md` (full findings), `METRICS_COMPARISON.md` (metric definitions + results). Scripts: `run_sweep.py` (6 configs x 41 cells x 3 seeds). |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -292,9 +295,15 @@ There are three distinct implementations. They are NOT equivalent:
 
 2. **vargp_old** (`utils.py:varGP()`): Our approximation of the paper's approach. Has modifications NOT in the paper: Amp parameter, eigenspace projection. Does NOT interleave F-step (hardcoded `for i_estep in range(1)` loop). Uses torch LBFGS, float32.
 
-3. **vargp_direct** (`eigenspace_*.py`): GPyTorch-based reimplementation. Same algorithmic structure as vargp_old but with GPyTorch patterns (softplus constraints, autograd gradients).
+3. **vargp_direct** (`eigenspace_*.py`): GPyTorch-based reimplementation. Proven equivalent to vargp_old within 0.002 avg adj_r2 when confounds are controlled (Finding 19). New features: `interleave_fstep` (damped Newton F-step inside E-step), `fix_Amp` (freeze Amp at 1.0).
 
 See `investigations/paper_gap/INVESTIGATION_LOG.md` Finding 18 for the full three-way comparison table.
+
+**Paper init** (verified parameterization mapping, both use [-1,1] coordinates):
+- beta_nat=0.0452, rho_nat=0.0821, A=1e-4, lambda0=-1, sigma_0=1.0, NO Amp
+- Paper: `0.5*exp(theta[4])` in locality exponent = our `exp(raw_m2log2beta)` = `1/(4*beta_nat^2)`
+
+**Metric note**: Paper reports "adjusted R^2 > 0.8 for 36/41 cells" but likely computed the unsquared metric (mean_accuracy / reliability, our `explained_var`). Our best config matches 36/41 on that metric. See `investigations/paper_gap/METRICS_COMPARISON.md` and Finding 21.
 
 ### Original varGP (utils.py) -- vargp_old
 | Function | Location | Purpose |
@@ -375,5 +384,5 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 ---
 
-*Last updated: February 2025*
-*API cleanup: GPyTorch-like model(X) pattern, eigenspace_model.py reorganization*
+*Last updated: March 2026*
+*Paper gap investigation: Gap A closed, metric mismatch discovered, rf_init config added*
