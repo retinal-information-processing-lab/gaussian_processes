@@ -1,5 +1,31 @@
 # Session Log
 
+## 2026-03-30: Paper gap investigation -- Gap A closed, metric mismatch discovered
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Proved vargp_direct matches vargp_old within 0.002 (Gap A closed, Finding 19).
+  Original 0.042 gap was from: IP selection confound (0.028), Amp frozen/free (0.010),
+  sigma_0 parameterization (0.004).
+- Fetched and analyzed paper's actual GitHub code. Found it differs from BOTH our
+  implementations: no Amp, F-step interleaving, no eigenspace, float64, scipy L-BFGS-B.
+- Implemented: interleave_fstep (damped Newton), fix_Amp, LBFGS frozen-param filter,
+  f_mean thresholds, sigma_0 direct parameterization, vargp_old bug fix.
+- Ran full 738-run sweep (6 configs x 41 cells x 3 seeds). Best: broad+interleave
+  (avg adj_r2=0.730, 15/41>0.8, 36/41>0.8 on explained_var).
+- Discovered probable metric mismatch (Finding 21): paper likely reports unsquared
+  explained_var despite calling it "adjusted R^2". Our 36/41>0.8 matches exactly.
+
+**Documentation updated:** INVESTIGATION_LOG.md (Findings 1-21), METRICS_COMPARISON.md
+(new), memory files, SESSION_LOG.md
+
+**Hanging threads:**
+- INVESTIGATION markers in kernels.py:200 and eigenspace_mstep.py:319 (cosmetic)
+- sigma_0 direct vs exp parameterization -- deferred re-evaluation
+- Metric mismatch not confirmed (GP eval code in private package)
+- CLAUDE.md updates for this branch deferred
+
 ## 2026-03-24: All-cells fitting, STA edge artifact investigation, stability fixes
 
 **Experiments run**: 1476 fits across 108x108, 64x64, 48x48 (41 cells x 3 seeds x 2 modes x 2 M values per dataset). Plus 123-run LSTA-init experiment on 64x64.
