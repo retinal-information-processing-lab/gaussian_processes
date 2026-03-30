@@ -52,7 +52,8 @@
     "eigval_tol": 0.0001,
     "gpy_lbfgs_max_iter": 20,
     "lambda_var_clamp": 1e-6,
-    "stability_threshold": 1000
+    "f_mean_max_threshold": 500,
+    "f_mean_mean_threshold": 100
   },
 
   "data": {

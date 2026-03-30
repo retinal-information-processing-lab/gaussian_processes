@@ -26,7 +26,8 @@ def fstep_eigenspace(
     lambda_var: torch.Tensor,
     n_fstep: int,
     lr: float,
-    stability_threshold: float = 1000
+    f_mean_max_threshold: float = 500,
+    f_mean_mean_threshold: float = 100
 ):
     """F-step for eigenspace mode: Optimize A with LBFGS, lambda0 computed analytically.
 
@@ -88,9 +89,10 @@ def fstep_eigenspace(
         # Compute f_mean
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        # Stability check: mean>100 catches global blowup (matching varGP),
-        # max>500 catches localized blowup, NaN catches overflow
-        if (f_mean.mean().item() > 100 or f_mean.max().item() > 500
+        # Stability check: mean threshold catches global blowup,
+        # max threshold catches localized blowup, NaN catches overflow
+        if (f_mean.mean().item() > f_mean_mean_threshold
+                or f_mean.max().item() > f_mean_max_threshold
                 or torch.any(torch.isnan(f_mean))):
             return torch.tensor(float('inf'), device=A.device, dtype=A.dtype)
 
@@ -141,7 +143,8 @@ def damped_newton_update_A_lambda0(
     alpha: float = 0.25,
     max_iter: int = 100,
     tol: float = 1e-6,
-    stability_threshold: float = 1000,
+    f_mean_max_threshold: float = 500,
+    f_mean_mean_threshold: float = 100,
 ) -> torch.Tensor:
     """Damped Newton update for A and lambda0 (matches paper's updateA).
 
@@ -169,7 +172,8 @@ def damped_newton_update_A_lambda0(
         alpha: Damping factor (default 0.25, matching paper)
         max_iter: Maximum Newton iterations (default 100)
         tol: Convergence tolerance on sum(|gradient|) (default 1e-6)
-        stability_threshold: Max f_mean before rejecting step
+        f_mean_max_threshold: Max f_mean.max() before rejecting step
+        f_mean_mean_threshold: Max f_mean.mean() before rejecting step
 
     Returns:
         f_mean: Updated expected firing rate, shape (N,)
@@ -231,7 +235,8 @@ def damped_newton_update_A_lambda0(
             if trial_linear.max().item() > 80.0:
                 break
             trial_f = torch.exp(trial_linear)
-            if (trial_f.mean().item() > 100 or trial_f.max().item() > 500
+            if (trial_f.mean().item() > f_mean_mean_threshold
+                    or trial_f.max().item() > f_mean_max_threshold
                     or torch.any(torch.isnan(trial_f))):
                 break
 

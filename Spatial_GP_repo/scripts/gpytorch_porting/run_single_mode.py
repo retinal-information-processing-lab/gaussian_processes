@@ -335,7 +335,8 @@ def build_config_from_defaults(**overrides):
         'eigval_tol': mod['eigval_tol'],
         'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
         'lambda_var_clamp': mod['lambda_var_clamp'],
-        'stability_threshold': mod['stability_threshold'],
+        'f_mean_max_threshold': mod['f_mean_max_threshold'],
+        'f_mean_mean_threshold': mod['f_mean_mean_threshold'],
 
         # --- Data (from data section) ---
         'data_path': dat['path'],
@@ -449,7 +450,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'cholesky_max_tries': num['cholesky_max_tries'],
         'eigval_tol': num['eigval_tol'],
         'lambda_var_clamp': num['lambda_var_clamp'],
-        'stability_threshold': num['stability_threshold'],
+        'f_mean_max_threshold': num['f_mean_max_threshold'],
+        'f_mean_mean_threshold': num['f_mean_mean_threshold'],
 
         # Inducing point selection
         'ip_selection': ind['selection_method'],
@@ -740,7 +742,8 @@ def run_single_config(config):
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
     lambda_var_clamp = config['lambda_var_clamp']
-    stability_threshold = config['stability_threshold']
+    f_mean_max_threshold = config['f_mean_max_threshold']
+    f_mean_mean_threshold = config['f_mean_mean_threshold']
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
 
@@ -902,7 +905,8 @@ def run_single_config(config):
                 stop_window=stop_window,
                 stop_thresh=stop_thresh,
                 min_iterations=min_iterations,
-                stability_threshold=stability_threshold,
+                f_mean_max_threshold=f_mean_max_threshold,
+                f_mean_mean_threshold=f_mean_mean_threshold,
                 fix_Amp=config.get('fix_Amp', False),
                 interleave_fstep=config.get('interleave_fstep', False),
             )
@@ -998,7 +1002,8 @@ def run_single_config(config):
                 lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
                 jitter=jitter,
                 cholesky_max_tries=config['cholesky_max_tries'],
-                stability_threshold=stability_threshold,
+                f_mean_max_threshold=f_mean_max_threshold,
+                f_mean_mean_threshold=f_mean_mean_threshold,
                 lambda_var_clamp=lambda_var_clamp,
             )
             losses = result['losses']
@@ -1241,8 +1246,10 @@ def main():
                         help=f'Max Cholesky retry attempts (default: {defaults["model"]["cholesky_max_tries"]})')
     parser.add_argument('--lambda-var-clamp', type=float, default=defaults['model']['lambda_var_clamp'],
                         help=f'Min posterior variance clamp (default: {defaults["model"]["lambda_var_clamp"]})')
-    parser.add_argument('--stability-threshold', type=float, default=defaults['model']['stability_threshold'],
-                        help=f'Max mean firing rate before step rejection (default: {defaults["model"]["stability_threshold"]})')
+    parser.add_argument('--f-mean-max-threshold', type=float, default=defaults['model']['f_mean_max_threshold'],
+                        help=f'Max f_mean.max() before step rejection (default: {defaults["model"]["f_mean_max_threshold"]})')
+    parser.add_argument('--f-mean-mean-threshold', type=float, default=defaults['model']['f_mean_mean_threshold'],
+                        help=f'Max f_mean.mean() before step rejection (default: {defaults["model"]["f_mean_mean_threshold"]})')
 
     parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
@@ -1329,7 +1336,8 @@ def main():
         jitter=args.jitter,
         cholesky_max_tries=args.cholesky_max_tries,
         lambda_var_clamp=args.lambda_var_clamp,
-        stability_threshold=args.stability_threshold,
+        f_mean_max_threshold=args.f_mean_max_threshold,
+        f_mean_mean_threshold=args.f_mean_mean_threshold,
         use_cache=args.use_cache,
         mstep_analytical=args.mstep_analytical,
         unwhitened_variational_dist=args.unwhitened_variational_dist,

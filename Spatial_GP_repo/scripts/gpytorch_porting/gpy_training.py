@@ -22,7 +22,8 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                        early_stop=True, stop_window=20, stop_thresh=5e-3, min_iterations=10,
                        lbfgs_max_iter=20,
                        jitter=1e-4, cholesky_max_tries=3,
-                       stability_threshold=1000, lambda_var_clamp=1e-6):
+                       f_mean_max_threshold=500, f_mean_mean_threshold=100,
+                       lambda_var_clamp=1e-6):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -44,7 +45,8 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         lbfgs_max_iter: Max inner iterations for LBFGS per outer step (default: 20)
         jitter: Jitter value for Cholesky retry schedule starting point (default: 1e-4)
         cholesky_max_tries: Number of Cholesky retry attempts (default: 3)
-        stability_threshold: Max mean firing rate before step rejection (default: 1000)
+        f_mean_max_threshold: Max f_mean.max() before step rejection (default: 500)
+        f_mean_mean_threshold: Max f_mean.mean() before step rejection (default: 100)
         lambda_var_clamp: Minimum posterior variance clamp (default: 1e-6)
 
     Returns:
@@ -116,7 +118,9 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         A_val = likelihood.A.squeeze()
         lambda0_val = likelihood.lambda0.squeeze()
         f_mean = torch.exp(A_val * output.mean + 0.5 * A_val**2 * output.variance + lambda0_val)
-        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+        if (f_mean.mean().item() > f_mean_mean_threshold
+                or f_mean.max().item() > f_mean_max_threshold
+                or torch.any(torch.isnan(f_mean))):
             return torch.tensor(float('inf'), device=train_x.device, dtype=train_x.dtype)
         ell = likelihood.expected_log_prob(train_y, output)
         kl = model.variational_strategy.kl_divergence()

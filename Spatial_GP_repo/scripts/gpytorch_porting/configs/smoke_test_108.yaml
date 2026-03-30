@@ -72,7 +72,8 @@ numerical:
   cholesky_max_tries: 3
   eigval_tol: 1.0e-4
   lambda_var_clamp: 1.0e-6
-  stability_threshold: 1000
+  f_mean_max_threshold: 500
+  f_mean_mean_threshold: 100
   dtype: float32
   device: cuda
 

@@ -80,7 +80,8 @@ numerical:
   cholesky_max_tries: 3            # WIRED via gpy_training context manager
   eigval_tol: 1.0e-4               # WIRED via DirectVGPModel constructor
   lambda_var_clamp: 1.0e-6         # WIRED via model.lambda_var_clamp + function params
-  stability_threshold: 1000        # WIRED via config -> training functions
+  f_mean_max_threshold: 500
+  f_mean_mean_threshold: 100
   dtype: float32
   device: cuda
 

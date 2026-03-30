@@ -101,7 +101,8 @@ def train_eigenspace(
     stop_window: int = 20,
     stop_thresh: float = 5e-3,
     min_iterations: int = 10,
-    stability_threshold: float = 1000,
+    f_mean_max_threshold: float = 500,
+    f_mean_mean_threshold: float = 100,
     fix_Amp: bool = False,
     interleave_fstep: bool = False,
 ) -> Dict:
@@ -126,7 +127,8 @@ def train_eigenspace(
         stop_window: Number of iterations to look back for improvement (default: 20)
         stop_thresh: Minimum relative improvement over window to continue (default: 5e-3 = 0.5%)
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
-        stability_threshold: Max mean firing rate before step rejection (default: 1000)
+        f_mean_max_threshold: Max f_mean.max() before step rejection (default: 500)
+        f_mean_mean_threshold: Max f_mean.mean() before step rejection (default: 100)
 
     Returns:
         Dict with:
@@ -212,7 +214,8 @@ def train_eigenspace(
                 # Paper's approach: update A, lambda0 at every E-step iteration
                 f_mean = damped_newton_update_A_lambda0(
                     model, r, lambda_m, lambda_var,
-                    stability_threshold=stability_threshold,
+                    f_mean_max_threshold=f_mean_max_threshold,
+                    f_mean_mean_threshold=f_mean_mean_threshold,
                 )
                 A = model.likelihood.A.squeeze()
                 lambda0 = model.likelihood.lambda0.squeeze()
@@ -226,9 +229,10 @@ def train_eigenspace(
                     estep_idx=i_estep
                 ))
 
-            # Check for divergence: mean>100 catches global blowup (matching varGP F-step),
-            # max>500 catches localized blowup. Both trigger revert.
-            if (f_mean.mean().item() > 100 or f_mean.max().item() > 500
+            # Check for divergence: mean threshold catches global blowup,
+            # max threshold catches localized blowup. Both trigger revert.
+            if (f_mean.mean().item() > f_mean_mean_threshold
+                    or f_mean.max().item() > f_mean_max_threshold
                     or torch.any(torch.isnan(f_mean))):
                 model.update_variational_params(m_b_prev, V_b_prev)
                 if interleave_fstep:
@@ -247,7 +251,8 @@ def train_eigenspace(
         # ===== F-step: Optimize A =====
         if not interleave_fstep:
             fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
-                             stability_threshold=stability_threshold)
+                             f_mean_max_threshold=f_mean_max_threshold,
+                             f_mean_mean_threshold=f_mean_mean_threshold)
 
         A = model.likelihood.A.squeeze()
         lambda0 = model.likelihood.lambda0.squeeze()
@@ -268,11 +273,11 @@ def train_eigenspace(
         if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
                 mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
-                                            stability_threshold=stability_threshold,
+                                            f_mean_mean_threshold=f_mean_mean_threshold,
                                             lambda_var_clamp=model.lambda_var_clamp)
             else:
                 mstep_eigenspace_autograd(model, r, n_mstep, lr_m,
-                                          stability_threshold=stability_threshold,
+                                          f_mean_mean_threshold=f_mean_mean_threshold,
                                           lambda_var_clamp=model.lambda_var_clamp)
 
             if capture_checkpoints:
