@@ -438,11 +438,10 @@ def test_vjp_correctness():
     loss_vjp.backward()
 
     # Convert VJP gradients to raw gradients for comparison
-    # sigma_0: exp transform -> d(exp(raw))/d(raw) = exp(raw) = sigma_0
+    # sigma_0: identity transform -> d(raw)/d(raw) = 1.0 (no conversion needed)
     # Amp: softplus transform -> d(softplus(raw))/d(raw) = sigmoid(raw)
-    exp_raw_sigma0 = torch.exp(raw_sigma0).item()
     sigmoid_raw_Amp = torch.sigmoid(raw_Amp).item()
-    vjp_grad_raw_sigma0 = sigma_0.grad.item() * exp_raw_sigma0 if sigma_0.grad is not None else 0
+    vjp_grad_raw_sigma0 = sigma_0.grad.item() if sigma_0.grad is not None else 0
     vjp_grad_raw_Amp = Amp.grad.item() * sigmoid_raw_Amp if Amp.grad is not None else 0
 
     vjp_grads = {
@@ -455,7 +454,7 @@ def test_vjp_correctness():
     }
 
     print(f"\nK matrix max diff: {(K_auto - K_vjp).abs().max().item():.2e}")
-    print(f"Exp constraint derivatives: exp(raw_sigma0) = {exp_raw_sigma0:.4f}, exp(raw_Amp) = {exp_raw_Amp:.4f}")
+    print(f"Constraint derivatives: sigma_0=identity (factor 1.0), sigmoid(raw_Amp)={sigmoid_raw_Amp:.4f} (softplus)")
     print("\nGradient comparison (autograd vs VJP):")
 
     all_pass = True

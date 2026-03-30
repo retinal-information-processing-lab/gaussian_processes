@@ -237,15 +237,15 @@ def test_eigenspace_projection_gradients(verbose=False):
     all_passed = True
 
     params_to_test = [
-        ('sigma_0', 'raw_sigma_0', True),  # (name in dK, raw_name, uses_softplus)
-        ('Amp', 'raw_Amp', True),
-        ('eps_0x', 'eps_0x', False),
-        ('eps_0y', 'eps_0y', False),
-        ('raw_m2log2beta', 'raw_m2log2beta', False),
-        ('raw_mlog2rho2', 'raw_mlog2rho2', False),
+        ('sigma_0', 'raw_sigma_0', 'identity'),  # (name in dK, raw_name, transform)
+        ('Amp', 'raw_Amp', 'softplus'),
+        ('eps_0x', 'eps_0x', 'none'),
+        ('eps_0y', 'eps_0y', 'none'),
+        ('raw_m2log2beta', 'raw_m2log2beta', 'none'),
+        ('raw_mlog2rho2', 'raw_mlog2rho2', 'none'),
     ]
 
-    for param_name, raw_name, uses_softplus in params_to_test:
+    for param_name, raw_name, transform in params_to_test:
         print(f"\n  Testing {param_name}:")
 
         # Get raw parameter
@@ -270,10 +270,11 @@ def test_eigenspace_projection_gradients(verbose=False):
         # Analytical gradient of K_tilde_b.sum() w.r.t. param (not raw)
         analytical_dparam = dK_tilde_b[param_name].sum()
 
-        # If uses softplus, apply chain rule
-        if uses_softplus:
-            sigmoid_raw = torch.sigmoid(raw_val)
-            analytical_draw = analytical_dparam * sigmoid_raw
+        # Apply chain rule based on transform type
+        if transform == 'softplus':
+            analytical_draw = analytical_dparam * torch.sigmoid(raw_val)
+        elif transform == 'identity':
+            analytical_draw = analytical_dparam  # chain rule factor = 1.0
         else:
             analytical_draw = analytical_dparam
 
