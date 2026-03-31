@@ -1,0 +1,379 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+
+\title{Guidance Approaches for Diffusion-Regularized Utility Optimization}
+\author{Discussion Notes}
+\date{March 2026}
+
+\newcommand{\xb}{\mathbf{x}}
+\newcommand{\xc}{\xb_{\mathrm{c}}}  % current image being optimized
+\newcommand{\zb}{\mathbf{z}}
+\newcommand{\eb}{\boldsymbol{\epsilon}}
+\newcommand{\Ib}{\mathbf{I}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\alphabar}{\bar{\alpha}}
+
+\begin{document}
+\maketitle
+
+\section{Setup and Notation}
+
+We are optimizing an image $\xc \in \R^d$ to maximize a GP-based utility function $U(\xc)$
+while keeping $\xc$ on (or near) the natural image manifold $\mathcal{M}$.
+
+At each optimization step, we update $\xc$ by following the gradient of a combined objective.
+The utility gradient $\nabla_{\xc} U(\xc)$ pushes $\xc$ toward high-utility regions, but tends to
+drive it off $\mathcal{M}$ (e.g., by amplifying pixel norms). We want to add a ``naturalness'' term
+that counteracts this drift.
+
+We have a trained DDPM with noise predictor $\eb_\theta(\xb_t, t)$, trained on natural images
+corrupted at noise levels $t = 1, \ldots, T$. The noise schedule defines $\alphabar_t = \prod_{s=1}^t (1-\beta_s)$.
+
+The key identity relating noise prediction to the score (gradient of log-density):
+\begin{equation}
+    \nabla_{\xb_t} \log p_t(\xb_t) \approx s_\theta(\xb_t, t)
+    = -\frac{\eb_\theta(\xb_t, t)}{\sqrt{1 - \alphabar_t}}
+    \label{eq:score_from_eps}
+\end{equation}
+
+And the Tweedie estimate of the clean image given a noisy observation:
+\begin{equation}
+    \hat{\xb}_0(\xb_t, t)
+    = \frac{\xb_t - \sqrt{1 - \alphabar_t}\, \eb_\theta(\xb_t, t)}{\sqrt{\alphabar_t}}
+    \label{eq:tweedie}
+\end{equation}
+
+Below we discuss three approaches to incorporating the diffusion model into the optimization,
+with their respective problems.
+
+
+% ============================================================================
+\section{Approach A: L2 Penalty Toward Tweedie Estimate (Current Implementation)}
+% ============================================================================
+
+\subsection{Method}
+
+At each optimization step:
+\begin{enumerate}[nosep]
+    \item Treat $\xc$ as a clean image $\xb_0$.
+    \item Corrupt it at a fixed noise level $t^*$ (e.g., $t^* = 50$):
+    \begin{equation}
+        \xb_t = \sqrt{\alphabar_{t^*}}\, \xc + \sqrt{1 - \alphabar_{t^*}}\, \eb,
+        \qquad \eb \sim \mathcal{N}(\mathbf{0}, \Ib)
+        \label{eq:corrupt}
+    \end{equation}
+    \item Feed $\xb_t$ to the UNet to predict noise $\hat{\eb} = \eb_\theta(\xb_t, t^*)$.
+    \item Compute the Tweedie estimate via Eq.~\eqref{eq:tweedie}:
+    \begin{equation}
+        \hat{\xb}_0 = \frac{\xb_t - \sqrt{1-\alphabar_{t^*}}\,\hat{\eb}}{\sqrt{\alphabar_{t^*}}}
+    \end{equation}
+    \item \textbf{Detach} $\hat{\xb}_0$ from the computation graph (no backprop through UNet).
+    \item Add an L2 penalty pulling $\xc$ toward $\hat{\xb}_0$:
+    \begin{equation}
+        \mathcal{L} = -U(\xc) + \frac{\lambda}{2} \|\xc - \hat{\xb}_0\|^2
+        \label{eq:loss_l2}
+    \end{equation}
+\end{enumerate}
+
+The gradient of the regularization term w.r.t.\ $\xc$ is:
+\begin{equation}
+    \nabla_{\xc} \left[\frac{\lambda}{2}\|\xc - \hat{\xb}_0\|^2\right]
+    = \lambda\,(\xc - \hat{\xb}_0)
+\end{equation}
+
+The SGD update becomes:
+\begin{equation}
+    \xc \leftarrow \xc + \eta\,\nabla_{\xc} U(\xc)
+    + \eta\,\lambda\,(\hat{\xb}_0 - \xc)
+    \label{eq:update_l2}
+\end{equation}
+
+\subsection{Connection to Score Distillation}
+
+Substituting the definitions of $\xb_t$ and $\hat{\xb}_0$, the regularization gradient simplifies to:
+\begin{equation}
+    \xc - \hat{\xb}_0
+    = \frac{\sqrt{1-\alphabar_{t^*}}}{\sqrt{\alphabar_{t^*}}}\,(\hat{\eb} - \eb)
+    \label{eq:sds_connection}
+\end{equation}
+
+This is proportional to $(\hat{\eb} - \eb)$, the difference between the predicted and actual noise.
+This is the same quantity used in Score Distillation Sampling (SDS), though with a different
+weighting factor. SDS uses $w(t)\sqrt{\alphabar_t}\,(\hat{\eb} - \eb)$; our L2 formulation
+uses $\sqrt{(1-\alphabar_t)/\alphabar_t}\,(\hat{\eb} - \eb)$.
+
+\subsection{Problems}
+
+\begin{enumerate}
+    \item \textbf{No signal near the natural manifold.}
+    When $\xc$ is a natural image, $\hat{\xb}_0 \approx \xc$ (the UNet correctly recovers
+    the clean image from its noisy version). The residual $\xc - \hat{\xb}_0$ is dominated
+    by the UNet's reconstruction error, which is effectively random noise with no systematic
+    direction. The regularization provides no useful gradient near $\mathcal{M}$.
+
+    This is by design: the penalty is \emph{adaptive} --- it is small when $\xc$ is natural
+    and grows as $\xc$ drifts away. But it means the method has no preventive force; it only
+    reacts after the image has already become unnatural.
+
+    \item \textbf{Norm amplification not prevented.}
+    The Tweedie estimate $\hat{\xb}_0$ of an amplified image is itself amplified. The UNet
+    denoises ``amplified + noise'' back to ``amplified clean.'' The L2 penalty preserves
+    structure (spatial correlations) but does not penalize the overall amplitude. The direction
+    $(\hat{\xb}_0 - \xc)$ corrects local texture but not global norm.
+
+    \item \textbf{Fixed noise level $t^*$.}
+    The choice of $t^*$ determines what scale of features the regularization ``sees.''
+    At $t^* = 50$ ($\alphabar \approx 0.986$, noise $\approx 12\%$ of signal), the UNet
+    captures fine-to-medium structure. Large-scale distortions (e.g., global brightening)
+    may be invisible at this noise level. There is no principled way to choose $t^*$.
+
+    \item \textbf{Single noise sample.}
+    Each step uses one draw of $\eb$. The gradient $(\hat{\eb} - \eb)$ is a single-sample
+    estimate, introducing variance. Using a fixed seed (as in the current implementation)
+    removes variance but introduces bias: the regularization always ``sees'' the same
+    noise realization.
+\end{enumerate}
+
+
+% ============================================================================
+\section{Approach B: Direct Score as Gradient Term}
+% ============================================================================
+
+\subsection{Method}
+
+Use the score function $s_\theta(\xb_t, t)$ directly as a gradient contribution.
+At each optimization step:
+\begin{enumerate}[nosep]
+    \item Corrupt $\xc$ at noise level $t^*$:
+    $\xb_t = \sqrt{\alphabar_{t^*}}\, \xc + \sqrt{1 - \alphabar_{t^*}}\, \eb$
+    \item Predict noise: $\hat{\eb} = \eb_\theta(\xb_t, t^*)$
+    \item Compute the score via Eq.~\eqref{eq:score_from_eps}:
+    \begin{equation}
+        s_\theta(\xb_t, t^*) = -\frac{\hat{\eb}}{\sqrt{1-\alphabar_{t^*}}}
+    \end{equation}
+    \item Use the score as the naturalness gradient, scaled to $\xc$-space by the
+    chain rule $\partial \xb_t / \partial \xc = \sqrt{\alphabar_{t^*}}$:
+    \begin{equation}
+        \nabla_{\xc} \log p_{t^*}(\xb_t) \approx \sqrt{\alphabar_{t^*}}\, s_\theta(\xb_t, t^*)
+        = -\frac{\sqrt{\alphabar_{t^*}}}{\sqrt{1-\alphabar_{t^*}}}\, \hat{\eb}
+    \end{equation}
+\end{enumerate}
+
+The update becomes:
+\begin{equation}
+    \xc \leftarrow \xc + \eta\,\nabla_{\xc} U(\xc)
+    + \eta\, w \,\frac{\sqrt{\alphabar_{t^*}}}{\sqrt{1-\alphabar_{t^*}}}\,
+    (-\hat{\eb})
+    \label{eq:update_score}
+\end{equation}
+
+where $w$ is the guidance weight.
+
+\subsection{Comparison with Approach A}
+
+The key difference: Approach~A uses $(\hat{\eb} - \eb)$ (prediction minus actual noise);
+Approach~B uses $\hat{\eb}$ alone (the full prediction). Approach~B includes the actual
+noise direction as part of its gradient, which adds variance but provides signal even
+when $\xc$ is on the natural manifold.
+
+When $\xc$ is natural and the UNet predicts perfectly ($\hat{\eb} \approx \eb$):
+\begin{itemize}[nosep]
+    \item Approach A gradient: $\propto (\hat{\eb} - \eb) \approx 0$ (no signal).
+    \item Approach B gradient: $\propto \hat{\eb} \approx \eb$ (nonzero, but random direction).
+\end{itemize}
+
+Neither provides a useful deterministic direction for natural images. However, in expectation
+over $\eb$, the Approach~B gradient $\E_\eb[-\hat{\eb}]$ is nonzero when $\xc$ is not at a mode
+of $p_{t^*}$, because the score has nonzero expectation there.
+
+\subsection{Problems}
+
+\begin{enumerate}
+    \item \textbf{Same noise requirement as Approach A.}
+    The UNet still requires noise-corrupted input. We must add artificial noise
+    at level $t^*$ and accept that we get $\nabla \log p_{t^*}$, not $\nabla \log p_0$.
+
+    \item \textbf{High variance from the noise term.}
+    The gradient includes $\hat{\eb}$, which contains the actual noise $\eb$ as a large
+    component. This makes each gradient step noisy. In Approach~A, the noise cancels
+    ($\hat{\eb} - \eb$), reducing variance. In Approach~B it does not.
+
+    \item \textbf{Score of $p_{t^*}$, not $p_0$.}
+    The score $s_\theta(\xb_t, t^*)$ estimates $\nabla \log p_{t^*}(\xb_t)$, which is
+    the gradient of the log-density of the \emph{noise-smoothed} distribution at level $t^*$.
+    This is a blurred version of $\nabla \log p_0(\xc)$. Fine-scale naturalness features
+    (edges, textures) are washed out at moderate $t^*$.
+
+    \item \textbf{Scale mismatch with utility gradient.}
+    The score magnitude depends on $t^*$ through the $1/\sqrt{1-\alphabar_{t^*}}$ factor.
+    At small $t^*$ this factor is large (e.g., $\sim 100$ at $t=1$), at large $t^*$
+    it is $O(1)$. Balancing the score against the utility gradient requires careful
+    tuning of both $w$ and $t^*$.
+\end{enumerate}
+
+
+% ============================================================================
+\section{Approach C: Score Without Noise (Direct Evaluation at $\xc$)}
+% ============================================================================
+
+\subsection{Method}
+
+Feed $\xc$ directly to the UNet without adding noise, using a small timestep $t = 1$:
+\begin{enumerate}[nosep]
+    \item Pass $(\xc, t{=}1)$ to the UNet: $\hat{\eb} = \eb_\theta(\xc, 1)$.
+    \item Compute the score: $s_\theta(\xc, 1) = -\hat{\eb} / \sqrt{1-\alphabar_1}$.
+    \item Use as gradient:
+    \begin{equation}
+        \xc \leftarrow \xc + \eta\,\nabla_{\xc} U(\xc)
+        + \eta\, w\, s_\theta(\xc, 1)
+    \end{equation}
+\end{enumerate}
+
+The appeal: no artificial noise, no Tweedie formula. The score would directly approximate
+$\nabla_{\xc} \log p_0(\xc)$ since $p_1 \approx p_0$.
+
+\subsection{Problems}
+
+\begin{enumerate}
+    \item \textbf{Out-of-distribution input.}
+    At $t=1$, $\alphabar_1 \approx 0.9999$, so the UNet expects input of the form
+    ``natural image $+$ noise with $\sigma \approx 0.01$.'' During training, every
+    $({\xb_t}, t{=}1)$ pair the network saw was a nearly-clean natural image with
+    imperceptible perturbation.
+
+    If $\xc$ has been distorted by utility optimization (amplified norms, broken
+    correlations), it looks nothing like what the UNet saw at $t=1$ during training.
+    The network must extrapolate, and $\hat{\eb}$ is unreliable.
+
+    \item \textbf{Scale mismatch between distortion and noise level.}
+    At $t=1$, the expected noise magnitude is $\sqrt{1 - \alphabar_1} \approx 0.01$.
+    The UNet is trained to detect perturbations at this tiny scale. Utility-driven
+    distortions operate at scale $O(1)$ or larger (e.g., $3\times$ amplification).
+    The UNet cannot ``see'' these large-scale distortions as something to correct
+    at $t=1$, because they are orders of magnitude larger than the noise budget.
+
+    The unnaturalness is invisible to the network at this noise level.
+
+    \item \textbf{Amplification by $1/\sqrt{1-\alphabar_1}$.}
+    Dividing by $\sqrt{1 - \alphabar_1} \approx 0.01$ amplifies $\hat{\eb}$ by
+    $\sim 100\times$. Since $\hat{\eb}$ is unreliable (problem 1), this produces
+    a large, meaningless gradient vector.
+
+    \item \textbf{Theoretical vs.\ practical.}
+    In theory, $\nabla \log p_1(\xc) \approx \nabla \log p_0(\xc)$ for any $\xc$,
+    including unnatural ones. This \emph{would} point toward naturalness. But the
+    UNet's approximation $s_\theta(\xc, 1)$ is only reliable for inputs near the
+    training distribution. Unnatural images at $t=1$ are outside this distribution,
+    so the approximation breaks down precisely where it would be most needed.
+\end{enumerate}
+
+
+% ============================================================================
+\section{Approach D: Full Guided Reverse Diffusion (Reference Method)}
+% ============================================================================
+
+\subsection{Method}
+
+Instead of optimizing $\xc$ by gradient descent, generate the image using the full
+reverse diffusion process with classifier guidance, as described in the companion document
+(\texttt{diffusion\_models\_introduction.tex}, Section~6.3).
+
+\begin{enumerate}[nosep]
+    \item Start from noise: $\xb_T \sim \mathcal{N}(\mathbf{0}, \Ib)$.
+    \item For $t = T, T{-}1, \ldots, 1$:
+    \begin{enumerate}[nosep]
+        \item Predict noise: $\hat{\eb} = \eb_\theta(\xb_t, t)$.
+        \item Compute the Tweedie estimate: $\hat{\xb}_0$ via Eq.~\eqref{eq:tweedie}.
+        \item Compute utility gradient on the Tweedie estimate:
+              $\mathbf{g} = \nabla_{\xb_t} U(\hat{\xb}_0)$
+              (requires backprop through the Tweedie formula into the UNet).
+        \item Modify noise prediction:
+              $\hat{\eb}_{\mathrm{guided}} = \hat{\eb} - w\sqrt{1-\alphabar_t}\,\mathbf{g}$.
+        \item Reverse step:
+              $\xb_{t-1} = \mu_\theta(\xb_t, t;\, \hat{\eb}_{\mathrm{guided}}) + \sigma_t \zb$,
+              $\zb \sim \mathcal{N}(\mathbf{0}, \Ib)$.
+    \end{enumerate}
+    \item Return $\xb_0$.
+\end{enumerate}
+
+The output is approximately a sample from $p(\xb \mid \text{high } U)$.
+
+\subsection{Advantages Over Approaches A--C}
+
+\begin{itemize}[nosep]
+    \item The score is always evaluated at the correct noise level: at step $t$,
+          $\xb_t$ is genuinely at noise level $t$ (it came from the reverse process),
+          so the UNet operates within its training distribution.
+    \item The process naturally traverses from coarse ($t$ large) to fine ($t$ small)
+          structure, capturing naturalness at all scales.
+    \item No fixed $t^*$ to choose --- all noise levels are used.
+    \item Output is a proper sample from (an approximation of) the guided distribution,
+          not a point estimate from gradient descent.
+\end{itemize}
+
+\subsection{Problems}
+
+\begin{enumerate}
+    \item \textbf{Requires backprop through UNet.}
+    The utility gradient $\mathbf{g} = \nabla_{\xb_t} U(\hat{\xb}_0)$ requires
+    differentiating through the Tweedie formula and the UNet forward pass. This means
+    the UNet must run with gradients enabled (not just \texttt{torch.no\_grad}).
+    Memory and compute cost per step increase significantly.
+
+    \item \textbf{$T$ sequential UNet evaluations.}
+    Full reverse diffusion requires $T$ steps (or $\sim 50$--$200$ with accelerated
+    samplers like DDIM). Each step involves a UNet forward pass plus a utility
+    evaluation (which itself requires a GP forward pass). Total cost is $O(T)$ times
+    the cost of a single optimization step in Approaches A--C.
+
+    \item \textbf{Utility on noisy intermediates.}
+    $U(\hat{\xb}_0)$ evaluates the utility on the Tweedie estimate, which is a rough
+    approximation of the final image (especially at large $t$). Early guidance steps
+    ($t$ near $T$) operate on very noisy estimates and may provide misleading gradients
+    for the utility.
+
+    \item \textbf{Stochastic output.}
+    Each run produces a different image (different $\xb_T$, different noise in reverse
+    steps). To find the best image, multiple runs are needed. This is a feature
+    (diversity) but also a cost.
+
+    \item \textbf{Starting point not controllable.}
+    Unlike Approaches A--C, which start from a chosen image (e.g., smoothed target),
+    Approach~D starts from pure noise. The generated image will be ``natural with high
+    utility'' but may not resemble any specific target image.
+\end{enumerate}
+
+
+% ============================================================================
+\section{Summary}
+% ============================================================================
+
+\begin{center}
+\begin{tabular}{l c c c c}
+\hline
+& \textbf{A: L2 Tweedie} & \textbf{B: Direct Score} & \textbf{C: No Noise} & \textbf{D: Guided Sampling} \\
+\hline
+Noise required          & Yes ($t^*$)   & Yes ($t^*$)   & No            & Inherent \\
+Backprop through UNet   & No            & No            & No            & Yes \\
+Score of $p_0$ or $p_t$ & Neither (L2)  & $p_{t^*}$     & $p_1$ (unreliable) & All $p_t$ \\
+Signal near $\mathcal{M}$ & Weak        & Noisy         & Unreliable    & Strong \\
+Prevents norm growth    & No            & Partially     & Unreliable    & Yes \\
+Cost per step           & 1 UNet fwd    & 1 UNet fwd    & 1 UNet fwd    & $T$ UNet fwd+bwd \\
+Starting point          & Chosen        & Chosen        & Chosen        & Random noise \\
+\hline
+\end{tabular}
+\end{center}
+
+Approach~A is the simplest and cheapest. Its main weakness is the lack of signal near
+$\mathcal{M}$ and the inability to prevent norm amplification.
+
+Approach~D is the most principled but the most expensive. It requires backpropagation
+through the UNet and $T$ sequential steps per generated image.
+
+Approaches~B and C are intermediate: they attempt to use the score more directly but
+face either high variance (B) or out-of-distribution issues (C).
+
+\end{document}
