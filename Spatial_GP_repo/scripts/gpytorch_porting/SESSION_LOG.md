@@ -1,5 +1,6 @@
 # Session Log
 
+<<<<<<< HEAD
 ## 2026-03-24: All-cells fitting, STA edge artifact investigation, stability fixes
 
 **Experiments run**: 1476 fits across 108x108, 64x64, 48x48 (41 cells x 3 seeds x 2 modes x 2 M values per dataset). Plus 123-run LSTA-init experiment on 64x64.
@@ -69,6 +70,13 @@ Ran 500 and 1000 epoch training. Discovered generated images were all black due 
 **Status**: Continuing — next session runs full training and evaluates generation quality
 
 Built self-contained DDPM for 64x64 natural image generation. Decided on 64x64 (not 108x108) for clean U-Net architecture and massive random-crop augmentation. Three Python files: diffusion_model.py (2.16M param U-Net, cosine schedule), train.py (data pipeline with D4 augmentation), sample.py (generation + evaluation plots). All smoke-tested on CUDA. No real training run yet — that is the next step (500 epochs, ~10 min). Branch: `pietro/diffusion-investigation` in worktree at `gpytorch_porting_diffusion/`.
+
+## 2026-03-03: DDPM pretrained model exploration and planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_ddpm-finetune-generate-scripts.md`
+**Plan**: `ddpm-imagenet-grayscale/PLAN_finetune_and_generate.md`
+**Status**: Handed off for implementation
+
+Explored pretrained DDPM model (64x64 grayscale, 99.5M params, trained on ImageNet). Created `DDPM_MODEL_REFERENCE.md` (architecture, training history, file map). Installed `diffusers` 0.36.0 into `pytorch_gpytorch` env, verified model loads. Planned 3 scripts: `generate_samples.py`, `finetune.py`, `generate_samples_finetuned.py`. Key decisions: divide-by-max normalization (PNAS_ABS_MAX=2.478047), random crop 108->64, lr=1e-5 for fine-tuning.
 
 ## 2026-03-03: Merge pca-utility-optimization + cleanup
 **Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
