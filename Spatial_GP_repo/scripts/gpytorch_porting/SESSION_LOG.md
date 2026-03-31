@@ -36,12 +36,25 @@ Validated GP inference package end-to-end: fixed environment.yml (conda-only fai
 
 Planning session for Approach D: generate high-utility images via classifier-guided DDIM reverse diffusion. Read all source materials (tex algorithm spec, diffusion_model.py, guided_optimization.py, acquisition.py). Resolved TARGET_INDEX conflict (user chose 5). Designed 4-stage implementation plan for single new file `investigations/diffusion/guided_reverse.py`. No code written — pure planning with checkpoints.
 
+## 2026-03-04: Diffusion-GP integration implementation
+**Handoff**: `investigations/diffusion/HANDOFF_guided_optimization.md`
+**Status**: Continuing -- optimization tuning needed
+
+Implemented guided_optimization.py with both stages. Stage 1 (setup_gp) complete: test_r=0.7734 at 64x64, works for any square crop size. Stage 2 (combined optimization) works end-to-end but optimization dynamics need tuning. Key findings: LBFGS fails with combined objective (strong_wolfe line search can't handle competing forces), Adam normalizes away lambda_diff, SGD with momentum is the right optimizer. Tweedie L2 pull prevents structural degradation but not norm amplification. Next: try SGD lr=0.01, add pixel bounds.
+
 ## 2026-03-03: Diffusion model investigation planning
 **Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_diffusion-model-training-investigation.md`
 **Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
 **Status**: Handed off for implementation
 
 Explored diffusion model approach for natural image generation. Read motivation doc, diffusion intro (LaTeX), utility REFERENCE.md, subspace analysis. Corrected assumptions in motivation doc (108x108 not 30x30, 3,160 not 10,000 images). Decided: full-image training (cell-agnostic), tiny U-Net (~1-2M params), pure PyTorch, cosine schedule, 4x flip augmentation. Self-contained in investigations/diffusion/ (3 files). GP integration deferred to future investigation.
+
+## 2026-03-03: Diffusion-GP integration planning session
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_diffusion-gp-integration-plan.md`
+**Plan**: `investigations/diffusion/PLAN_guided_optimization.md`
+**Status**: Handed off for implementation
+
+Planning-only session. Explored both the GP utility optimization pipeline (gradient.py, explore_utility.py, acquisition.py, run_single_mode.py) and the diffusion model (diffusion_model.py, train.py, sample.py). Identified 6 key tricky parts for integration, most critically that run_single_config() hardcodes the data path so we must replicate the pipeline manually. Designed two-stage plan: (1) reusable setup_gp(crop_size) function that trains GP on center-cropped images of any square size (key deliverable), (2) combined LBFGS optimization with utility gradient + Tweedie denoising direction from diffusion model. No code written.
 
 ## 2026-03-03: Diffusion model — training, T-1 sampling fix, generation working
 **Handoff**: `investigations/diffusion/HANDOFF.md`
