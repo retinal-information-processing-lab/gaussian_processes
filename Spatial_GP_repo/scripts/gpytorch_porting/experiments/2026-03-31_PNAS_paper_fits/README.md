@@ -83,9 +83,24 @@ formulas, and the evidence for this conclusion.
 
 | File | Description |
 |------|-------------|
-| `results.jsonl` | 123 runs (41 cells x 3 seeds), one JSON per run |
+| `results.jsonl` | 123 runs (41 cells x 3 seeds), sigma_0=direct. Paper-matching reference. |
+| `results_exp_sigma0.jsonl` | 123 runs, same config but sigma_0=exp. Our best overall. |
 | `METRICS_COMPARISON.md` | Metric definitions, formulas, and paper comparison |
 | `README.md` | This file |
+
+### Two result sets: direct vs exp sigma_0
+
+Both use identical config (broad+interleave, fix_Amp=True, etc.). The only
+difference is how sigma_0 is parameterized internally during LBFGS optimization:
+
+| File | sigma_0 param | mean adj_r2 | n>0.8 adj_r2 | n>0.8 expl_var |
+|------|--------------|-------------|-------------|----------------|
+| `results.jsonl` | direct (identity) | 0.730 | 15/41 | 36/41 |
+| `results_exp_sigma0.jsonl` | exp (log-space) | **0.738** | **17/41** | 36/41 |
+
+Exp is +0.008 mean adj_r2, wins on 24/41 cells. The improvement comes from
+cells where sigma_0 needs to grow large -- exp's proportional gradient scaling
+helps. Exp is now the default in the codebase.
 
 ### Results fields (per run in results.jsonl)
 
