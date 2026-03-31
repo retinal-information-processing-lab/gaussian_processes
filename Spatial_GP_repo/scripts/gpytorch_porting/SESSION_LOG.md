@@ -29,12 +29,33 @@ Finalized all decisions for diffusion image generator package: separate tarball,
 
 Validated GP inference package end-to-end: fixed environment.yml (conda-only failed, switched to pip for torch/gpytorch/linear_operator), tested conda env creation + inference from scratch, rebuilt tarball. Cleaned up test env.
 
+## 2026-03-05: Approach D — Guided reverse diffusion planning
+**Handoff**: `.claude/handoffs/HANDOFF_2026-03-05_approach-d-guided-reverse-diffusion.md`
+**Plan**: `.claude/plans/vast-painting-boot.md`
+**Status**: Handed off for implementation
+
+Planning session for Approach D: generate high-utility images via classifier-guided DDIM reverse diffusion. Read all source materials (tex algorithm spec, diffusion_model.py, guided_optimization.py, acquisition.py). Resolved TARGET_INDEX conflict (user chose 5). Designed 4-stage implementation plan for single new file `investigations/diffusion/guided_reverse.py`. No code written — pure planning with checkpoints.
+
 ## 2026-03-03: Diffusion model investigation planning
 **Handoff**: `.claude/handoffs/HANDOFF_2026-03-03_diffusion-model-training-investigation.md`
 **Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
 **Status**: Handed off for implementation
 
 Explored diffusion model approach for natural image generation. Read motivation doc, diffusion intro (LaTeX), utility REFERENCE.md, subspace analysis. Corrected assumptions in motivation doc (108x108 not 30x30, 3,160 not 10,000 images). Decided: full-image training (cell-agnostic), tiny U-Net (~1-2M params), pure PyTorch, cosine schedule, 4x flip augmentation. Self-contained in investigations/diffusion/ (3 files). GP integration deferred to future investigation.
+
+## 2026-03-03: Diffusion model — training, T-1 sampling fix, generation working
+**Handoff**: `investigations/diffusion/HANDOFF.md`
+**Reference**: `investigations/diffusion/REFERENCE.md`
+**Status**: Continuing — unconditional generation works, next step is GP integration
+
+Ran 500 and 1000 epoch training. Discovered generated images were all black due to cosine schedule instability at t=T=1000 (31.6x amplification in reverse formula). Fixed by starting reverse loop from T-1. Generation quality good after fix — pixel histogram matches real data. Created REFERENCE.md as single entry point for future sessions.
+
+## 2026-03-03: Diffusion model investigation — code complete, training pending
+**Handoff**: `investigations/diffusion/HANDOFF.md` (superseded by above)
+**Plan**: `investigations/diffusion/PLAN_diffusion_model_training.md`
+**Status**: Continuing — next session runs full training and evaluates generation quality
+
+Built self-contained DDPM for 64x64 natural image generation. Decided on 64x64 (not 108x108) for clean U-Net architecture and massive random-crop augmentation. Three Python files: diffusion_model.py (2.16M param U-Net, cosine schedule), train.py (data pipeline with D4 augmentation), sample.py (generation + evaluation plots). All smoke-tested on CUDA. No real training run yet — that is the next step (500 epochs, ~10 min). Branch: `pietro/diffusion-investigation` in worktree at `gpytorch_porting_diffusion/`.
 
 ## 2026-03-03: Merge pca-utility-optimization + cleanup
 **Handoff**: `investigations/HANDOFF_consolidate_utility_investigations.md`
