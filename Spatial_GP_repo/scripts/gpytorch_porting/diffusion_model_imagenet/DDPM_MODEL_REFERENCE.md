@@ -2,7 +2,7 @@
 
 **Purpose**: Introductory document for Claude Code sessions working with this pretrained diffusion model. Read this before doing anything with the model.
 
-**Location**: `gpytorch_porting/ddpm-imagenet-grayscale/`
+**Location**: `gpytorch_porting/diffusion_model_imagenet/`
 
 ---
 
@@ -37,7 +37,7 @@ from diffusers import DDPMPipeline
 import torch
 
 # Load from local directory
-pipeline = DDPMPipeline.from_pretrained('ddpm-imagenet-grayscale')
+pipeline = DDPMPipeline.from_pretrained('diffusion_model_imagenet')
 pipeline = pipeline.to('cuda')  # GPU recommended
 
 # Generate images
@@ -108,7 +108,7 @@ Output (1ch, 64x64)
 ## File Structure
 
 ```
-ddpm-imagenet-grayscale/
+diffusion_model_imagenet/
 |
 |-- model_index.json              # Pipeline config (DDPMPipeline)
 |
@@ -146,7 +146,7 @@ The configs are **identical**. Both contain the same UNet architecture and sched
 
 ### Which weights to load
 
-- **For inference**: Use the top-level directory (`DDPMPipeline.from_pretrained('ddpm-imagenet-grayscale')`)
+- **For inference**: Use the top-level directory (`DDPMPipeline.from_pretrained('diffusion_model_imagenet')`)
 - **For resuming training**: Use `checkpoints/final_checkpoint.pt` (contains optimizer state)
 - **For best-loss model specifically**: Use `best_model/` as a standalone pipeline
 
@@ -244,4 +244,4 @@ None of this is implemented yet -- the model is a standalone artifact ready for 
 ---
 
 *Document created: 2026-03-03*
-*Based on: training logs, config files, and model artifacts in ddpm-imagenet-grayscale/*
+*Based on: training logs, config files, and model artifacts in diffusion_model_imagenet/*

@@ -2,7 +2,7 @@
 
 ## Context
 
-We have a pretrained DDPM (99.5M params, 64x64 grayscale, diffusers format) trained on ImageNet, sitting at `ddpm-imagenet-grayscale/`. We want to (1) generate samples from it, (2) fine-tune it on the PNAS dataset (~3190 images, 108x108), and (3) generate samples from the fine-tuned model. Three scripts, all in the `gpytorch_porting/` directory.
+We have a pretrained DDPM (99.5M params, 64x64 grayscale, diffusers format) trained on ImageNet, sitting at `diffusion_model_imagenet/`. We want to (1) generate samples from it, (2) fine-tune it on the PNAS dataset (~3190 images, 108x108), and (3) generate samples from the fine-tuned model. Three scripts, all in the `gpytorch_porting/` directory.
 
 ---
 
@@ -32,7 +32,7 @@ Structure:
 - `make_grid(images, real_images, save_path)` — matplotlib grid, generated on top, real PNAS on bottom
 - `main(args)` — parse, load, generate, plot, save
 
-Args: `--model-path` (default: `ddpm-imagenet-grayscale`), `--num-images` (16), `--num-steps` (1000), `--seed` (42), `--output-dir` (`generated_samples`), `--save-individual`, `--no-comparison`, `--device` (cuda)
+Args: `--model-path` (default: `diffusion_model_imagenet`), `--num-images` (16), `--num-steps` (1000), `--seed` (42), `--output-dir` (`generated_samples`), `--save-individual`, `--no-comparison`, `--device` (cuda)
 
 ---
 
@@ -48,7 +48,7 @@ Structure:
 - `generate_checkpoint_samples(pipeline, n, seed, epoch, save_dir)` — quick sample grid at checkpoints (50 steps for speed)
 - `main()` — load pipeline, extract unet/scheduler, create dataset/dataloader, train loop, save pipeline at end
 
-Args: `--model-path` (`ddpm-imagenet-grayscale`), `--num-epochs` (50), `--lr` (1e-5), `--batch-size` (16), `--save-dir` (`ddpm-pnas-finetuned`), `--seed` (42), `--checkpoint-interval` (10), `--num-sample-images` (8), `--device` (cuda), `--gradient-accumulation` (1)
+Args: `--model-path` (`diffusion_model_imagenet`), `--num-epochs` (50), `--lr` (1e-5), `--batch-size` (16), `--save-dir` (`ddpm-pnas-finetuned`), `--seed` (42), `--checkpoint-interval` (10), `--num-sample-images` (8), `--device` (cuda), `--gradient-accumulation` (1)
 
 Key details:
 - Optimizer: Adam, lr=1e-5 (low to avoid catastrophic forgetting)
@@ -73,7 +73,7 @@ Key details:
 
 ```
 gpytorch_porting/
-    ddpm-imagenet-grayscale/           # pretrained (existing, untouched)
+    diffusion_model_imagenet/           # pretrained (existing, untouched)
     generate_samples.py                # Script 1
     finetune.py                        # Script 2
     generate_samples_finetuned.py      # Script 3
@@ -89,7 +89,7 @@ gpytorch_porting/
 ```python
 PNAS_ABS_MAX = 2.478047
 PNAS_DATA_PATH = '<absolute path to PNAS_paper_sorted_data.npz>'
-DEFAULT_PRETRAINED_PATH = 'ddpm-imagenet-grayscale'
+DEFAULT_PRETRAINED_PATH = 'diffusion_model_imagenet'
 DEFAULT_FINETUNED_PATH = 'ddpm-pnas-finetuned'
 ```
 
