@@ -23,8 +23,9 @@ kernel:
   Amp: 1.0
   beta: 0.1
   rho: 0.1
-  eps_0x: null              # null = compute from STA
-  eps_0y: null              # null = compute from STA
+  rf_init: ground_truth     # ground_truth | sta | center
+  eps_0x: null              # null = determined by rf_init; explicit value overrides rf_init
+  eps_0y: null              # null = determined by rf_init; explicit value overrides rf_init
   gradient_mode: autograd
   use_mask: true
   bound_rf_center: true      # constrain RF center to n_sigma_rf_bounds * sigma_rf around STA estimate
