@@ -2,6 +2,8 @@
 
 GP porting from `utils.py:varGP()` to GPyTorch is **COMPLETE**. See "GP Training Reference" section below for porting details and `.claude/PORTING_LESSONS.md` for dead ends and institutional knowledge.
 
+**Branch scope**: This branch (`pietro/utility_optimization`) is for the evaluation framework (META_PLAN). For model fine-tuning / paper gap work, use `pietro/investigate-paper-gap`. At session start, verify `git branch --show-current` matches `pietro/utility_optimization`. If it does not, **raise to user immediately** — you may be on the wrong branch for this CLAUDE.md.
+
 **Current focus**: Evaluation framework for utility-guided stimulus generation (active learning).
 - **Meta-plan**: `investigations/structured_optimization/META_PLAN.md` — read this first each session
 - **Detailed reference**: `investigations/structured_optimization/EVALUATION_FRAMEWORK.md`
