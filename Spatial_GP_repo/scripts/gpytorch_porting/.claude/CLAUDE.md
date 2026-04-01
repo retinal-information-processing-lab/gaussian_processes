@@ -1,6 +1,11 @@
-# GPyTorch Porting Project
+# Variational GP — Utility-Guided Stimulus Evaluation
 
-**Goal**: Port the custom variational GP (`utils.py:varGP()`) to GPyTorch with cleaner structure.
+GP porting from `utils.py:varGP()` to GPyTorch is **COMPLETE**. See "GP Training Reference" section below for porting details and `.claude/PORTING_LESSONS.md` for dead ends and institutional knowledge.
+
+**Current focus**: Evaluation framework for utility-guided stimulus generation (active learning).
+- **Meta-plan**: `investigations/structured_optimization/META_PLAN.md` — read this first each session
+- **Detailed reference**: `investigations/structured_optimization/EVALUATION_FRAMEWORK.md`
+- **Phase A** (Foundation): cell selection, active learning loop, baselines, metrics
 
 ---
 
@@ -36,14 +41,13 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 **Current Status**:
 | Component | Status |
 |-----------|--------|
-| ArcCosine kernel with RF structure | COMPLETE |
-| Custom E-step (eigenspace projection) | COMPLETE (vargp_direct) |
+| GP porting (vargp_direct, default_gpy) | COMPLETE |
+| Kernel types (arc_cosine, arc_sine, rbf) | COMPLETE |
 | Analytical gradients (VJP & Jacobian) | COMPLETE |
-| vargp_direct mode | COMPLETE |
-| default_gpy mode | COMPLETE |
-| Pixel masking | COMPLETE |
 | YAML experiment system | COMPLETE |
-| Acquisition functions (default_gpy) | IN PROGRESS — `acquisition.py` |
+| Acquisition functions (default_gpy) | COMPLETE — `acquisition.py` |
+| Evaluation framework (META_PLAN) | IN PROGRESS — Phase A |
+| Active learning loop | NOT STARTED — Phase A2 |
 
 ---
 
@@ -67,6 +71,35 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 ---
 
+## Evaluation Framework
+
+**Start here each session**: `investigations/structured_optimization/META_PLAN.md`
+**Detailed reference**: `investigations/structured_optimization/EVALUATION_FRAMEWORK.md`
+
+### Methods Under Evaluation
+
+| Method | Script | Description |
+|--------|--------|-------------|
+| A. Direct gradient ascent | `investigations/utility/gradient_ascent.py` | LBFGS on pixel values |
+| B. PCA subspace | `investigations/utility/subspace_optimization.py --method pca` | Gradient in PCA components |
+| C. C-eigenspace | `investigations/utility/subspace_optimization.py --method c_eigen` | Gradient in kernel eigenvectors |
+| D. Diffusion-guided | `investigations/diffusion/guided_reverse.py` | DDPM reverse + utility nudging |
+
+### Core Acquisition Functions
+
+`acquisition.py` — `standard_utility()` and `distribution_aware_utility()`
+- default_gpy mode only (needs covariance_matrix)
+- Fully differentiable, zero playground imports
+- Both return `mu_g_marg` for f_max guard
+- See `.claude/rules/acquisition.md` for API details
+
+### Active Learning Infrastructure (Phase A2)
+
+- `rank1_update.py` — warm-start GP with M+1 inducing points (prepared, not yet integrated)
+- `create_synthetic_dataset.py` — generate synthetic responses for out-of-pool images (Phase C)
+
+---
+
 ## Known Issues & Debugging
 
 See `.claude/rules/debugging.md` (auto-loads for test files) or use `/debug` skill.
@@ -85,7 +118,9 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 ---
 
-## Parameter Matching Table (PREVENTS BUGS)
+## GP Training Reference
+
+### Parameter Matching Table (PREVENTS BUGS)
 
 | Parameter | varGP | vargp_direct | default_gpy |
 |-----------|-------|--------------|-------------|
@@ -101,7 +136,7 @@ All modes load defaults from `default_params.json` (CLI) or YAML configs (experi
 
 ---
 
-## Gradient Mode Selection
+### Gradient Mode Selection
 
 Use `--gradient-mode MODE` in CLI:
 - `autograd` (default): PyTorch automatic differentiation
@@ -110,7 +145,7 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
-## Training Modes
+### Training Modes
 
 | Mode | Description |
 |------|-------------|
@@ -122,7 +157,7 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
-## Kernel Selection
+### Kernel Selection
 
 Use `--kernel-type TYPE` in CLI (default: `arc_cosine` from `default_params.json`):
 
@@ -137,6 +172,49 @@ All kernels share the same RF structure (C matrix with beta, rho, eps_0). Factor
 Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 
 **Restrictions**: `vargp_old` mode requires `arc_cosine`. Analytical gradients (`vjp`, `jacobian`) require `arc_cosine`.
+
+### vargp_direct Mode
+
+**Key characteristics**:
+- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
+- K_tilde_b is DIAGONAL (trivial inverse)
+- Matches vargp_old E-step formulas exactly
+- **IMPORTANT**: Use `--float32` for performance
+
+**Usage**:
+```bash
+python run_single_mode.py --mode vargp_direct
+```
+
+**Performance** (M=50, 50 iterations):
+| Mode | Dtype | Total Time | Test r |
+|------|-------|------------|--------|
+| vargp_old | float32 | 6.3s | 0.84 |
+| vargp_direct | float32 | 5.6s | 0.84 |
+| vargp_direct | float64 | 18.9s | 0.81 |
+
+See `EIGENSPACE_REFERENCE.md` for full implementation details.
+
+### Reference Code
+
+#### Original varGP (utils.py)
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `varGP()` | utils.py:5291 | Main training function |
+| `Estep()` | utils.py:4215 | Newton update for (m, V) |
+| `localker()` | utils.py | Compute C matrix |
+| `acosker()` | utils.py | Arc-cosine kernel |
+| `lambda_moments()` | utils.py | Posterior mean/var |
+
+#### Codebase Structure
+```
+Spatial_GP_repo/
+├── utils.py           - Main GP: varGP(), Estep(), acosker()
+├── utility.py         - Active learning (OUT OF SCOPE)
+├── kernels/kernels.py - Clean kernel implementations
+├── notebooks/PNAS_paper_sorted_data.npz - Dataset
+└── scripts/gpytorch_porting/  - THIS PROJECT
+```
 
 ---
 
@@ -191,6 +269,17 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | `run_inference.py` | Load pre-trained checkpoints, run prediction on test set, generate per-cell summary plots (STA+RF, scatter, sorted comparison), save summary CSV + hyperparameters JSON. Primary entry point for sharing results. |
 | `train_all_cells.py` | Batch training: trains all 41 cells for specified datasets (108x108, 64x64), saves .pt checkpoints. Uses `build_config_from_defaults()` + `run_single_config()`. |
 
+### Utility & Evaluation Methods
+| File | Purpose |
+|------|---------|
+| `rank1_update.py` | Rank-1 model extension for active learning (warm-start M+1) |
+| `investigations/utility/workbench.py` | Shared setup + helpers for all utility scripts |
+| `investigations/utility/gradient_ascent.py` | Method A: LBFGS pixel-space gradient ascent |
+| `investigations/utility/subspace_optimization.py` | Methods B/C: PCA and C-eigenspace subspace optimization |
+| `investigations/diffusion/guided_reverse.py` | Method D: diffusion-guided reverse with utility guidance |
+| `investigations/structured_optimization/META_PLAN.md` | Session roadmap — read first |
+| `investigations/structured_optimization/EVALUATION_FRAMEWORK.md` | Metric definitions, confound analysis |
+
 ### Archived data
 | Path | Purpose |
 |------|---------|
@@ -201,10 +290,13 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 |---------|---------|
 | `deprecated/` | Archived vargp_style mode, orphaned whitening/test files (self-contained, unmaintained) |
 
-### Investigation Artifacts
+### Other Investigation Folders
 | Path | Purpose |
 |------|---------|
-| `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
+| `investigations/utility/` | Also contains: `entropy_landscape.py`, `test_compute_H_MC.py`, `test_subspace_optimization.py` (52 tests), docs in `docs/` |
+| `investigations/diffusion/` | Also contains: `train.py`, `sample.py`, `diffusion_model.py`, reference docs |
+| `investigations/paper_gap/` | Paper vs implementation gap investigation (separate branch) |
+| `investigations/sta_edge_artifact/` | STA edge artifact diagnostics for 108x108 |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -215,25 +307,8 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 
 ## Deferred Items (DO NOT IMPLEMENT UNLESS ASKED)
 
-### Acquisition Functions - IN PROGRESS
-`acquisition.py` implements `standard_utility()` and `distribution_aware_utility()` for `default_gpy` mode **ONLY**.
-
-**Why default_gpy only:**
-- `distribution_aware_utility()` requires `model(X).covariance_matrix` for Gaussian conditioning
-- `vargp_direct` uses `EigenspacePosterior` which doesn't expose full covariance (only mean/variance)
-- `standard_utility()` works with both modes (only needs mean/variance) but kept consistent for now
-
-**Current implementation:**
-- All dependencies are local (in `utils.py`, no playground imports)
-- Fully differentiable (gradient flow from x* through kernel into utility)
-- Works with `ArcCosineKernel`, `ArcCosineKernelNormalized`, `ArcSineKernel`, and `LocalRBFKernel`
-- Both functions return `mu_g_marg` (log-firing rate) for f_max firing rate guard
-- `f_max` parameter (default 100.0) wired through `default_params.json` and YAML configs
-- LBFGS gradient-based x* optimization in unified `investigations/utility/gradient_ascent.py` (supports all kernel types via `--kernel-type`)
-
-**Deferred (acquisition functions)**:
-- vargp_direct support (needs augmented matrix approach for distribution-aware utility)
-- Scalability for large candidate pools
+### vargp_direct Acquisition Support - DEFERRED
+`distribution_aware_utility()` needs `model(X).covariance_matrix` for Gaussian conditioning. `vargp_direct`'s `EigenspacePosterior` only exposes mean/variance. Would need augmented matrix approach (see old codebase `utility.py:compute_U_star_direct()`).
 
 ### Normalized Arc-Cosine Kernel - INVESTIGATED (Feb 2026)
 `ArcCosineKernelNormalized` class in `kernels.py` implements K_bar(x,y) = J(theta)/pi with constant diagonal = 1.0. NOT included in `KERNEL_TYPES` or `create_kernel()` — deprecated for active use.
@@ -256,65 +331,21 @@ The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Sinc
 
 ---
 
-## vargp_direct Mode
-
-**Key characteristics**:
-- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
-- K_tilde_b is DIAGONAL (trivial inverse)
-- Matches vargp_old E-step formulas exactly
-- **IMPORTANT**: Use `--float32` for performance
-
-**Usage**:
-```bash
-python run_single_mode.py --mode vargp_direct
-```
-
-**Performance** (M=50, 50 iterations):
-| Mode | Dtype | Total Time | Test r |
-|------|-------|------------|--------|
-| vargp_old | float32 | 6.3s | 0.84 |
-| vargp_direct | float32 | 5.6s | 0.84 |
-| vargp_direct | float64 | 18.9s | 0.81 |
-
-See `EIGENSPACE_REFERENCE.md` for full implementation details.
-
----
-
-## Reference Code
-
-### Original varGP (utils.py)
-| Function | Location | Purpose |
-|----------|----------|---------|
-| `varGP()` | utils.py:5291 | Main training function |
-| `Estep()` | utils.py:4215 | Newton update for (m, V) |
-| `localker()` | utils.py | Compute C matrix |
-| `acosker()` | utils.py | Arc-cosine kernel |
-| `lambda_moments()` | utils.py | Posterior mean/var |
-
-### Codebase Structure
-```
-Spatial_GP_repo/
-├── utils.py           - Main GP: varGP(), Estep(), acosker()
-├── utility.py         - Active learning (OUT OF SCOPE)
-├── kernels/kernels.py - Clean kernel implementations
-├── notebooks/PNAS_paper_sorted_data.npz - Dataset
-└── scripts/gpytorch_porting/  - THIS PROJECT
-```
-
----
-
 ## Authoritative Sources (Single Source of Truth)
 
 | If you need... | The authoritative doc is... |
 |----------------|----------------------------|
 | Status, rules, parameter tables | THIS FILE (CLAUDE.md) |
+| Evaluation framework, methods A-D | `investigations/structured_optimization/META_PLAN.md` |
+| Metric definitions, confound analysis | `investigations/structured_optimization/EVALUATION_FRAMEWORK.md` |
+| Acquisition functions | `.claude/rules/acquisition.md` (auto-loads, or `/acquisition` skill) |
+| Porting history, dead ends | `.claude/PORTING_LESSONS.md` |
 | Math formulas | `.claude/rules/math.md` (auto-loads, or `/math` skill) |
 | "Why was X designed this way?" | DECISION_LOG.md |
 | Performance numbers | `analyze_experiment.py --exp <name>` (old: `old_results/BENCHMARK_LOG.md`) |
 | How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
 | vargp_direct implementation | EIGENSPACE_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
-| Acquisition functions | `.claude/rules/acquisition.md` (auto-loads, or `/acquisition` skill) |
 | Jitter & Cholesky stability | `.claude/rules/jitter.md` |
 | Session handoff (implementation) | `/handoff-plan` skill |
 | Session handoff (investigation) | `/handoff-investigation` skill |
@@ -329,11 +360,13 @@ Spatial_GP_repo/
 
 | If you're working on... | READ THIS FIRST |
 |-------------------------|-----------------|
+| Utility optimization, method scripts | `META_PLAN.md` + `EVALUATION_FRAMEWORK.md` |
+| Acquisition functions, utility | `.claude/rules/acquisition.md` |
+| Porting dead ends, past investigations | `.claude/PORTING_LESSONS.md` |
 | Math formulas, E-step derivations | `.claude/rules/math.md` |
 | Design rationale (Q1-Q25) | DECISION_LOG.md |
 | vargp_direct mode | EIGENSPACE_REFERENCE.md |
 | Analytical kernel gradients | `.claude/rules/gradients.md` |
-| Acquisition functions, utility | `.claude/rules/acquisition.md` |
 | Jitter, Cholesky, numerical stability | `.claude/rules/jitter.md` |
 | Handing off to next session | `/handoff-plan` or `/handoff-investigation` skill |
 | GPyTorch patterns | PATTERNS_REFERENCE.md |
@@ -361,5 +394,5 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 ---
 
-*Last updated: February 2025*
-*API cleanup: GPyTorch-like model(X) pattern, eigenspace_model.py reorganization*
+*Last updated: April 2026*
+*Restructured for evaluation framework focus. GP porting complete.*

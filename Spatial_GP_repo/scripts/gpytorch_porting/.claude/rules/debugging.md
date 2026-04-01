@@ -15,18 +15,19 @@ paths:
 ## 1. Quick Test Commands
 
 ```bash
-# Single test (quick check)
-python run_single_mode.py --mode vargp_style --explicit-unwhitening --seed 123
+# Single quick test
+python run_single_mode.py --mode vargp_direct --seed 123
 
-# Canonical test matrix (12 configs, regression testing)
-python run_canonical_tests.py --seed 123
+# Run canonical experiment (YAML-based, all configs)
+python create_experiment.py --name my_test --desc "regression check"
+python run_experiment.py --exp my_test
 
-# Query benchmark results
-python query_benchmark.py --mode vargp_style --M 50
-python query_benchmark.py --compare-seeds 123 456
+# Run quick exploratory experiment
+python run_experiment.py --quick test_name --mode vargp_direct
 
-# vargp_direct mode (MUST use --float32)
-python run_single_mode.py --mode vargp_direct --float32 --ntilde 50 --seed 123
+# Analyze results
+python analyze_experiment.py --exp my_test
+python analyze_experiment.py --list
 ```
 
 **GPU REQUIRED**: Scripts default to CUDA. CPU is too slow.
@@ -110,54 +111,30 @@ torch.pi = torch.acos(torch.zeros(1)).item() * 2  # WHY DOES THIS MATTER?!
 **Status**: Cell-dependent issue under investigation.
 **See**: `investigations/performance_loss_ntrain_M/`
 
-### 3.8 Variational Strategy & Whitening Confusion
-**Two distinct concepts**:
-
-1. **standard_variational_distribution** (model.py):
-   - `True` (default): Use `VariationalStrategy` (whitened params)
-   - `False`: Use `UnwhitenedVariationalStrategy` (natural params)
-   - CLI: `--unwhitened-variational-dist`
-
-2. **explicit_unwhitening** (train.py/estep.py):
-   - Controls L_K whitening conversions in E-step
-   - **REQUIRED** for `vargp_style` with standard distribution
-   - CLI: `--explicit-unwhitening` or `--no-explicit-unwhitening`
-
-**CLI examples**:
-```bash
-# Standard distribution with explicit unwhitening (most common)
-python run_single_mode.py --mode vargp_style --explicit-unwhitening
-
-# Unwhitened strategy
-python run_single_mode.py --mode vargp_style --unwhitened-variational-dist --no-explicit-unwhitening
-```
-
 ---
 
 ## 4. Comparison & Reproducibility
 
-### 4.1 Benchmark System (JSONL-based)
+### 4.1 Experiment System (YAML-based)
 
-**Primary output**: `results/benchmark_results.jsonl` (machine-readable, append-only)
-**Legacy (frozen)**: `results/BENCHMARK_LOG.md` (historical, do not update)
+**Canonical experiments**: `experiments/<name>/` — frozen config, full matrix, git metadata
+**Exploratory experiments**: `experiments/exploratory/<name>/` — single-point, quick iteration
 
 **Recording results**:
 ```bash
-# Single test with JSON output
-python run_single_mode.py --mode vargp_style --ntilde 50 --seed 123 --json-append results/benchmark_results.jsonl
+# Canonical: create + run + analyze
+python create_experiment.py --name baseline --desc "regression check"
+python run_experiment.py --exp baseline
+python analyze_experiment.py --exp baseline
 
-# Run canonical test matrix (12 configs)
-python run_canonical_tests.py --seed 123
-
-# Query results
-python query_benchmark.py --mode vargp_style --M 50
-python query_benchmark.py --compare-seeds 123 456
+# Exploratory: one step
+python run_experiment.py --quick test_name --mode vargp_direct
 ```
 
 **Before recording**:
 - Check working tree is clean (`git status`)
-- If uncommitted changes exist, **remind user to commit first** - results must be reproducible
-- Commit hash is recorded automatically in JSON
+- If uncommitted changes exist, **remind user to commit first** — git commit is recorded in metadata
+- Config is frozen at experiment creation time
 
 **What to log vs skip:**
 
@@ -169,24 +146,23 @@ python query_benchmark.py --compare-seeds 123 456
 
 ### 4.2 Canonical Test Matrix
 
-Standard configurations for regression testing (12 per seed):
+Standard configurations defined in `configs/canonical.yaml`:
 
 | ntrain | M values | Modes |
 |--------|----------|-------|
-| 2000 | 200 |  vargp_direct, gpytorch_defauls |
-| 500 | 50, 100, 200 |  vargp_direct, gpytorch_default|
+| 500 | 50, 100, 200 | vargp_direct, default_gpy |
 
 **When to run**:
 - After completing a feature (regression check)
 - After merge (verify no breakage)
 - When comparing implementations
 
-**What is NOT canonical** (don't log to main JSONL):
+**What is NOT canonical** (use exploratory instead):
 - Quick debug tests during development
 - Exploratory parameter sweeps
 - Checking if code runs
 
-For exploratory work, use `--json-append results/exploratory.jsonl` instead.
+For exploratory work, use `python run_experiment.py --quick test_name --mode vargp_direct`.
 
 ### 4.3 Reproducibility Rule for Documented Results
 
