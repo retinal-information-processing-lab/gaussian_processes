@@ -233,3 +233,9 @@ Explored 2D playground import chain (5+ levels deep), identified duplicated func
 **Status**: Handed off for implementation
 
 User implemented the 2D import cleanup plan. Fixed test_acquisition.py (updated imports from old utility.py/utility_2d_rbf_base to gpytorch_porting/utils.py via importlib.util pattern). All 6 tests pass. Deep audit confirmed 2D playground imports are clean. Found r_max hardcoded defaults in compute_H, nd_utility_new, standard_utility, distribution_aware_utility, compute_mc_diagnostics_2d. Planned enforcement: remove all silent defaults, require explicit r_max or adaptive_r_max=True.
+
+## 2026-04-02: Paper Gap — 64x64 Sweep + Amp/Interleaving Grid
+**Handoff**: `investigations/paper_gap/HANDOFF_SWEEP_SESSION.md`
+**Status**: Continuing
+
+Ran 64x64 parameter sweeps (3 configs, 369 runs) to complete the Amp x Interleaving grid. Discovered n_train=2910 confound in prior 64x64 runs (negligible impact). Best config: 64_intl_fixAmp (test_r=0.838, 36/41 > 0.8). Free vs fixed Amp negligible. Interleaving is dominant factor. 108x108 free Amp grid still empty (run_sweep.py hardcodes fix_Amp=True).

@@ -85,6 +85,16 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
 
+**PNAS datasets** (all have identical train/val/test splits, same images at different resolutions):
+
+| Dataset | Path | train | val | total | test |
+|---------|------|-------|-----|-------|------|
+| 108x108 | `datasets/PNAS_108x108_original.npz` | 2910 | 250 | 3160 | 30 |
+| 64x64 | `datasets/PNAS_64x64_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
+| 48x48 | `datasets/PNAS_48x48_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
+
+**IMPORTANT**: When using full training data, always use n_train=3160 (train+val combined) for ALL resolutions. The datasets store train (2910) and val (250) separately, but for final fits we combine them. Using n_train=2910 is a confound that was caught in the paper gap investigation (all 64x64 runs before the fix were affected).
+
 **Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
 ---

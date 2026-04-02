@@ -1140,6 +1140,7 @@ def run_single_config(config):
         'pred_std': pred_std,
         'time_estep_s': time_estep,
         'time_mstep_s': time_mstep,
+        'gpu': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
         'final_A': final_A,
         'final_lambda0': final_lambda0,
         'final_Amp': final_Amp,

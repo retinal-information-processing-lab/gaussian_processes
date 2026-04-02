@@ -43,31 +43,37 @@ rf = np.load(RF_PATH)
 CONFIGS = [
     {
         'name': 'our_defaults',
+        'notes': 'Our original defaults (10/10/50, A=0.01). Baseline before any paper-inspired changes',
         'beta': 0.1, 'A_init': 0.01, 'interleave_fstep': False,
         'n_estep': 10, 'n_mstep': 10, 'n_iterations': 50,
     },
     {
         'name': 'our+paper_inner',
+        'notes': 'Our defaults but with paper iteration counts (50/20/80). Isolates iteration count effect',
         'beta': 0.1, 'A_init': 0.01, 'interleave_fstep': False,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
         'name': 'paper_init',
+        'notes': 'Paper init values (tight RF beta=0.0452, A=1e-4) without interleaving. Tests init effect alone',
         'beta': 0.0452, 'A_init': 1e-4, 'interleave_fstep': False,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
         'name': 'paper+interleave',
+        'notes': 'Paper init + interleaved F-step. Tests if interleaving helps bootstrap A=1e-4 with tight RF',
         'beta': 0.0452, 'A_init': 1e-4, 'interleave_fstep': True,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
         'name': 'broad+interleave',
+        'notes': 'Best config: broad RF + interleaving + A=1e-4. Our best result (36/41 expl_var > 0.8)',
         'beta': 0.1, 'A_init': 1e-4, 'interleave_fstep': True,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
         'name': 'broad+A01+intl',
+        'notes': 'Broad RF + interleaving but A=0.01. Tests if larger A init helps or hurts with interleaving',
         'beta': 0.1, 'A_init': 0.01, 'interleave_fstep': True,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
@@ -133,6 +139,8 @@ def run_single_cell(cell_id, seed, cfg):
             if line.startswith('RESULT_JSON:'):
                 result = json.loads(line[len('RESULT_JSON:'):])
                 result['config_name'] = cfg['name']
+                if 'notes' in cfg:
+                    result['notes'] = cfg['notes']
                 return result
 
         print(f"    ERROR: No RESULT_JSON for cell {cell_id} seed {seed} config {cfg['name']}")
