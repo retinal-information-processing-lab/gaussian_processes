@@ -63,9 +63,10 @@ optimizer:
 
 early_stopping:
   enabled: true
-  window: 20
-  threshold: 5.0e-3
+  patience: 15
+  min_delta_rel: 0.001
   min_iterations: 10
+  restore_best: true
 
 numerical:
   jitter: 1.0e-4

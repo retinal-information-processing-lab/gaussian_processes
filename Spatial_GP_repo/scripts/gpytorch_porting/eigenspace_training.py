@@ -84,6 +84,76 @@ def compute_elbo_eigenspace(
     return log_lik - KL
 
 
+def _compute_val_log_lik(model, X_val, r_val):
+    """Expected log-likelihood on validation data.
+
+    Same formula as ELBO's log-lik term evaluated on held-out data:
+      val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
+    where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
+
+    Alternative not used: plug-in Poisson log-prob sum(r*log(f) - f),
+    which additionally penalizes high posterior variance via an extra
+    r * 0.5*A^2*var term in the coefficient of r. See CLAUDE.md
+    early stopping section for discussion.
+
+    Args:
+        model: DirectVGPModel instance (trained or mid-training)
+        X_val: Validation images, shape (N_val, n_features)
+        r_val: Validation spike counts for one cell, shape (N_val,)
+
+    Returns:
+        Scalar float: validation expected log-likelihood (higher is better)
+    """
+    with torch.no_grad():
+        preds = predict_eigenspace(model, X_val)
+        A = model.likelihood.A.squeeze()
+        lambda0 = model.likelihood.lambda0.squeeze()
+        f_mean = preds['f_pred']
+        val_ll = (r_val * (A * preds['lambda_m'] + lambda0) - f_mean).sum()
+    return val_ll.item()
+
+
+def _save_model_state(model):
+    """Save model state for restore-best early stopping.
+
+    Saves variational parameters (m_b, V_b), the eigenspace basis B,
+    and all kernel/likelihood raw parameters. B is needed because
+    recompute_eigenspace() reprojects (m_b, V_b) from old B to new B,
+    and the saved m_b/V_b dimensions must match the saved B.
+    """
+    return {
+        'm_b': model.state.m_b.clone(),
+        'V_b': model.state.V_b.clone(),
+        'B': model.state.B.clone(),
+        'kernel_state': {n: p.detach().clone()
+                         for n, p in model.kernel.named_parameters()},
+        'likelihood_state': {n: p.detach().clone()
+                             for n, p in model.likelihood.named_parameters()},
+    }
+
+
+def _restore_model_state(model, saved):
+    """Restore model state from a previous save.
+
+    Restores kernel/likelihood parameters first, then sets the eigenspace
+    basis B and variational params (m_b, V_b) from the save, and finally
+    recomputes the eigenspace. The saved B ensures the reprojection inside
+    recompute_eigenspace has matching dimensions.
+    """
+    with torch.no_grad():
+        # Restore kernel/likelihood params first
+        for n, p in model.kernel.named_parameters():
+            p.copy_(saved['kernel_state'][n])
+        for n, p in model.likelihood.named_parameters():
+            p.copy_(saved['likelihood_state'][n])
+        # Restore eigenspace basis and variational params (matching dims)
+        model.state.B = saved['B'].clone()
+        model.update_variational_params(saved['m_b'], saved['V_b'])
+    # Recompute eigenspace from restored kernel params
+    # (reprojects saved m_b, V_b via saved B into new eigenspace)
+    model.recompute_eigenspace()
+
+
 def train_eigenspace(
     model,  # DirectVGPModel
     r: torch.Tensor,
@@ -98,13 +168,16 @@ def train_eigenspace(
     use_analytical_mstep: bool = False,
     capture_checkpoints: bool = False,
     early_stop: bool = True,
-    stop_window: int = 20,
-    stop_thresh: float = 5e-3,
+    patience: int = 15,
+    min_delta_rel: float = 0.001,
     min_iterations: int = 10,
+    restore_best: bool = True,
     f_mean_max_threshold: float = 500,
     f_mean_mean_threshold: float = 100,
     fix_Amp: bool = False,
     interleave_fstep: bool = False,
+    X_val: torch.Tensor = None,
+    r_val: torch.Tensor = None,
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -123,12 +196,15 @@ def train_eigenspace(
         verbose: Print detailed debugging info
         use_analytical_mstep: Use analytical gradients for M-step
         capture_checkpoints: If True, capture state at each checkpoint for validation
-        early_stop: Enable early stopping based on loss stability (default: True)
-        stop_window: Number of iterations to look back for improvement (default: 20)
-        stop_thresh: Minimum relative improvement over window to continue (default: 5e-3 = 0.5%)
+        early_stop: Enable early stopping based on validation log-lik (default: True)
+        patience: Iterations without sufficient validation improvement before stopping
+        min_delta_rel: Minimum relative improvement to reset patience counter
         min_iterations: Minimum iterations before early stopping can trigger (default: 10)
+        restore_best: Restore model to best-validation-iteration on early stop
         f_mean_max_threshold: Max f_mean.max() before step rejection (default: 500)
         f_mean_mean_threshold: Max f_mean.mean() before step rejection (default: 100)
+        X_val: Validation images, shape (N_val, n_features). None = no validation.
+        r_val: Validation spike counts, shape (N_val,). None = no validation.
 
     Returns:
         Dict with:
@@ -138,6 +214,8 @@ def train_eigenspace(
             'time_mstep_total': Total M-step time
             'stopped_early': Whether training stopped early
             'final_iteration': Final iteration number
+            'best_iteration': Iteration with best validation log-lik
+            'curves': Dict of per-iteration curves (train_loss, val_log_lik, params, etc.)
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
     from eigenspace_estep import estep_eigenspace
@@ -169,6 +247,26 @@ def train_eigenspace(
     # Early stopping state
     stopped_early = False
     final_iteration = 0
+    has_val = X_val is not None and r_val is not None
+    best_val_ll = float('-inf')
+    patience_counter = 0
+    best_state = None
+    best_iteration = 0
+
+    # Curve storage (logged every iteration regardless of early_stop setting)
+    train_loss_curve = []
+    train_ll_curve = []
+    train_kl_curve = []
+    val_ll_curve = []
+    param_A_curve = []
+    param_lambda0_curve = []
+    param_beta_curve = []
+    param_rho_curve = []
+    param_sigma_0_curve = []
+    param_eps_0x_curve = []
+    param_eps_0y_curve = []
+    param_Amp_curve = []
+    iter_time_curve = []
 
     # Initial moments (GPyTorch-like: call model to get posterior)
     posterior = model(model.X_train)
@@ -178,6 +276,7 @@ def train_eigenspace(
     f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
     for iteration in range(1, n_iterations):
+        iter_start_time = time.time()
 
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
@@ -301,6 +400,32 @@ def train_eigenspace(
         losses.append(loss)
         final_iteration = iteration
 
+        # Training log-lik (same formula as ELBO's lik term, for curve logging)
+        train_ll = (r * (A * lambda_m + lambda0) - f_mean).sum().item()
+        # KL from ELBO decomposition: ELBO = log_lik - KL => KL = log_lik - ELBO
+        train_kl = train_ll - elbo.item()
+
+        # ===== Validation evaluation =====
+        val_ll = None
+        if has_val:
+            val_ll = _compute_val_log_lik(model, X_val, r_val)
+
+        # ===== Log curves =====
+        iter_elapsed = time.time() - iter_start_time
+        train_loss_curve.append(loss)
+        train_ll_curve.append(train_ll)
+        train_kl_curve.append(train_kl)
+        val_ll_curve.append(val_ll)
+        param_A_curve.append(A.item())
+        param_lambda0_curve.append(lambda0.item())
+        param_beta_curve.append(model.kernel.beta.item())
+        param_rho_curve.append(model.kernel.rho.item())
+        param_sigma_0_curve.append(model.kernel.sigma_0.item())
+        param_eps_0x_curve.append(model.kernel.eps_0x.item())
+        param_eps_0y_curve.append(model.kernel.eps_0y.item())
+        param_Amp_curve.append(model.kernel.Amp.item())
+        iter_time_curve.append(iter_elapsed)
+
         if capture_checkpoints:
             checkpoints.append(capture_checkpoint(
                 'C5_end', iteration, model.state,
@@ -308,19 +433,41 @@ def train_eigenspace(
             ))
 
         if iteration % print_every == 0 or iteration == 1:
-            print(f"Iter {iteration}/{n_iterations-1}: loss={loss:.2f}, "
+            val_str = f", val_ll={val_ll:.2f}" if val_ll is not None else ""
+            print(f"Iter {iteration}/{n_iterations-1}: loss={loss:.2f}{val_str}, "
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
                   f"n_b={len(model.state.eigvals_b)}")
 
-        # Early stopping: check if loss improved enough over last stop_window iterations
-        if early_stop and len(losses) >= stop_window + min_iterations:
-            old_loss = losses[-(stop_window + 1)]
-            rel_improvement = (old_loss - loss) / abs(old_loss)
-            if rel_improvement < stop_thresh:
+        # ===== Patience-based early stopping on validation log-lik =====
+        if has_val:
+            # First observation always sets baseline (best_val_ll starts at -inf)
+            is_first = best_val_ll == float('-inf')
+            rel_improvement = (val_ll - best_val_ll) / max(abs(best_val_ll), 1e-8)
+            if is_first or rel_improvement > min_delta_rel:
+                best_val_ll = val_ll
+                patience_counter = 0
+                best_iteration = iteration
+                if restore_best:
+                    best_state = _save_model_state(model)
+            else:
+                patience_counter += 1
+
+            if early_stop and patience_counter >= patience and iteration >= min_iterations:
+                if restore_best and best_state is not None:
+                    _restore_model_state(model, best_state)
+                    posterior = model(model.X_train)
+                    lambda_m, lambda_var = posterior.mean, posterior.variance
                 stopped_early = True
                 print(f"Early stopping at iteration {iteration}: "
-                      f"loss improved only {rel_improvement*100:.3f}% over last {stop_window} iterations")
+                      f"no val improvement for {patience} iters "
+                      f"(best={best_val_ll:.2f} at iter {best_iteration})"
+                      f"{', restored best' if restore_best else ''}")
                 break
+
+    # If no early stop, best_iteration = iteration with max val_ll
+    if not stopped_early and has_val and best_iteration == 0:
+        # Edge case: no iteration beat the initial -inf (shouldn't happen)
+        best_iteration = final_iteration
 
     result = {
         'losses': losses,
@@ -329,6 +476,22 @@ def train_eigenspace(
         'time_mstep_total': time_mstep_total,
         'stopped_early': stopped_early,
         'final_iteration': final_iteration,
+        'best_iteration': best_iteration,
+        'curves': {
+            'train_loss': train_loss_curve,
+            'train_log_lik': train_ll_curve,
+            'train_kl': train_kl_curve,
+            'val_log_lik': val_ll_curve,
+            'A': param_A_curve,
+            'lambda0': param_lambda0_curve,
+            'beta': param_beta_curve,
+            'rho': param_rho_curve,
+            'sigma_0': param_sigma_0_curve,
+            'eps_0x': param_eps_0x_curve,
+            'eps_0y': param_eps_0y_curve,
+            'Amp': param_Amp_curve,
+            'iter_time': iter_time_curve,
+        },
     }
     if capture_checkpoints:
         result['checkpoints'] = checkpoints

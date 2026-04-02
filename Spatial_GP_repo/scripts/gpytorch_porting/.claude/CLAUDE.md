@@ -124,6 +124,50 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
+## Early Stopping & Validation
+
+**Validation data is ALWAYS held out** (250 images, never in training set). When
+`n_train=3160` is requested, effective training size is 2910. Prior experiment
+showed negligible difference (0.828 vs 0.827 test_r).
+
+**Mechanism**: Patience-based stopping on validation expected log-likelihood:
+1. At each outer EM iteration, compute val_ll on held-out 250 images
+2. Track best val_ll seen so far
+3. If val_ll improves by > `min_delta_rel` (0.1% relative), reset patience counter
+4. If patience counter reaches `patience` (15) and `iteration >= min_iterations` (10), stop
+5. On stop, restore model state from best-validation iteration
+
+**Validation metric formula**: Expected log-likelihood (same as ELBO's log-lik term):
+```
+val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
+where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
+```
+
+Alternative not used: plug-in Poisson log-prob `sum(r*log(f_pred) - f_pred)`, which
+additionally penalizes high posterior variance via an extra `r * 0.5*A^2*var` term.
+Both track the same direction during training; the expected log-lik was chosen for
+direct comparability with the training ELBO.
+
+**Config** (`default_params.json` / YAML):
+```json
+"early_stopping": {
+    "enabled": true,
+    "patience": 15,
+    "min_delta_rel": 0.001,
+    "min_iterations": 10,
+    "restore_best": true
+}
+```
+
+**Curve logging**: Every training run logs per-iteration curves in `result['curves']`:
+`train_loss`, `train_log_lik`, `train_kl`, `val_log_lik`, `A`, `lambda0`, `beta`,
+`rho`, `sigma_0`, `eps_0x`, `eps_0y`, `Amp`, `iter_time`. Curves are logged even
+with `early_stop=False` (useful for post-hoc convergence analysis).
+
+**Tests**: `tests/test_early_stopping.py` (10 strict tests, ~17s on GPU).
+
+---
+
 ## Training Modes
 
 | Mode | Description |

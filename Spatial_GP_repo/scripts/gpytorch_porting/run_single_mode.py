@@ -326,9 +326,10 @@ def build_config_from_defaults(**overrides):
 
         # --- Early stopping (from early_stopping section) ---
         'early_stop': es['enabled'],
-        'stop_window': es['window'],
-        'stop_thresh': es['threshold'],
+        'patience': es['patience'],
+        'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
+        'restore_best': es['restore_best'],
 
         # --- Numerical (from model section) ---
         'jitter': mod['jitter'],
@@ -440,9 +441,10 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
 
         # Early stopping
         'early_stop': es['enabled'],
-        'stop_window': es['window'],
-        'stop_thresh': es['threshold'],
+        'patience': es['patience'],
+        'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
+        'restore_best': es['restore_best'],
 
         # Optimizer details
         'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
@@ -608,17 +610,20 @@ def run_single_config(config):
     config['n_px_side'] = n_px_side  # update config for downstream code
     print(f"Image dimensions: {n_px_side}x{n_px_side} ({n_px_side**2} pixels)")
 
-    # Combine train + val, flatten
-    X = torch.cat([data['X_train'], data['X_val']], dim=0)
-    R = torch.cat([data['R_train'], data['R_val']], dim=0)
-    X = X.reshape(X.shape[0], -1).to(device)  # (N, n_px_side^2)
-    R = R.to(device)
+    # Training data (validation always held out for monitoring/early stopping)
+    X = data['X_train'].reshape(data['X_train'].shape[0], -1).to(device)  # (2910, n_px_side^2)
+    R = data['R_train'].to(device)
+
+    # Validation data (separate, never used for training)
+    X_val = data['X_val'].reshape(data['X_val'].shape[0], -1).to(device)  # (250, n_px_side^2)
+    R_val = data['R_val'].to(device)
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
 
     # Select cell
     r = R[:, cell]
+    r_val = R_val[:, cell]
     r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
 
     # =========================================================================
@@ -753,6 +758,7 @@ def run_single_config(config):
     print(f"\nData shapes:")
     print(f"  X_train: {X_train.shape}")
     print(f"  r_train: {r_train.shape}")
+    print(f"  X_val: {X_val.shape}")
     print(f"  inducing_points: {inducing_points.shape}")
     print(f"  X_test: {X_test.shape}")
 
@@ -762,9 +768,10 @@ def run_single_config(config):
     n_fstep = config['n_fstep']
     n_mstep = config['n_mstep']
     early_stop = config['early_stop']
-    stop_window = config['stop_window']
-    stop_thresh = config['stop_thresh']
+    patience = config['patience']
+    min_delta_rel = config['min_delta_rel']
     min_iterations = config['min_iterations']
+    restore_best = config['restore_best']
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
     lambda_var_clamp = config['lambda_var_clamp']
@@ -869,6 +876,8 @@ def run_single_config(config):
         losses = [final_loss]
         stopped_early = False
         final_iteration = n_iterations
+        best_iteration = 0
+        curves = {}
 
         # Extract final hyperparameters
         theta_final = fit_model['hyperparams_tuple'][0]
@@ -928,13 +937,16 @@ def run_single_config(config):
                 print_every=print_every,
                 use_analytical_mstep=config['mstep_analytical'],
                 early_stop=early_stop,
-                stop_window=stop_window,
-                stop_thresh=stop_thresh,
+                patience=patience,
+                min_delta_rel=min_delta_rel,
                 min_iterations=min_iterations,
+                restore_best=restore_best,
                 f_mean_max_threshold=f_mean_max_threshold,
                 f_mean_mean_threshold=f_mean_mean_threshold,
                 fix_Amp=config.get('fix_Amp', False),
                 interleave_fstep=config.get('interleave_fstep', False),
+                X_val=X_val,
+                r_val=r_val,
             )
 
         train_time = time.time() - start_time
@@ -943,6 +955,8 @@ def run_single_config(config):
         time_mstep_total = result['time_mstep_total']
         stopped_early = result.get('stopped_early', False)
         final_iteration = result.get('final_iteration', len(losses))
+        best_iteration = result.get('best_iteration', final_iteration)
+        curves = result.get('curves', {})
 
         print(f"\nTraining time: {train_time:.1f}s")
         print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
@@ -950,6 +964,8 @@ def run_single_config(config):
         print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
+        if best_iteration > 0:
+            print(f"  Best validation iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {model.likelihood.A.item():.4f}")
@@ -1022,24 +1038,31 @@ def run_single_config(config):
                 print_every=print_every,
                 device=device,
                 early_stop=early_stop,
-                stop_window=stop_window,
-                stop_thresh=stop_thresh,
+                patience=patience,
+                min_delta_rel=min_delta_rel,
                 min_iterations=min_iterations,
+                restore_best=restore_best,
                 lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
                 jitter=jitter,
                 cholesky_max_tries=config['cholesky_max_tries'],
                 f_mean_max_threshold=f_mean_max_threshold,
                 f_mean_mean_threshold=f_mean_mean_threshold,
                 lambda_var_clamp=lambda_var_clamp,
+                X_val=X_val,
+                r_val=r_val,
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
             final_iteration = result.get('final_iteration', len(losses))
+            best_iteration = result.get('best_iteration', final_iteration)
+            curves = result.get('curves', {})
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
+        if best_iteration > 0:
+            print(f"  Best validation iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {likelihood.A.item():.4f}")
@@ -1153,6 +1176,8 @@ def run_single_config(config):
         'n_px_side': n_px_side,
         'n_iterations_run': final_iteration,
         'stopped_early': stopped_early,
+        'best_iteration': best_iteration if mode != 'vargp_old' else None,
+        'curves': curves if mode != 'vargp_old' else None,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
         # Keep references for plotting (not serialized to JSON)
         '_predictions': predictions,
@@ -1196,6 +1221,10 @@ def main():
         def _sanitize(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
+            if isinstance(v, list):
+                return [_sanitize(x) for x in v]
+            if isinstance(v, dict):
+                return {k2: _sanitize(v2) for k2, v2 in v.items()}
             return v
         serializable = {k: _sanitize(v) for k, v in result.items()
                         if not k.startswith('_')}
@@ -1300,12 +1329,14 @@ def main():
     es_defaults = defaults['early_stopping']
     parser.add_argument('--no-early-stop', action='store_true',
                         help='Disable early stopping (early stopping is ON by default)')
-    parser.add_argument('--stop-window', type=int, default=es_defaults['window'],
-                        help=f'Number of iterations to look back for improvement (default: {es_defaults["window"]})')
-    parser.add_argument('--stop-thresh', type=float, default=es_defaults['threshold'],
-                        help=f'Minimum relative improvement over window to continue (default: {es_defaults["threshold"]})')
+    parser.add_argument('--patience', type=int, default=es_defaults['patience'],
+                        help=f'Iterations without val improvement before stopping (default: {es_defaults["patience"]})')
+    parser.add_argument('--min-delta-rel', type=float, default=es_defaults['min_delta_rel'],
+                        help=f'Minimum relative improvement to reset patience (default: {es_defaults["min_delta_rel"]})')
     parser.add_argument('--min-iterations', type=int, default=es_defaults['min_iterations'],
                         help=f'Minimum iterations before early stopping can trigger (default: {es_defaults["min_iterations"]})')
+    parser.add_argument('--no-restore-best', action='store_true',
+                        help='Do not restore best-validation model on early stop')
 
     # Inducing point selection
     ind_defaults = defaults['inducing']
@@ -1357,9 +1388,10 @@ def main():
         lr=args.lr,
         optimizer=args.optimizer,
         early_stop=not args.no_early_stop,
-        stop_window=args.stop_window,
-        stop_thresh=args.stop_thresh,
+        patience=args.patience,
+        min_delta_rel=args.min_delta_rel,
         min_iterations=args.min_iterations,
+        restore_best=not args.no_restore_best,
         jitter=args.jitter,
         cholesky_max_tries=args.cholesky_max_tries,
         lambda_var_clamp=args.lambda_var_clamp,
