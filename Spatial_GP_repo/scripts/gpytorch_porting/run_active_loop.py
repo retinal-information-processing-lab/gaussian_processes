@@ -32,9 +32,9 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-# Path setup (same as run_single_mode.py — needed for old codebase imports)
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject')
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/torchlambertw')
+# Add repo parent to sys.path for `from gaussian_processes.Spatial_GP_repo import ...`
+_repo_root = next(p for p in Path(__file__).resolve().parents if (p / 'Spatial_GP_repo').is_dir())
+sys.path.insert(0, str(_repo_root.parent))
 
 import torch
 import numpy as np

@@ -7,7 +7,9 @@ Run this in a fresh terminal.
 """
 
 import sys
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/scripts/gpytorch_porting')
+from pathlib import Path
+_gpy_dir = next(p for p in Path(__file__).resolve().parents if p.name == 'gpytorch_porting')
+sys.path.insert(0, str(_gpy_dir))
 
 import torch
 import numpy as np

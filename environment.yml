@@ -1,0 +1,39 @@
+# Full development environment for gaussian_processes repo.
+#
+# Usage:
+#   conda env create -f environment.yml        # create from scratch
+#   conda env update -f environment.yml        # update existing env
+#
+# IMPORTANT: Run from the repo root (gaussian_processes/) so that the
+# relative path to torchlambertw/ resolves correctly.
+#
+# PyTorch CUDA: This file does NOT hardcode a CUDA index URL because the
+# correct URL depends on your hardware:
+#   - x86_64 + CUDA 12.1:  --extra-index-url https://download.pytorch.org/whl/cu121
+#   - aarch64 (DGX Spark):  default PyPI or NVIDIA index (see SETUP.md)
+#
+# See SETUP.md for platform-specific PyTorch installation instructions.
+
+name: gp_neural
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - matplotlib
+  - pyyaml
+  - pip
+  - pip:
+    # --- PyTorch stack (versions pinned, index set per-platform) ---
+    # Install torch FIRST via platform-specific command in SETUP.md,
+    # then run: conda env update -f environment.yml
+    # If torch is already installed, pip will skip it.
+    - torch>=2.5,<2.7
+    - gpytorch>=1.14,<1.16
+    - linear-operator>=0.5,<0.7
+    # --- Vendored dependency (local, not on PyPI) ---
+    - -e ./torchlambertw
+    # --- Investigation/optional deps ---
+    - pytest
