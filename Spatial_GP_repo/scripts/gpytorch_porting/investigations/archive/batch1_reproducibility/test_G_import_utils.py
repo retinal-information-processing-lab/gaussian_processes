@@ -9,8 +9,9 @@ This tests if the import order/side effects from utils.py matter.
 """
 
 import sys
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject')
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/torchlambertw')
+from pathlib import Path
+_repo_root = next(p for p in Path(__file__).resolve().parents if (p / 'Spatial_GP_repo').is_dir())
+sys.path.insert(0, str(_repo_root.parent))
 
 print("=" * 60)
 print("Test G: Import utils.py BEFORE seeding")

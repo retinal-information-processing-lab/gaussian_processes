@@ -38,9 +38,9 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 
-# Add paths for imports
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject')
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/torchlambertw')
+# Add repo parent to sys.path for `from gaussian_processes.Spatial_GP_repo import ...`
+_repo_root = next(p for p in Path(__file__).resolve().parents if (p / 'Spatial_GP_repo').is_dir())
+sys.path.insert(0, str(_repo_root.parent))
 # Add parent directory to import from gpytorch_porting
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
