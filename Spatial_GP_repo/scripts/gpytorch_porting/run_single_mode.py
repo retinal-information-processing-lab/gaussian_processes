@@ -614,9 +614,30 @@ def run_single_config(config):
     X = data['X_train'].reshape(data['X_train'].shape[0], -1).to(device)  # (2910, n_px_side^2)
     R = data['R_train'].to(device)
 
-    # Validation data (separate, never used for training)
-    X_val = data['X_val'].reshape(data['X_val'].shape[0], -1).to(device)  # (250, n_px_side^2)
-    R_val = data['R_val'].to(device)
+    # Validation data source: either from .npz val split or carved from training set
+    val_from_train = config.get('val_from_train', False)
+    n_val_split = config.get('n_val_split', 250)
+
+    if val_from_train:
+        # Carve validation from training set using seeded permutation
+        # This ensures train and val have the same response distribution
+        gen = torch.Generator(device=device)
+        gen.manual_seed(seed)
+        n_total = X.shape[0]
+        perm = torch.randperm(n_total, generator=gen, device=device)
+        val_indices = perm[:n_val_split]
+        train_indices = perm[n_val_split:]
+
+        X_val = X[val_indices]
+        R_val = R[val_indices]
+        # Replace X, R with the remaining training portion
+        X = X[train_indices]
+        R = R[train_indices]
+        print(f"Validation carved from training: {n_val_split} val, {X.shape[0]} train remaining")
+    else:
+        # Original behavior: use .npz val split
+        X_val = data['X_val'].reshape(data['X_val'].shape[0], -1).to(device)  # (250, n_px_side^2)
+        R_val = data['R_val'].to(device)
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
@@ -1150,6 +1171,7 @@ def run_single_config(config):
         'mode': mode,
         'M': M,
         'n_train': n_train,
+        'n_val': X_val.shape[0] if X_val is not None else 0,
         'seed': seed,
         'cell': cell,
         'status': 'success',
