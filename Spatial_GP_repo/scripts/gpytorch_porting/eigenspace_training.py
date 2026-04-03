@@ -366,28 +366,12 @@ def train_eigenspace(
 
         time_estep_total += time.time() - start_estep
 
-        # ===== M-step: Optimize kernel hyperparameters =====
-        start_mstep = time.time()
-
-        if n_mstep > 0 and iteration < n_iterations - 1:
-            if use_analytical_mstep:
-                mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
-                                            f_mean_mean_threshold=f_mean_mean_threshold,
-                                            lambda_var_clamp=model.lambda_var_clamp)
-            else:
-                mstep_eigenspace_autograd(model, r, n_mstep, lr_m,
-                                          f_mean_mean_threshold=f_mean_mean_threshold,
-                                          lambda_var_clamp=model.lambda_var_clamp)
-
-            if capture_checkpoints:
-                checkpoints.append(capture_checkpoint(
-                    'C4_mstep', iteration, model.state,
-                    kernel=model.kernel
-                ))
-
-        time_mstep_total += time.time() - start_mstep
-
         # ===== Compute and record loss =====
+        # NOTE: Metrics are computed BEFORE M-step so that all quantities
+        # (lambda_m, lambda_var, f_mean, kernel params, eigenspace) are from
+        # the same consistent model state. The M-step changes kernel params
+        # without recomputing the eigenspace, so predict_eigenspace() would
+        # give inconsistent results if called after M-step.
         elbo = compute_elbo_eigenspace(model.state, r, lambda_m, lambda_var, A, lambda0)
 
         # Detect training divergence (NaN/inf loss)
@@ -411,6 +395,8 @@ def train_eigenspace(
             val_ll = _compute_val_log_lik(model, X_val, r_val)
 
         # ===== Log curves =====
+        # iter_elapsed does not include M-step time (M-step runs after logging);
+        # M-step time is tracked separately in time_mstep_total.
         iter_elapsed = time.time() - iter_start_time
         train_loss_curve.append(loss)
         train_ll_curve.append(train_ll)
@@ -463,6 +449,30 @@ def train_eigenspace(
                       f"(best={best_val_ll:.2f} at iter {best_iteration})"
                       f"{', restored best' if restore_best else ''}")
                 break
+
+        # ===== M-step: Optimize kernel hyperparameters =====
+        # Runs AFTER metrics/val_ll/early_stopping to ensure all evaluations
+        # use a consistent model state. The eigenspace is recomputed at the
+        # START of the next iteration to sync with the new kernel params.
+        start_mstep = time.time()
+
+        if n_mstep > 0 and iteration < n_iterations - 1:
+            if use_analytical_mstep:
+                mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
+                                            f_mean_mean_threshold=f_mean_mean_threshold,
+                                            lambda_var_clamp=model.lambda_var_clamp)
+            else:
+                mstep_eigenspace_autograd(model, r, n_mstep, lr_m,
+                                          f_mean_mean_threshold=f_mean_mean_threshold,
+                                          lambda_var_clamp=model.lambda_var_clamp)
+
+            if capture_checkpoints:
+                checkpoints.append(capture_checkpoint(
+                    'C4_mstep', iteration, model.state,
+                    kernel=model.kernel
+                ))
+
+        time_mstep_total += time.time() - start_mstep
 
     # If no early stop, best_iteration = iteration with max val_ll
     if not stopped_early and has_val and best_iteration == 0:
