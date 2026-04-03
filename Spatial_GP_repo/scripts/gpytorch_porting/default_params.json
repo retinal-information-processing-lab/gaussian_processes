@@ -80,5 +80,22 @@
     "adaptive_safety_k": 3.0,
     "adaptive_max_rmax": 10000,
     "adaptive_min_rmax": 200
+  },
+
+  "active_learning": {
+    "_comment": "Parameters for run_active_loop.py. Phase 2 values from config/config.py:191-198 (production).",
+    "n_active_iterations": 50,
+    "phase2_n_iterations": 5,
+    "phase2_n_estep": 10,
+    "phase2_n_fstep": 10,
+    "phase2_n_mstep": 10,
+    "phase2_lr": 0.1,
+    "phase2_early_stop": false,
+    "phase2_print_every": 999,
+    "phase2_verbose": false,
+    "strategy": "argmax",
+    "mode": "vargp_direct",
+    "phase1_M": 50,
+    "phase1_n_train": 50
   }
 }

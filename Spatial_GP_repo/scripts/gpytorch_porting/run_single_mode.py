@@ -235,6 +235,7 @@ def plot_fit(r_test_mean, f_pred, cellid, ntilde, test_corr, explained_var, reli
     return fig
 
 
+
 # =========================================================================
 # Config builders
 # =========================================================================
@@ -352,6 +353,7 @@ def build_config_from_defaults(**overrides):
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
         'f_max': utl['f_max'],
+        'adaptive_r_max': utl['adaptive_r_max'],
 
         # --- Runtime flags (not configurable via default_params.json) ---
         'mstep_analytical': False,
@@ -462,6 +464,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'n_mc_samples': utl['n_mc_samples'],
         'r_max': utl['r_max'],
         'f_max': utl['f_max'],
+        'adaptive_r_max': utl['adaptive_r_max'],
 
         # Data
         'data_path': dat['path'],

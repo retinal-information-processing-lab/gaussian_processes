@@ -326,6 +326,9 @@ Cell 8 and 10 validation sufficient for initial implementation.
 ### LBFGS Tolerance Investigation - DEFERRED
 The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Since all code runs with `--float32` (per guidelines), this tolerance may be meaningless. Future investigation: consider whether to expose/adjust tolerance or validate that float32 precision is sufficient.
 
+### Codebase Restructuring (Package Layout) - DEFERRED
+27 .py files in `gpytorch_porting/` root. Library code (kernels, eigenspace_*, gpy_*, metrics, etc.) should move into a `gp/` package with `eigenspace/` and `gpytorch/` sub-packages, leaving only entry-point scripts at root. Deferred because it touches every import in every file and would complicate merging with other branches.
+
 ### YAML Experiment System - Open Items
 - **Remaining hardcoded params**: kernel_bounds, lbfgs_tolerance/history_size, lambda_var_clamp, stability_threshold are documented in YAML with `HARDCODED` tags and file:line refs but NOT yet wired through code. Changing their YAML values has no effect.
 - **Canonical/quick YAML sync hook**: Non-experiment sections of `canonical.yaml` and `quick.yaml` should stay in sync. A Claude Code hook is planned but not yet implemented.
