@@ -31,23 +31,23 @@ import numpy as np
 
 # -- Style constants ----------------------------------------------------------
 
-# Log-lik / ELBO panel
+# Row 1: Log-lik / ELBO
 COLOR_TRAIN_LL = '#2176AE'   # steel blue
 COLOR_VAL_LL = '#E63946'     # crimson
 COLOR_ELBO = '#7D8491'       # slate gray
 
-# Likelihood params
+# Row 2: Likelihood params
 COLOR_A = '#2176AE'          # steel blue
 COLOR_LAMBDA0 = '#E63946'    # crimson
 
-# Kernel params
+# Row 3: Kernel params
 COLOR_BETA = '#2CA02C'       # green
 COLOR_RHO = '#FF7F0E'        # orange
 COLOR_SIGMA0 = '#9467BD'     # purple
 COLOR_EPS = '#8C564B'        # brown
 
 # Best-iteration line
-COLOR_BEST = '#555555'
+COLOR_BEST = '#444444'
 
 # Fallback dataset sizes (PNAS). Used ONLY for old JSONL files that predate
 # the n_train/n_val fields. A warning is printed when these are used.
@@ -84,7 +84,7 @@ def group_by_cell(records):
     return dict(grouped)
 
 
-def _style_axis(ax, fontsize=8):
+def _style_axis(ax, fontsize=11):
     """Apply clean styling to an axis."""
     ax.tick_params(labelsize=fontsize)
     ax.spines['top'].set_visible(False)
@@ -107,7 +107,7 @@ def _apply_ylim(ax, ylim_ranges, key):
 
 
 def _plot_loglik_and_elbo(ax, curves, best_iteration, n_train, n_val,
-                          ylim_ranges=None):
+                          ylim_ranges=None, is_first_col=True, is_last_col=True):
     """Row 1: Normalized log-lik (train + val) on left axis, ELBO on right."""
     train_ll = curves.get('train_log_lik', [])
     val_ll = curves.get('val_log_lik', [])
@@ -115,24 +115,28 @@ def _plot_loglik_and_elbo(ax, curves, best_iteration, n_train, n_val,
 
     if not train_ll and not val_ll and not train_loss:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
-                transform=ax.transAxes, fontsize=9, color='gray')
+                transform=ax.transAxes, fontsize=12, color="gray")
         return
 
     # Normalized log-likelihood (per sample)
     if train_ll:
         iters = np.arange(1, len(train_ll) + 1)
         ll_norm = np.array(train_ll) / n_train
-        ax.plot(iters, ll_norm, color=COLOR_TRAIN_LL, linewidth=1.3,
+        ax.plot(iters, ll_norm, color=COLOR_TRAIN_LL, linewidth=1.5,
                 label='train LL', zorder=3)
 
     if val_ll:
         iters_v = np.arange(1, len(val_ll) + 1)
         vll_norm = np.array(val_ll) / n_val
-        ax.plot(iters_v, vll_norm, color=COLOR_VAL_LL, linewidth=1.3,
+        ax.plot(iters_v, vll_norm, color=COLOR_VAL_LL, linewidth=1.5,
                 linestyle='--', label='val LL', zorder=3)
 
-    ax.set_ylabel('Log-lik / sample', fontsize=8)
     _style_axis(ax)
+    if is_first_col:
+        ax.set_ylabel('Log-lik / sample', fontsize=12)
+    else:
+        ax.set_ylabel('')
+        ax.tick_params(axis='y', labelleft=False)
 
     # ELBO on right axis (also normalized per training sample)
     if train_loss:
@@ -141,19 +145,25 @@ def _plot_loglik_and_elbo(ax, curves, best_iteration, n_train, n_val,
         elbo_norm = np.array([-l for l in train_loss]) / n_train
         ax_elbo.plot(iters_e, elbo_norm, color=COLOR_ELBO, linewidth=1.0,
                      alpha=0.7, label='ELBO', zorder=2)
-        ax_elbo.set_ylabel('ELBO / sample', color=COLOR_ELBO, fontsize=8)
-        ax_elbo.tick_params(axis='y', labelcolor=COLOR_ELBO, labelsize=7)
         ax_elbo.spines['top'].set_visible(False)
-        ax_elbo.spines['right'].set_linewidth(0.6)
+        if is_last_col:
+            ax_elbo.set_ylabel('ELBO / sample', color=COLOR_ELBO, fontsize=12)
+            ax_elbo.tick_params(axis='y', labelcolor=COLOR_ELBO, labelsize=9)
+            ax_elbo.spines['right'].set_linewidth(0.6)
+        else:
+            ax_elbo.set_ylabel('')
+            ax_elbo.tick_params(axis='y', labelright=False)
+            ax_elbo.spines['right'].set_visible(False)
 
-    # Legend combining both axes
-    lines1, labels1 = ax.get_legend_handles_labels()
-    if train_loss:
-        lines2, labels2 = ax_elbo.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2,
-                  fontsize=7, loc='lower right', framealpha=0.8)
-    elif lines1:
-        ax.legend(fontsize=7, loc='lower right', framealpha=0.8)
+    # Legend only on first column
+    if is_first_col:
+        lines1, labels1 = ax.get_legend_handles_labels()
+        if train_loss:
+            lines2, labels2 = ax_elbo.get_legend_handles_labels()
+            ax.legend(lines1 + lines2, labels1 + labels2,
+                      fontsize=10, loc='lower right', framealpha=0.8)
+        elif lines1:
+            ax.legend(fontsize=10, loc='lower right', framealpha=0.8)
 
     # Apply fixed y-limits if provided (log-lik uses union of train + val ranges)
     if ylim_ranges:
@@ -168,33 +178,43 @@ def _plot_loglik_and_elbo(ax, curves, best_iteration, n_train, n_val,
     _add_best_line(ax, best_iteration)
 
 
-def _plot_likelihood_params(ax, curves, best_iteration, ylim_ranges=None):
+def _plot_likelihood_params(ax, curves, best_iteration, ylim_ranges=None,
+                            is_first_col=True, is_last_col=True):
     """Row 2: A (left) + lambda0 (right), colored twin axes."""
     A_curve = curves.get('A', [])
     lam0_curve = curves.get('lambda0', [])
 
     if not A_curve and not lam0_curve:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
-                transform=ax.transAxes, fontsize=9, color='gray')
+                transform=ax.transAxes, fontsize=12, color="gray")
         return
 
     _style_axis(ax)
 
     if A_curve:
         iters = np.arange(1, len(A_curve) + 1)
-        ax.plot(iters, A_curve, color=COLOR_A, linewidth=1.3)
-        ax.set_ylabel('A', color=COLOR_A, fontsize=9, fontweight='semibold')
-        ax.tick_params(axis='y', labelcolor=COLOR_A, labelsize=7)
+        ax.plot(iters, A_curve, color=COLOR_A, linewidth=1.5)
+        if is_first_col:
+            ax.set_ylabel('A', color=COLOR_A, fontsize=13, fontweight='semibold')
+            ax.tick_params(axis='y', labelcolor=COLOR_A, labelsize=10)
+        else:
+            ax.set_ylabel('')
+            ax.tick_params(axis='y', labelleft=False)
 
     if lam0_curve:
         ax2 = ax.twinx()
         iters = np.arange(1, len(lam0_curve) + 1)
-        ax2.plot(iters, lam0_curve, color=COLOR_LAMBDA0, linewidth=1.3)
-        ax2.set_ylabel('lambda0', color=COLOR_LAMBDA0, fontsize=9,
-                        fontweight='semibold')
-        ax2.tick_params(axis='y', labelcolor=COLOR_LAMBDA0, labelsize=7)
+        ax2.plot(iters, lam0_curve, color=COLOR_LAMBDA0, linewidth=1.5)
         ax2.spines['top'].set_visible(False)
-        ax2.spines['right'].set_linewidth(0.6)
+        if is_last_col:
+            ax2.set_ylabel('lambda0', color=COLOR_LAMBDA0, fontsize=13,
+                            fontweight='semibold')
+            ax2.tick_params(axis='y', labelcolor=COLOR_LAMBDA0, labelsize=9)
+            ax2.spines['right'].set_linewidth(0.6)
+        else:
+            ax2.set_ylabel('')
+            ax2.tick_params(axis='y', labelright=False)
+            ax2.spines['right'].set_visible(False)
 
     _apply_ylim(ax, ylim_ranges, 'A')
     if lam0_curve:
@@ -203,7 +223,8 @@ def _plot_likelihood_params(ax, curves, best_iteration, ylim_ranges=None):
     _add_best_line(ax, best_iteration)
 
 
-def _plot_kernel_params(ax, curves, best_iteration, ylim_ranges=None):
+def _plot_kernel_params(ax, curves, best_iteration, ylim_ranges=None,
+                        is_first_col=True, is_last_col=True):
     """Row 3: Kernel params on offset colored axes."""
     beta_curve = curves.get('beta', [])
     rho_curve = curves.get('rho', [])
@@ -214,66 +235,83 @@ def _plot_kernel_params(ax, curves, best_iteration, ylim_ranges=None):
     has_any = any([beta_curve, rho_curve, sigma0_curve, eps0x_curve, eps0y_curve])
     if not has_any:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
-                transform=ax.transAxes, fontsize=9, color='gray')
+                transform=ax.transAxes, fontsize=12, color="gray")
         return
 
     _style_axis(ax)
     spine_offset = 0
-    lw = 1.2
-    fs_label = 8
-    fs_tick = 6.5
+    lw = 1.4
 
     # beta on primary left axis
     if beta_curve:
         iters = np.arange(1, len(beta_curve) + 1)
         ax.plot(iters, beta_curve, color=COLOR_BETA, linewidth=lw)
-        ax.set_ylabel('beta', color=COLOR_BETA, fontsize=fs_label,
-                       fontweight='semibold')
-        ax.tick_params(axis='y', labelcolor=COLOR_BETA, labelsize=fs_tick)
+        if is_first_col:
+            ax.set_ylabel('beta', color=COLOR_BETA, fontsize=13,
+                           fontweight='semibold')
+            ax.tick_params(axis='y', labelcolor=COLOR_BETA, labelsize=10)
+        else:
+            ax.set_ylabel('')
+            ax.tick_params(axis='y', labelleft=False)
 
     # rho on first right axis
     if rho_curve:
         ax_rho = ax.twinx()
         iters = np.arange(1, len(rho_curve) + 1)
         ax_rho.plot(iters, rho_curve, color=COLOR_RHO, linewidth=lw)
-        ax_rho.set_ylabel('rho', color=COLOR_RHO, fontsize=fs_label,
-                           fontweight='semibold')
-        ax_rho.tick_params(axis='y', labelcolor=COLOR_RHO, labelsize=fs_tick)
         ax_rho.spines['top'].set_visible(False)
-        ax_rho.spines['right'].set_linewidth(0.6)
+        if is_last_col:
+            ax_rho.set_ylabel('rho', color=COLOR_RHO, fontsize=13,
+                               fontweight='semibold')
+            ax_rho.tick_params(axis='y', labelcolor=COLOR_RHO, labelsize=9)
+            ax_rho.spines['right'].set_linewidth(0.6)
+        else:
+            ax_rho.set_ylabel('')
+            ax_rho.tick_params(axis='y', labelright=False)
+            ax_rho.spines['right'].set_visible(False)
         spine_offset += 1
 
     # sigma_0 on offset right axis
     if sigma0_curve:
         ax_sig = ax.twinx()
-        ax_sig.spines['right'].set_position(('axes', 1.0 + 0.18 * spine_offset))
         iters = np.arange(1, len(sigma0_curve) + 1)
         ax_sig.plot(iters, sigma0_curve, color=COLOR_SIGMA0, linewidth=lw)
-        ax_sig.set_ylabel('sigma_0', color=COLOR_SIGMA0, fontsize=fs_label,
-                           fontweight='semibold')
-        ax_sig.tick_params(axis='y', labelcolor=COLOR_SIGMA0, labelsize=fs_tick)
         ax_sig.spines['top'].set_visible(False)
-        ax_sig.spines['right'].set_linewidth(0.6)
+        if is_last_col:
+            ax_sig.spines['right'].set_position(('axes', 1.0 + 0.20 * spine_offset))
+            ax_sig.set_ylabel('sigma_0', color=COLOR_SIGMA0, fontsize=13,
+                               fontweight='semibold')
+            ax_sig.tick_params(axis='y', labelcolor=COLOR_SIGMA0, labelsize=9)
+            ax_sig.spines['right'].set_linewidth(0.6)
+        else:
+            ax_sig.set_ylabel('')
+            ax_sig.tick_params(axis='y', labelright=False)
+            ax_sig.spines['right'].set_visible(False)
         spine_offset += 1
 
     # eps_0x / eps_0y sharing one offset axis
     if eps0x_curve or eps0y_curve:
         ax_eps = ax.twinx()
-        ax_eps.spines['right'].set_position(('axes', 1.0 + 0.18 * spine_offset))
         if eps0x_curve:
             iters = np.arange(1, len(eps0x_curve) + 1)
-            ax_eps.plot(iters, eps0x_curve, color=COLOR_EPS, linewidth=1.0,
+            ax_eps.plot(iters, eps0x_curve, color=COLOR_EPS, linewidth=1.2,
                         linestyle='-', label='eps_x')
         if eps0y_curve:
             iters = np.arange(1, len(eps0y_curve) + 1)
-            ax_eps.plot(iters, eps0y_curve, color=COLOR_EPS, linewidth=1.0,
+            ax_eps.plot(iters, eps0y_curve, color=COLOR_EPS, linewidth=1.2,
                         linestyle='--', label='eps_y')
-        ax_eps.set_ylabel('eps_0', color=COLOR_EPS, fontsize=fs_label,
-                           fontweight='semibold')
-        ax_eps.tick_params(axis='y', labelcolor=COLOR_EPS, labelsize=fs_tick)
         ax_eps.spines['top'].set_visible(False)
-        ax_eps.spines['right'].set_linewidth(0.6)
-        ax_eps.legend(fontsize=6, loc='center right', framealpha=0.7)
+        if is_last_col:
+            ax_eps.spines['right'].set_position(('axes', 1.0 + 0.20 * spine_offset))
+            ax_eps.set_ylabel('eps_0', color=COLOR_EPS, fontsize=13,
+                               fontweight='semibold')
+            ax_eps.tick_params(axis='y', labelcolor=COLOR_EPS, labelsize=9)
+            ax_eps.spines['right'].set_linewidth(0.6)
+            ax_eps.legend(fontsize=10, loc='center right', framealpha=0.7)
+        else:
+            ax_eps.set_ylabel('')
+            ax_eps.tick_params(axis='y', labelright=False)
+            ax_eps.spines['right'].set_visible(False)
 
     # Apply fixed y-limits per axis
     _apply_ylim(ax, ylim_ranges, 'beta')
@@ -330,37 +368,43 @@ def plot_cell_training(cell_id, seed_data, output_path, title_extra='',
             n_train = n_train or _FALLBACK_N_TRAIN
             n_val = n_val or _FALLBACK_N_VAL
 
+        is_first = (col_idx == 0)
+        is_last = (col_idx == n_seeds - 1)
+
         # Column title
         parts = [f'Seed {seed}']
         if test_r is not None:
             parts.append(f'test_r={test_r:.4f}')
         if stopped and best_it is not None:
             parts.append(f'ES@{best_it}')
-        axes[0, col_idx].set_title('  '.join(parts), fontsize=9,
-                                    fontweight='medium', pad=8)
+        axes[0, col_idx].set_title('  '.join(parts), fontsize=13,
+                                    fontweight='medium', pad=10)
 
         # Row 1: log-lik + ELBO
         _plot_loglik_and_elbo(axes[0, col_idx], curves, best_it, n_train, n_val,
-                              ylim_ranges=ylim_ranges)
+                              ylim_ranges=ylim_ranges,
+                              is_first_col=is_first, is_last_col=is_last)
 
         # Row 2: likelihood params
         _plot_likelihood_params(axes[1, col_idx], curves, best_it,
-                                ylim_ranges=ylim_ranges)
+                                ylim_ranges=ylim_ranges,
+                                is_first_col=is_first, is_last_col=is_last)
 
         # Row 3: kernel params
         _plot_kernel_params(axes[2, col_idx], curves, best_it,
-                            ylim_ranges=ylim_ranges)
+                            ylim_ranges=ylim_ranges,
+                            is_first_col=is_first, is_last_col=is_last)
 
         # x-label only on bottom
-        axes[n_rows - 1, col_idx].set_xlabel('Iteration', fontsize=8)
+        axes[n_rows - 1, col_idx].set_xlabel('Iteration', fontsize=12)
 
     # Suptitle
     suptitle = f'Cell {cell_id}'
     if title_extra:
         suptitle += f'  |  {title_extra}'
-    fig.suptitle(suptitle, fontsize=12, fontweight='bold', y=1.02)
+    fig.suptitle(suptitle, fontsize=16, fontweight='bold', y=1.02)
 
-    fig.tight_layout(h_pad=1.0, w_pad=2.5)
+    fig.tight_layout(h_pad=1.2, w_pad=1.5)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches='tight',
