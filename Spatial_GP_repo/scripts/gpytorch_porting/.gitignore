@@ -9,8 +9,10 @@ package/
 __pycache__/
 *.pyc
 
-# Images (output artifacts)
+# Images (output artifacts, regenerable from scripts)
 imgs/*.png
+investigations/paper_gap/plots/
+investigations/paper_gap/plot_test/
 
 # Large datasets (NPZ/pkl files tracked via symlinks or README)
 datasets/*.npz

@@ -249,6 +249,13 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | `run_inference.py` | Load pre-trained checkpoints, run prediction on test set, generate per-cell summary plots (STA+RF, scatter, sorted comparison), save summary CSV + hyperparameters JSON. Primary entry point for sharing results. |
 | `train_all_cells.py` | Batch training: trains all 41 cells for specified datasets (108x108, 64x64), saves .pt checkpoints. Uses `build_config_from_defaults()` + `run_single_config()`. |
 
+### Plotting (`plotting/`)
+| File | Purpose |
+|------|---------|
+| `plotting/plot_training.py` | Per-cell training curve visualization (3 rows: log-lik, likelihood params, kernel params). Supports `--ylim-json` for fixed y-axis limits across cells. |
+| `plotting/visualize_experiment.py` | Summary visualizations for all-cells experiments (STA galleries, RF overlays, performance plots). |
+| `plotting/compute_param_ranges.py` | Compute y-axis ranges from sweep JSONL for consistent cross-cell plotting. Outputs `param_ranges_*.json`. |
+
 ### Archived data
 | Path | Purpose |
 |------|---------|
