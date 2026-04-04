@@ -95,6 +95,8 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **IMPORTANT**: When using full training data, always use n_train=3160 (train+val combined) for ALL resolutions. The datasets store train (2910) and val (250) separately, but for final fits we combine them. Using n_train=2910 is a confound that was caught in the paper gap investigation (all 64x64 runs before the fix were affected).
 
+**BUG — Data loading regression with val_from_train (NEXT PRIORITY)**: The `val_from_train` feature (commit 1be8b8a) broke the train+val combination path in `run_single_mode.py`. The old code (commit 7508423) always did `X = cat(X_train, X_val)` → 3160 images. The new code loads only `X_train` (2910) then carves 250 for validation → 2660 effective training, not 2910 as intended. The ES sweep (`sweep_64x64_es_results.jsonl`) trained on 2660 images instead of 2910, a 16% reduction vs intended. Fix plan: (1) restore the cat(train,val) path so X starts as 3160 when n_train=3160, (2) val_from_train carves from that pool → 2910 effective training, (3) consider removing the pre-baked train/val split from the .npz files entirely since it was found to have mismatched response distributions (80% zeros in val vs 56% in train).
+
 **Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
 ---
