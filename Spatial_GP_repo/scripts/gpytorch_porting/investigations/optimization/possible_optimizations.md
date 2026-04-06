@@ -102,6 +102,59 @@ interleaved configs must use `A_init=0.01` because LBFGS can't bootstrap
 A from 1e-4 in the 10 iterations per EM cycle. See the sweep script
 docstring for the full explanation.
 
+**Tolerance (min_delta_rel=0.001) is not empirically motivated for ELBO**:
+This value was inherited from the val_ll ES default. Post-hoc analysis of
+existing p30 sweep data shows only 36.8% of iterations have ELBO
+improvement > 0.1%, and the median per-iteration improvement is 0.04%.
+A tighter tolerance (e.g., 0.0001 = 0.01%) would let training run longer
+in the tail. The initial sweep uses 0.001 anyway — first results show it's
+matching or beating baseline, likely because the 8% extra training data
+(n_val_split=0) compensates. If future ELBO ES experiments underperform,
+revisit this tolerance first.
+
+**FIXED (2026-04-06): ES best-tracking vs patience-threshold conflation**.
+The original ES code (inherited from val_ll ES) conflated two concerns into
+one rule: `best_es_value` was only updated when rel_improvement > min_delta_rel,
+which meant slow-but-steady metric improvements were not tracked, and
+restore_best reverted to the "last meaningful improvement" rather than the
+true argmax. Analysis of a 32-run aborted ELBO sweep showed 28/32 runs
+(87.5%) had `elbo_final > elbo_best` (restoration was throwing away
+~0.76 ELBO units per run on average).
+
+This matches Keras's EarlyStopping design (which conflates the two for
+historical reasons), but NOT PyTorch Lightning's design (which uses
+separate ModelCheckpoint + EarlyStopping callbacks). For monotonic or
+near-monotonic metrics like ELBO, the Lightning-style separation is
+correct.
+
+Fix: `eigenspace_training.py` and `gpy_training.py` now track two
+independent state variables:
+- `best_es_value`: updates on ANY improvement (tracks true argmax,
+  used by restore_best).
+- `patience_reference`: updates only on "meaningful" improvements
+  (> min_delta_rel cumulative since last reset). Used only for the
+  patience counter, so slow-steady growth can accumulate and still
+  trigger a reset.
+
+Verified on cell 8 seed 1: best_iter now matches true argmax (8 vs 3
+with the buggy code), test_r improved from 0.8625 -> 0.8740 (+0.011).
+All 10 early stopping tests still pass.
+
+**Related follow-up investigation: why does ELBO sometimes decrease?**
+In 3/32 runs of the aborted sweep, ELBO actually DECREASED after its
+peak — violating the coordinate ascent theory. Likely culprits:
+- Interleaved damped Newton's fixed alpha=0.25 not guaranteeing ELBO
+  increase at every step
+- LBFGS M-step line search accepting numerically bad steps
+- Kernel hyperparameter changes triggering eigenspace recomputation
+
+The bug-fix above handles this correctly (restoration saves us), but
+investigating the root cause is a separate follow-up:
+- Identify WHICH optimization step (E/F/M) causes ELBO to decrease
+- Add adaptive damping in the interleaved F-step (reject steps that
+  decrease ELBO)
+- Tighten LBFGS convergence criteria in M-step
+
 **Verification approaches**:
 
 *The ELBO ES sweep itself* (the in-progress sweep above) is the primary

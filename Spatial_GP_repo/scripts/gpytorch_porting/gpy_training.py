@@ -206,10 +206,16 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
         return loss
 
     # Early stopping state
+    # `best_es_value`: true argmax of the metric (for restore_best). Updates
+    # on ANY improvement. `patience_reference`: value at last meaningful
+    # reset (for patience counter). Decoupled so slow steady growth can
+    # accumulate and still reset patience. See eigenspace_training.py
+    # for the full rationale.
     stopped_early = False
     final_iteration = 0
     has_val = X_val is not None and r_val is not None
-    best_es_value = float('-inf')  # works for both val_ll and val_r (both higher=better)
+    best_es_value = float('-inf')
+    patience_reference = float('-inf')
     patience_counter = 0
     best_state = None
     best_iteration = 0
@@ -344,20 +350,33 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                     raise ValueError(f"Unknown es_metric: {es_metric}")
 
             if es_value is not None:
-                # First observation always sets baseline (best_es_value starts at -inf)
-                is_first = best_es_value == float('-inf')
-                rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
-                if is_first or rel_improvement > min_delta_rel:
+                # See eigenspace_training.py for the full rationale.
+                # (1) Best tracking (updates on ANY improvement) and
+                # (2) Patience counting (resets only on meaningful cumulative
+                # gain vs patience_reference) are decoupled.
+                is_first = (best_es_value == float('-inf'))
+
+                # (1) Best tracking
+                if is_first or es_value > best_es_value:
                     best_es_value = es_value
-                    patience_counter = 0
                     best_iteration = i + 1
                     if restore_best:
                         best_state = {
                             'model_state': {k: v.clone() for k, v in model.state_dict().items()},
                             'likelihood_state': {k: v.clone() for k, v in likelihood.state_dict().items()},
                         }
+
+                # (2) Patience counter
+                if is_first:
+                    patience_reference = es_value
+                    patience_counter = 0
                 else:
-                    patience_counter += 1
+                    rel_improvement = (es_value - patience_reference) / max(abs(patience_reference), 1e-8)
+                    if rel_improvement > min_delta_rel:
+                        patience_reference = es_value
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
 
                 if early_stop and patience_counter >= patience and (i + 1) >= min_iterations:
                     if restore_best and best_state is not None:

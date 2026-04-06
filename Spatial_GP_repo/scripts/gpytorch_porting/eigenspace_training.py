@@ -253,7 +253,14 @@ def train_eigenspace(
     stopped_early = False
     final_iteration = 0
     has_val = X_val is not None and r_val is not None
-    best_es_value = float('-inf')  # works for both val_ll and val_r (both higher=better)
+    # `best_es_value`: the true argmax of the metric — updates on ANY improvement,
+    # used for restore_best. Matches PyTorch Lightning's ModelCheckpoint semantics.
+    best_es_value = float('-inf')
+    # `patience_reference`: the value at the last "meaningful" (> min_delta_rel)
+    # improvement — used only for patience counter resets. Decoupled from
+    # best tracking so slow steady growth can accumulate and still trigger
+    # a reset when cumulative improvement crosses the threshold.
+    patience_reference = float('-inf')
     patience_counter = 0
     best_state = None
     best_iteration = 0
@@ -461,17 +468,40 @@ def train_eigenspace(
                 raise ValueError(f"Unknown es_metric: {es_metric}")
 
         if es_value is not None:
-            # First observation always sets baseline (best_es_value starts at -inf)
-            is_first = best_es_value == float('-inf')
-            rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
-            if is_first or rel_improvement > min_delta_rel:
+            # Two separate concerns tracked independently (matches PyTorch
+            # Lightning's design, where ModelCheckpoint and EarlyStopping are
+            # decoupled, rather than Keras's conflated single callback):
+            #
+            # 1) BEST TRACKING: update best_es_value on ANY improvement.
+            #    Used by restore_best to revert to the true argmax of the
+            #    metric. For (near-)monotonic metrics like ELBO, this
+            #    prevents losing slow-steady progress to the patience threshold.
+            #
+            # 2) PATIENCE COUNTING: reset patience_counter only on
+            #    "meaningful" improvements (cumulative rel gain > min_delta_rel
+            #    since the last reset). Compared against patience_reference,
+            #    NOT best_es_value — so slow steady growth accumulates against
+            #    a fixed reference and eventually resets.
+            is_first = (best_es_value == float('-inf'))
+
+            # (1) Best tracking — always update on any improvement.
+            if is_first or es_value > best_es_value:
                 best_es_value = es_value
-                patience_counter = 0
                 best_iteration = iteration
                 if restore_best:
                     best_state = _save_model_state(model)
+
+            # (2) Patience counter — reset only on meaningful cumulative gain.
+            if is_first:
+                patience_reference = es_value
+                patience_counter = 0
             else:
-                patience_counter += 1
+                rel_improvement = (es_value - patience_reference) / max(abs(patience_reference), 1e-8)
+                if rel_improvement > min_delta_rel:
+                    patience_reference = es_value
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
 
             if early_stop and patience_counter >= patience and iteration >= min_iterations:
                 if restore_best and best_state is not None:

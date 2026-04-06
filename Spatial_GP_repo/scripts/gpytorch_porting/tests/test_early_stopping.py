@@ -25,7 +25,7 @@ import torch
 import numpy as np
 
 from run_single_mode import build_config_from_defaults, run_single_config
-from eigenspace_training import _compute_val_log_lik, predict_eigenspace
+from eigenspace_training import _compute_val_metrics, predict_eigenspace
 from tests.test_utils import set_reproducible_seed
 
 
@@ -69,7 +69,7 @@ def test_1_data_flow_integrity():
 
 
 def test_2_val_log_lik_formula():
-    """_compute_val_log_lik returns the correct expected log-likelihood."""
+    """_compute_val_metrics returns the correct expected log-likelihood."""
     print("Test 2: Validation log-likelihood formula...", end=' ', flush=True)
 
     config = _make_config(n_iterations=6, early_stop=False)
@@ -81,7 +81,7 @@ def test_2_val_log_lik_formula():
     # NOTE: run_single_config() carves val from the combined train+val pool
     # (seeded permutation), so the val set used during training differs from
     # this .npz pre-split. That's fine here — we only test that
-    # _compute_val_log_lik() matches a manual computation on the SAME data.
+    # _compute_val_metrics() matches a manual computation on the SAME data.
     data_path = Path(config['data_path'])
     if not data_path.is_absolute():
         data_path = PROJ / data_path
@@ -93,8 +93,8 @@ def test_2_val_log_lik_formula():
     R_val = torch.tensor(data['responses_val'], dtype=dtype).to(device)
     r_val = R_val[:, config['cell']]
 
-    # Compute using the function
-    val_ll_func = _compute_val_log_lik(model, X_val, r_val)
+    # Compute using the function (now returns (val_ll, val_r, val_rho))
+    val_ll_func, _, _ = _compute_val_metrics(model, X_val, r_val)
 
     # Compute manually
     with torch.no_grad():
