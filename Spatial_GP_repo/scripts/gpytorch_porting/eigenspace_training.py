@@ -444,16 +444,23 @@ def train_eigenspace(
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
                   f"n_b={len(model.state.eigvals_b)}")
 
-        # ===== Patience-based early stopping on selected validation metric =====
-        if has_val:
-            # Select which metric drives ES (all are higher=better)
+        # ===== Patience-based early stopping on selected metric =====
+        # Metrics: val_ll, val_r, val_rho need validation data.
+        #          elbo uses training loss directly (no val data needed).
+        es_value = None
+        if es_metric == 'elbo':
+            es_value = -loss  # ELBO = -train_loss (higher is better)
+        elif has_val:
             if es_metric == 'val_ll':
                 es_value = val_ll
             elif es_metric == 'val_r':
                 es_value = val_r
-            else:  # val_rho
+            elif es_metric == 'val_rho':
                 es_value = val_rho
+            else:
+                raise ValueError(f"Unknown es_metric: {es_metric}")
 
+        if es_value is not None:
             # First observation always sets baseline (best_es_value starts at -inf)
             is_first = best_es_value == float('-inf')
             rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
@@ -473,7 +480,7 @@ def train_eigenspace(
                     lambda_m, lambda_var = posterior.mean, posterior.variance
                 stopped_early = True
                 print(f"Early stopping at iteration {iteration} (metric={es_metric}): "
-                      f"no val improvement for {patience} iters "
+                      f"no improvement for {patience} iters "
                       f"(best={best_es_value:.4f} at iter {best_iteration})"
                       f"{', restored best' if restore_best else ''}")
                 break

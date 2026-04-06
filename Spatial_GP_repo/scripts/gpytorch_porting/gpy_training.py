@@ -327,16 +327,23 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 print(f"Iter {i+1}/{n_iterations}, Loss: {current_loss:.2f}{val_str}{val_r_str}{val_rho_str}, "
                       f"ELL: {ell_val:.2f}, KL: {kl_val:.2f}")
 
-            # Patience-based early stopping on selected validation metric
-            if has_val:
-                # Select which metric drives ES (all are higher=better)
+            # Patience-based early stopping on selected metric
+            # Metrics: val_ll, val_r, val_rho need validation data.
+            #          elbo uses training loss directly (no val data needed).
+            es_value = None
+            if es_metric == 'elbo':
+                es_value = -current_loss  # ELBO = -train_loss (higher is better)
+            elif has_val:
                 if es_metric == 'val_ll':
                     es_value = val_ll
                 elif es_metric == 'val_r':
                     es_value = val_r
-                else:  # val_rho
+                elif es_metric == 'val_rho':
                     es_value = val_rho
+                else:
+                    raise ValueError(f"Unknown es_metric: {es_metric}")
 
+            if es_value is not None:
                 # First observation always sets baseline (best_es_value starts at -inf)
                 is_first = best_es_value == float('-inf')
                 rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
@@ -359,7 +366,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                     stopped_early = True
                     if print_every > 0:
                         print(f"Early stopping at iteration {i+1} (metric={es_metric}): "
-                              f"no val improvement for {patience} iters "
+                              f"no improvement for {patience} iters "
                               f"(best={best_es_value:.4f} at iter {best_iteration})"
                               f"{', restored best' if restore_best else ''}")
                     break

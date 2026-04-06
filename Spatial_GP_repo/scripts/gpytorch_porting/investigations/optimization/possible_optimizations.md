@@ -81,34 +81,63 @@ consecutive iterations.
 - Mathematically principled for variational inference
 - Already logged in training curves
 
-**Verification strategy**: Two complementary approaches.
+**Implementation status (in progress, 2026-04-06)**:
+- 'elbo' added as an `es_metric` option in `eigenspace_training.py` and
+  `gpy_training.py`. Triggers on relative improvement of `-train_loss`
+  (= ELBO), same patience logic as val_ll/val_r ES.
+- `n_val_split=0` support added to `run_single_mode.py`: when set, no
+  validation is carved and all 3160 images are used for training. Only
+  safe when ES doesn't need val (i.e., ELBO-based ES).
+- Sweep script: `investigations/optimization/run_sweep_elbo_es_64x64.py`
+  runs 4-config grid (interleave × fix_Amp) on 64x64, 41 cells, 3 seeds.
+  Uses ELBO ES with patience=15, n_val_split=0. Output:
+  `investigations/optimization/sweep_64x64_elbo_es_results.jsonl`.
 
-*Approach 1 (partial, no re-runs needed)*: The existing ES sweeps
-(`sweep_64x64_es_results.jsonl`, `sweep_64x64_es_p30_results.jsonl`) embed
-per-iteration `train_loss` (= -ELBO) and `val_log_lik` curves in each
-record. Post-process these to check: "if we had used ELBO staleness instead
-of val_ll, would we have stopped at a better iteration?" Limited because
-the ES truncated runs at 33-50 iters — we don't see what happens after
-the ES trigger.
+**Note on A_init** (physical constraint, not tuning): interleaved configs
+MUST use `A_init=1e-4` because the E-step Newton gradient scales with A,
+and A=0.01 causes the first E-step to overshoot and hit the f_mean
+stability threshold (verified empirically: 19/19 E-step divergences on
+cell 8 with A_init=0.01 + interleave, test_r collapses to 0.64). Non-
+interleaved configs must use `A_init=0.01` because LBFGS can't bootstrap
+A from 1e-4 in the 10 iterations per EM cycle. See the sweep script
+docstring for the full explanation.
 
-*Approach 2 (complete, requires re-run)*: Re-run the baseline sweep
-(3 configs x 41 cells x 3 seeds = 369 runs, 80 iters, no ES) with the
-curve logging now enabled in `eigenspace_training.py` (added in this
-session's code changes). This gives full 80-iteration curves for every
-run, enabling post-hoc simulation of any ES criterion. Compute cost: ~6-8
-hours sequential GPU time.
+**Verification approaches**:
+
+*The ELBO ES sweep itself* (the in-progress sweep above) is the primary
+verification: it runs the 4 configs with ELBO ES from scratch and
+compares directly with the baselines in
+`experiments/2026-04-06_es_sweeps_64x64/README.md`.
+
+*Post-hoc analysis of existing ES data*: The val_ll-based ES sweeps
+(`sweep_64x64_es_results.jsonl`, `sweep_64x64_es_p30_results.jsonl`)
+embed per-iteration `train_loss` (= -ELBO) and `val_log_lik` curves.
+You can post-process to check when ELBO staleness would have stopped —
+limited because runs were truncated at 33-50 iters.
+
+*Full post-hoc analysis*: Would require re-running the baseline sweep
+(no ES, 80 iters) with curve logging enabled, which wasn't available
+when the current baseline was generated. Not needed if the ELBO ES
+sweep above produces clean results.
 
 **Existing baseline data**: `experiments/2026-04-06_es_sweeps_64x64/` —
 see README for detailed file inventory and reference values table.
-
-**Warning**: The current baseline file `sweep_64x64_results_ntrain3160.jsonl`
-was generated BEFORE curve logging was added. It does NOT contain per-iteration
-curves. The final stats (test_r, explained_var) are there but you can't
-reconstruct ELBO trajectories from it. A fresh baseline run is needed for
-full post-hoc ES analysis.
-
 Best no-ES baseline: `intl_fixAmp` at test_r=0.8382, 37/41 cells > 0.8.
 Current val_ll ES gap: ~0.02 test_r.
+
+**TODO once this investigation is complete**: If ELBO ES works well,
+the experiment system and quick-run system need to be updated to
+accommodate it:
+- `run_experiment.py` + `configs/canonical.yaml` + `configs/quick.yaml`:
+  the YAML schema needs to accept `es_metric: elbo` and `n_val_split: 0`.
+  Currently `es_metric` is in the yaml (val_ll default) but the full
+  elbo+no-val flow is untested via the experiment system.
+- `run_single_mode.py` quick-dev path: works already via the CLI
+  (`--es-metric elbo --n-val-split 0`), but the default in
+  `default_params.json` (`es_metric: val_ll`) should be revisited if
+  ELBO ES becomes the recommended default.
+- Validation: update `tests/test_early_stopping.py` to include ELBO ES
+  test cases.
 
 ---
 

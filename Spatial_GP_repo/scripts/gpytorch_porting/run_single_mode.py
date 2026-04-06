@@ -623,39 +623,50 @@ def run_single_config(config):
     # Combine train + val into single pool, flatten.
     # WARNING: The .npz 'images_val' split has a biased response distribution
     # (80% zeros vs 56% in training). It is NOT used as-is for validation.
-    # Instead, we shuffle it into the training pool and carve a fresh
-    # validation set via seeded random permutation below.
-    # NOTE: Validation is ALWAYS carved, even when early_stop=False. This
-    # costs ~8% of training data (250/3160) but ensures consistent train/val
-    # splits across all runs, making ES vs no-ES comparisons fair.
+    # Instead, we shuffle it into the training pool and (optionally) carve a
+    # fresh validation set via seeded random permutation below.
+    # NOTE: When n_val_split > 0, validation is ALWAYS carved (even when
+    # early_stop=False) to keep consistent splits across runs. Set
+    # n_val_split=0 to disable validation entirely and use all 3160 images
+    # for training (e.g., with es_metric='elbo' which doesn't need val data).
     X_pool = torch.cat([data['X_train'], data['X_val']], dim=0)
     R_pool = torch.cat([data['R_train'], data['R_val']], dim=0)
     X_pool = X_pool.reshape(X_pool.shape[0], -1).to(device)  # (3160, n_px_side^2)
     R_pool = R_pool.to(device)
     n_pool = X_pool.shape[0]
 
-    # Carve validation from combined pool using isolated seeded generator
     n_val_split = config['n_val_split']
-    gen = torch.Generator(device=device)
-    gen.manual_seed(seed)
-    perm = torch.randperm(n_pool, generator=gen, device=device)
-    val_indices = perm[:n_val_split]
-    train_pool_indices = perm[n_val_split:]
+    if n_val_split > 0:
+        # Carve validation from combined pool using isolated seeded generator
+        gen = torch.Generator(device=device)
+        gen.manual_seed(seed)
+        perm = torch.randperm(n_pool, generator=gen, device=device)
+        val_indices = perm[:n_val_split]
+        train_pool_indices = perm[n_val_split:]
 
-    X = X_pool[train_pool_indices]     # (2910, n_px^2) training pool
-    R = R_pool[train_pool_indices]
-    X_val = X_pool[val_indices]        # (250, n_px^2) validation
-    R_val = R_pool[val_indices]
+        X = X_pool[train_pool_indices]     # (n_pool - n_val_split, n_px^2)
+        R = R_pool[train_pool_indices]
+        X_val = X_pool[val_indices]        # (n_val_split, n_px^2)
+        R_val = R_pool[val_indices]
 
-    print(f"Data: {n_pool} total, {n_val_split} val (carved, seed={seed}), "
-          f"{X.shape[0]} training pool")
+        print(f"Data: {n_pool} total, {n_val_split} val (carved, seed={seed}), "
+              f"{X.shape[0]} training pool")
+    else:
+        # No validation carving: use the entire pool for training.
+        # Only safe when ES doesn't need validation data (e.g., es_metric='elbo').
+        X = X_pool
+        R = R_pool
+        X_val = None
+        R_val = None
+        print(f"Data: {n_pool} total, 0 val (no carving), "
+              f"{X.shape[0]} training pool")
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
 
     # Select cell
     r = R[:, cell]
-    r_val = R_val[:, cell]
+    r_val = R_val[:, cell] if R_val is not None else None
     r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
 
     # =========================================================================
@@ -790,7 +801,7 @@ def run_single_config(config):
     print(f"\nData shapes:")
     print(f"  X_train: {X_train.shape}")
     print(f"  r_train: {r_train.shape}")
-    print(f"  X_val: {X_val.shape}")
+    print(f"  X_val: {X_val.shape if X_val is not None else 'None (no validation)'}")
     print(f"  inducing_points: {inducing_points.shape}")
     print(f"  X_test: {X_test.shape}")
 
@@ -1375,8 +1386,10 @@ def main():
     parser.add_argument('--no-restore-best', action='store_true',
                         help='Do not restore best-validation model on early stop')
     parser.add_argument('--es-metric', type=str, default=es_defaults['es_metric'],
-                        choices=['val_ll', 'val_r', 'val_rho'],
-                        help=f'Metric for early stopping: val_ll or val_r (default: {es_defaults["es_metric"]})')
+                        choices=['val_ll', 'val_r', 'val_rho', 'elbo'],
+                        help=f'Metric for early stopping: val_ll, val_r, val_rho (all use '
+                             f'validation data) or elbo (uses training loss, no val needed). '
+                             f'Default: {es_defaults["es_metric"]}')
 
     # Inducing point selection
     ind_defaults = defaults['inducing']
