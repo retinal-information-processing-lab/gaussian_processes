@@ -1,60 +1,77 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# DEBUG — temporary sweep script, delete after investigation
 """
-64x64 sweep WITH early stopping (fixed M-step timing).
+ES sweep with doubled patience (30 vs 15). 4 configs x 41 cells x 3 seeds = 492 runs.
 
-Same 3 configs x 41 cells x 3 seeds as sweep_64x64_results_ntrain3160.jsonl,
-but with early stopping enabled. Validation is carved from combined train+val
-pool (250 images, seeded), leaving 2910 for training.
+Same 3 configs as the patience=15 sweep PLUS the missing 4th:
+  no-interleave + fixAmp.
 
-Run in background:
-  nohup python investigations/paper_gap/run_sweep_64x64_es.py > investigations/paper_gap/sweep_64x64_es.log 2>&1 &
-
-RESUME-SAFE: skips already-completed (config_name, cell, seed) tuples.
-
-Results saved to:
-  investigations/paper_gap/sweep_64x64_es_results.jsonl
+Changes vs run_sweep_64x64_es.py:
+  - patience=30 (was 15)
+  - 4 configs (was 3)
+  - New output file (does not overwrite old results)
 """
-import sys, os, json, subprocess, time, tempfile, datetime, argparse
+
+import datetime
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
 import numpy as np
 
-PROJ = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJ = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 sys.path.insert(0, PROJ)
+
 from run_single_mode import build_config_from_defaults
+
+DATA_64 = os.path.join(PROJ, 'datasets', 'PNAS_64x64_center_crop_no_renorm.npz')
+RF_PATH = os.path.join(PROJ, 'datasets', 'rf_centers_ground_truth.npz')
+RESULTS_FILE = os.path.join(SCRIPT_DIR, 'sweep_64x64_es_p30_results.jsonl')
 
 CELLS = list(range(41))
 SEEDS = [1, 2, 3]
-DATA_64 = os.path.join(PROJ, 'datasets', 'PNAS_64x64_center_crop_no_renorm.npz')
-RF_PATH = os.path.join(PROJ, 'datasets', 'rf_centers_ground_truth.npz')
-RESULTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sweep_64x64_es_results.jsonl')
 
 rf = np.load(RF_PATH)
 
 # =========================================================================
-# Same 3 configs as sweep_64x64_results_ntrain3160.jsonl (no-ES reference)
+# 4 configs: 3 original + the missing no-interleave fixAmp
 # =========================================================================
 CONFIGS = [
     {
-        'name': '64_A01_free_no_intl_n3160_es',
-        'notes': '64x64 free Amp, no interleaving, A=0.01. ES version of 64_A01_free_no_intl_n3160.',
+        'name': '64_A01_free_no_intl_es_p30',
+        'notes': 'free Amp, no interleaving, A=0.01, patience=30',
         'beta': 0.1, 'A_init': 0.01, 'interleave_fstep': False,
         'fix_Amp': False,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
-        'name': '64_intl_fixAmp_n3160_es',
-        'notes': '64x64 fix Amp=1, interleaved, A=1e-4. ES version of 64_intl_fixAmp_n3160.',
+        'name': '64_intl_fixAmp_es_p30',
+        'notes': 'fix Amp=1, interleaved, A=1e-4, patience=30',
         'beta': 0.1, 'A_init': 1e-4, 'interleave_fstep': True,
         'fix_Amp': True,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
     {
-        'name': '64_intl_freeAmp_n3160_es',
-        'notes': '64x64 free Amp, interleaved, A=1e-4. ES version of 64_intl_freeAmp_n3160.',
+        'name': '64_intl_freeAmp_es_p30',
+        'notes': 'free Amp, interleaved, A=1e-4, patience=30',
         'beta': 0.1, 'A_init': 1e-4, 'interleave_fstep': True,
         'fix_Amp': False,
         'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
     },
+    {
+        'name': '64_no_intl_fixAmp_es_p30',
+        'notes': 'fix Amp=1, no interleaving, A=1e-4, patience=30',
+        'beta': 0.1, 'A_init': 1e-4, 'interleave_fstep': False,
+        'fix_Amp': True,
+        'n_estep': 50, 'n_mstep': 20, 'n_iterations': 80,
+    },
 ]
+
+PATIENCE = 30
 
 
 def load_completed_runs():
@@ -92,8 +109,8 @@ def run_single_cell(cell_id, seed, cfg):
         n_iterations=cfg['n_iterations'],
         n_estep=cfg['n_estep'],
         n_mstep=cfg['n_mstep'],
+        patience=PATIENCE,
     )
-    # Early stopping enabled (val always carved from combined pool now)
     config['early_stop'] = True
     config['ip_selection'] = 'random'
     config['fix_Amp'] = cfg['fix_Amp']
@@ -142,9 +159,9 @@ def main():
     start_time = time.time()
     total = len(CONFIGS) * len(CELLS) * len(SEEDS)
 
-    print(f"=== Early Stopping Sweep (64x64, sequential) ===")
+    print(f"=== Early Stopping Sweep (64x64, patience={PATIENCE}) ===")
     print(f"  {len(CONFIGS)} configs x {len(CELLS)} cells x {len(SEEDS)} seeds = {total} runs")
-    print(f"  Early stopping: patience=15, min_iter=10, val carved from pool")
+    print(f"  Early stopping: patience={PATIENCE}, min_iter=10, val_ll metric")
     print(f"  Started: {datetime.datetime.now().isoformat(timespec='seconds')}")
     print(f"  Results: {RESULTS_FILE}")
 
@@ -190,8 +207,9 @@ def main():
 
     total_time = time.time() - start_time
     print(f"\n{'=' * 60}")
-    print(f"Sweep finished in {total_time:.0f}s ({total_time/3600:.1f} hours)")
-    print(f"  Completed: {done - failed}, Failed: {failed}")
+    print(f"Sweep complete: {done - failed}/{done} successful, {failed} failed")
+    print(f"Total time: {total_time / 3600:.1f}h")
+    print(f"Results: {RESULTS_FILE}")
 
 
 if __name__ == '__main__':
