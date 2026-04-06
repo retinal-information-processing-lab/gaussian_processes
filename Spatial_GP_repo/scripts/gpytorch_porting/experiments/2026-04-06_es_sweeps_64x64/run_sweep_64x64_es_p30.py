@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# DEBUG — temporary sweep script, delete after investigation
 """
 ES sweep with doubled patience (30 vs 15). 4 configs x 41 cells x 3 seeds = 492 runs.
 

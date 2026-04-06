@@ -1,7 +1,7 @@
 {
   "_metadata": {
     "source_script": "compute_param_ranges.py",
-    "source_file": "investigations/paper_gap/sweep_64x64_results_ntrain3160.jsonl",
+    "source_file": "experiments/2026-04-06_es_sweeps_64x64/sweep_64x64_results_ntrain3160.jsonl",
     "date": "2026-04-04T11:11:23",
     "method": "min/max across all cells/seeds with 5% padding"
   },

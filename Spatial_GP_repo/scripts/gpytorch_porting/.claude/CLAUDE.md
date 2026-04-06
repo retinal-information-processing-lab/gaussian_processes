@@ -275,7 +275,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | Path | Purpose |
 |------|---------|
 | `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
-| `investigations/paper_gap/` | Paper performance gap investigation (RESOLVED). Gap A closed (Finding 19), Gap B explained by metric mismatch (Finding 21). 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md`, `METRICS_COMPARISON.md`. |
+| `investigations/paper_gap/` | Paper performance gap investigation (RESOLVED). Gap A closed (Finding 19), Gap B explained by metric mismatch (Finding 21). 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md`, `METRICS_COMPARISON.md`. 64x64 ES sweep data moved to `experiments/2026-04-06_es_sweeps_64x64/`. |
 | `investigations/optimization/` | Training loop optimization investigations. See `possible_optimizations.md` for the full list (Amp removal, ELBO-based ES, E-step convergence, F-step comparison). |
 
 **Test files** (in `tests/`):
