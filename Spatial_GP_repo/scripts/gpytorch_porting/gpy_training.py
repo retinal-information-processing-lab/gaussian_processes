@@ -17,19 +17,22 @@ import warnings
 import torch
 from linear_operator import settings as lo_settings
 
+from metrics import compute_pearson_correlation, compute_spearman_correlation
 
-def _compute_val_log_lik_gpy(model, likelihood, X_val, r_val,
+
+def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
                               jitter=1e-4, cholesky_max_tries=3,
                               lambda_var_clamp=1e-6):
-    """Expected log-likelihood on validation data for default_gpy mode.
+    """Compute validation log-likelihood and Pearson r for default_gpy mode.
 
-    Same formula as ELBO's log-lik term evaluated on held-out data:
+    Val log-lik formula (same as ELBO's log-lik term on held-out data):
       val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
     where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
 
-    Alternative not used: plug-in Poisson log-prob sum(r*log(f) - f),
-    which additionally penalizes high posterior variance. See CLAUDE.md
-    early stopping section for discussion.
+    Val Pearson r: corr(f_pred, r_val) — same metric as test_r.
+
+    Returns:
+        Tuple (val_ll, val_r)
     """
     model.eval()
     likelihood.eval()
@@ -41,11 +44,35 @@ def _compute_val_log_lik_gpy(model, likelihood, X_val, r_val,
         var = torch.clamp(posterior.variance, min=lambda_var_clamp)
         A = likelihood.A.squeeze()
         lambda0 = likelihood.lambda0.squeeze()
-        f_mean = torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
-        val_ll = (r_val * (A * mu + lambda0) - f_mean).sum()
+        f_pred = torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
+        val_ll = (r_val * (A * mu + lambda0) - f_pred).sum().item()
+        val_r = compute_pearson_correlation(r_val, f_pred)
+        val_rho = compute_spearman_correlation(r_val, f_pred)
     model.train()
     likelihood.train()
-    return val_ll.item()
+    return val_ll, val_r, val_rho
+
+
+def _compute_train_metrics_gpy(model, likelihood, train_x, train_y,
+                                jitter=1e-4, cholesky_max_tries=3,
+                                lambda_var_clamp=1e-6):
+    """Compute training Pearson r and Spearman rho for default_gpy mode."""
+    model.eval()
+    likelihood.eval()
+    with torch.no_grad(), \
+         lo_settings.cholesky_jitter(float_value=jitter, double_value=jitter), \
+         lo_settings.cholesky_max_tries(cholesky_max_tries):
+        posterior = model(train_x)
+        mu = posterior.mean
+        var = torch.clamp(posterior.variance, min=lambda_var_clamp)
+        A = likelihood.A.squeeze()
+        lambda0 = likelihood.lambda0.squeeze()
+        f_pred = torch.exp(A * mu + 0.5 * A**2 * var + lambda0)
+        train_r = compute_pearson_correlation(train_y, f_pred)
+        train_rho = compute_spearman_correlation(train_y, f_pred)
+    model.train()
+    likelihood.train()
+    return train_r, train_rho
 
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
@@ -56,7 +83,8 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                        jitter=1e-4, cholesky_max_tries=3,
                        f_mean_max_threshold=500, f_mean_mean_threshold=100,
                        lambda_var_clamp=1e-6,
-                       X_val=None, r_val=None):
+                       X_val=None, r_val=None,
+                       es_metric='val_ll'):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -181,7 +209,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     stopped_early = False
     final_iteration = 0
     has_val = X_val is not None and r_val is not None
-    best_val_ll = float('-inf')
+    best_es_value = float('-inf')  # works for both val_ll and val_r (both higher=better)
     patience_counter = 0
     best_state = None
     best_iteration = 0
@@ -191,6 +219,10 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
     train_ll_curve = []
     train_kl_curve = []
     val_ll_curve = []
+    train_r_curve = []
+    val_r_curve = []
+    train_rho_curve = []
+    val_rho_curve = []
     param_A_curve = []
     param_lambda0_curve = []
     iter_time_curve = []
@@ -262,10 +294,18 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
             param_A_curve.append(likelihood.A.item())
             param_lambda0_curve.append(likelihood.lambda0.item())
 
+            # Training correlations
+            train_r, train_rho = _compute_train_metrics_gpy(
+                model, likelihood, train_x, train_y,
+                jitter=jitter, cholesky_max_tries=cholesky_max_tries,
+                lambda_var_clamp=lambda_var_clamp)
+
             # Validation evaluation
             val_ll = None
+            val_r = None
+            val_rho = None
             if has_val:
-                val_ll = _compute_val_log_lik_gpy(
+                val_ll, val_r, val_rho = _compute_val_metrics_gpy(
                     model, likelihood, X_val, r_val,
                     jitter=jitter, cholesky_max_tries=cholesky_max_tries,
                     lambda_var_clamp=lambda_var_clamp)
@@ -273,21 +313,35 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 model.train()
                 likelihood.train()
             val_ll_curve.append(val_ll)
+            train_r_curve.append(train_r)
+            val_r_curve.append(val_r)
+            train_rho_curve.append(train_rho)
+            val_rho_curve.append(val_rho)
 
             iter_time_curve.append(time.time() - iter_start)
 
             if print_every > 0 and (i + 1) % print_every == 0:
                 val_str = f", val_ll={val_ll:.2f}" if val_ll is not None else ""
-                print(f"Iter {i+1}/{n_iterations}, Loss: {current_loss:.2f}{val_str}, "
+                val_r_str = f", val_r={val_r:.4f}" if val_r is not None else ""
+                val_rho_str = f", val_rho={val_rho:.4f}" if val_rho is not None else ""
+                print(f"Iter {i+1}/{n_iterations}, Loss: {current_loss:.2f}{val_str}{val_r_str}{val_rho_str}, "
                       f"ELL: {ell_val:.2f}, KL: {kl_val:.2f}")
 
-            # Patience-based early stopping on validation log-lik
+            # Patience-based early stopping on selected validation metric
             if has_val:
-                # First observation always sets baseline (best_val_ll starts at -inf)
-                is_first = best_val_ll == float('-inf')
-                rel_improvement = (val_ll - best_val_ll) / max(abs(best_val_ll), 1e-8)
+                # Select which metric drives ES (all are higher=better)
+                if es_metric == 'val_ll':
+                    es_value = val_ll
+                elif es_metric == 'val_r':
+                    es_value = val_r
+                else:  # val_rho
+                    es_value = val_rho
+
+                # First observation always sets baseline (best_es_value starts at -inf)
+                is_first = best_es_value == float('-inf')
+                rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
                 if is_first or rel_improvement > min_delta_rel:
-                    best_val_ll = val_ll
+                    best_es_value = es_value
                     patience_counter = 0
                     best_iteration = i + 1
                     if restore_best:
@@ -304,9 +358,9 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                         likelihood.load_state_dict(best_state['likelihood_state'])
                     stopped_early = True
                     if print_every > 0:
-                        print(f"Early stopping at iteration {i+1}: "
+                        print(f"Early stopping at iteration {i+1} (metric={es_metric}): "
                               f"no val improvement for {patience} iters "
-                              f"(best={best_val_ll:.2f} at iter {best_iteration})"
+                              f"(best={best_es_value:.4f} at iter {best_iteration})"
                               f"{', restored best' if restore_best else ''}")
                     break
 
@@ -324,6 +378,10 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
             'train_log_lik': train_ll_curve,
             'train_kl': train_kl_curve,
             'val_log_lik': val_ll_curve,
+            'train_r': train_r_curve,
+            'val_r': val_r_curve,
+            'train_rho': train_rho_curve,
+            'val_rho': val_rho_curve,
             'A': param_A_curve,
             'lambda0': param_lambda0_curve,
             'iter_time': iter_time_curve,

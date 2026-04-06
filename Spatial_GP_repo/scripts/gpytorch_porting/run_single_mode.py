@@ -76,7 +76,13 @@ def get_git_commit():
 
 
 def load_pnas_data(data_path, dtype=torch.float64):
-    """Load PNAS dataset."""
+    """Load PNAS dataset.
+
+    WARNING: The 'X_val'/'R_val' split in the .npz has a biased response
+    distribution (80% zeros vs 56% in training). Callers should NOT use it
+    directly for validation. run_single_config() combines train+val into a
+    single pool and carves a fresh validation set via seeded permutation.
+    """
     data = np.load(data_path)
     return {
         'X_train': torch.tensor(data['images_train'], dtype=dtype),
@@ -330,6 +336,7 @@ def build_config_from_defaults(**overrides):
         'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
         'restore_best': es['restore_best'],
+        'es_metric': es['es_metric'],
 
         # --- Numerical (from model section) ---
         'jitter': mod['jitter'],
@@ -343,6 +350,7 @@ def build_config_from_defaults(**overrides):
         # --- Data (from data section) ---
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
+        'n_val_split': dat['n_val_split'],
         'use_cache': mod['use_cache'],
 
         # --- Inducing point selection (from inducing section) ---
@@ -445,6 +453,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
         'restore_best': es['restore_best'],
+        'es_metric': es.get('es_metric', 'val_ll'),
 
         # Optimizer details
         'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
@@ -470,6 +479,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Data
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
+        'n_val_split': dat.get('n_val_split', 250),
         'use_cache': dat['use_cache'],
 
         # Runtime options (not in YAML, defaults for experiment runs)
@@ -610,34 +620,35 @@ def run_single_config(config):
     config['n_px_side'] = n_px_side  # update config for downstream code
     print(f"Image dimensions: {n_px_side}x{n_px_side} ({n_px_side**2} pixels)")
 
-    # Training data (validation always held out for monitoring/early stopping)
-    X = data['X_train'].reshape(data['X_train'].shape[0], -1).to(device)  # (2910, n_px_side^2)
-    R = data['R_train'].to(device)
+    # Combine train + val into single pool, flatten.
+    # WARNING: The .npz 'images_val' split has a biased response distribution
+    # (80% zeros vs 56% in training). It is NOT used as-is for validation.
+    # Instead, we shuffle it into the training pool and carve a fresh
+    # validation set via seeded random permutation below.
+    # NOTE: Validation is ALWAYS carved, even when early_stop=False. This
+    # costs ~8% of training data (250/3160) but ensures consistent train/val
+    # splits across all runs, making ES vs no-ES comparisons fair.
+    X_pool = torch.cat([data['X_train'], data['X_val']], dim=0)
+    R_pool = torch.cat([data['R_train'], data['R_val']], dim=0)
+    X_pool = X_pool.reshape(X_pool.shape[0], -1).to(device)  # (3160, n_px_side^2)
+    R_pool = R_pool.to(device)
+    n_pool = X_pool.shape[0]
 
-    # Validation data source: either from .npz val split or carved from training set
-    val_from_train = config.get('val_from_train', False)
-    n_val_split = config.get('n_val_split', 250)
+    # Carve validation from combined pool using isolated seeded generator
+    n_val_split = config['n_val_split']
+    gen = torch.Generator(device=device)
+    gen.manual_seed(seed)
+    perm = torch.randperm(n_pool, generator=gen, device=device)
+    val_indices = perm[:n_val_split]
+    train_pool_indices = perm[n_val_split:]
 
-    if val_from_train:
-        # Carve validation from training set using seeded permutation
-        # This ensures train and val have the same response distribution
-        gen = torch.Generator(device=device)
-        gen.manual_seed(seed)
-        n_total = X.shape[0]
-        perm = torch.randperm(n_total, generator=gen, device=device)
-        val_indices = perm[:n_val_split]
-        train_indices = perm[n_val_split:]
+    X = X_pool[train_pool_indices]     # (2910, n_px^2) training pool
+    R = R_pool[train_pool_indices]
+    X_val = X_pool[val_indices]        # (250, n_px^2) validation
+    R_val = R_pool[val_indices]
 
-        X_val = X[val_indices]
-        R_val = R[val_indices]
-        # Replace X, R with the remaining training portion
-        X = X[train_indices]
-        R = R[train_indices]
-        print(f"Validation carved from training: {n_val_split} val, {X.shape[0]} train remaining")
-    else:
-        # Original behavior: use .npz val split
-        X_val = data['X_val'].reshape(data['X_val'].shape[0], -1).to(device)  # (250, n_px_side^2)
-        R_val = data['R_val'].to(device)
+    print(f"Data: {n_pool} total, {n_val_split} val (carved, seed={seed}), "
+          f"{X.shape[0]} training pool")
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
@@ -793,6 +804,7 @@ def run_single_config(config):
     min_delta_rel = config['min_delta_rel']
     min_iterations = config['min_iterations']
     restore_best = config['restore_best']
+    es_metric = config.get('es_metric', 'val_ll')
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
     lambda_var_clamp = config['lambda_var_clamp']
@@ -968,6 +980,7 @@ def run_single_config(config):
                 interleave_fstep=config.get('interleave_fstep', False),
                 X_val=X_val,
                 r_val=r_val,
+                es_metric=es_metric,
             )
 
         train_time = time.time() - start_time
@@ -1071,6 +1084,7 @@ def run_single_config(config):
                 lambda_var_clamp=lambda_var_clamp,
                 X_val=X_val,
                 r_val=r_val,
+                es_metric=es_metric,
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
@@ -1264,6 +1278,7 @@ def main():
     parser.add_argument('--cell', type=int, default=defaults['data']['cellid'], help=f'Cell ID (default: {defaults["data"]["cellid"]})')
     parser.add_argument('--ntilde', type=int, default=defaults['data']['ntilde'], help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
     parser.add_argument('--n-train', type=int, default=defaults['data']['n_train'], help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
+    parser.add_argument('--n-val-split', type=int, default=defaults['data']['n_val_split'], help=f'Validation images carved from combined pool (default: {defaults["data"]["n_val_split"]})')
     parser.add_argument('--n-iterations', type=int, default=defaults['training']['n_iterations'], help=f'Number of EM iterations (default: {defaults["training"]["n_iterations"]})')
     parser.add_argument('--n-estep', type=int, default=defaults['training']['n_estep'], help=f'E-steps per iteration (default: {defaults["training"]["n_estep"]})')
     parser.add_argument('--n-fstep', type=int, default=defaults['training']['n_fstep'], help=f'F-steps per iteration (default: {defaults["training"]["n_fstep"]})')
@@ -1359,6 +1374,9 @@ def main():
                         help=f'Minimum iterations before early stopping can trigger (default: {es_defaults["min_iterations"]})')
     parser.add_argument('--no-restore-best', action='store_true',
                         help='Do not restore best-validation model on early stop')
+    parser.add_argument('--es-metric', type=str, default=es_defaults['es_metric'],
+                        choices=['val_ll', 'val_r', 'val_rho'],
+                        help=f'Metric for early stopping: val_ll or val_r (default: {es_defaults["es_metric"]})')
 
     # Inducing point selection
     ind_defaults = defaults['inducing']
@@ -1386,6 +1404,7 @@ def main():
         kernel_type=args.kernel_type,
         M=args.ntilde,
         n_train=args.n_train,
+        n_val_split=args.n_val_split,
         seed=args.seed,
         cell=args.cell,
         n_iterations=args.n_iterations,
@@ -1414,6 +1433,7 @@ def main():
         min_delta_rel=args.min_delta_rel,
         min_iterations=args.min_iterations,
         restore_best=not args.no_restore_best,
+        es_metric=args.es_metric,
         jitter=args.jitter,
         cholesky_max_tries=args.cholesky_max_tries,
         lambda_var_clamp=args.lambda_var_clamp,

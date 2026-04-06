@@ -18,6 +18,8 @@ from typing import Dict
 
 import torch
 
+from metrics import compute_pearson_correlation, compute_spearman_correlation
+
 
 def compute_elbo_eigenspace(
     state,  # DirectVariationalState
@@ -84,17 +86,14 @@ def compute_elbo_eigenspace(
     return log_lik - KL
 
 
-def _compute_val_log_lik(model, X_val, r_val):
-    """Expected log-likelihood on validation data.
+def _compute_val_metrics(model, X_val, r_val):
+    """Compute validation log-likelihood and Pearson r in a single forward pass.
 
-    Same formula as ELBO's log-lik term evaluated on held-out data:
+    Val log-lik formula (same as ELBO's log-lik term on held-out data):
       val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
     where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
 
-    Alternative not used: plug-in Poisson log-prob sum(r*log(f) - f),
-    which additionally penalizes high posterior variance via an extra
-    r * 0.5*A^2*var term in the coefficient of r. See CLAUDE.md
-    early stopping section for discussion.
+    Val Pearson r: corr(f_pred, r_val) — same metric as test_r.
 
     Args:
         model: DirectVGPModel instance (trained or mid-training)
@@ -102,15 +101,20 @@ def _compute_val_log_lik(model, X_val, r_val):
         r_val: Validation spike counts for one cell, shape (N_val,)
 
     Returns:
-        Scalar float: validation expected log-likelihood (higher is better)
+        Tuple (val_ll, val_r, val_rho):
+          val_ll: Scalar float, validation expected log-likelihood (higher is better)
+          val_r: Scalar float, Pearson correlation between f_pred and r_val
+          val_rho: Scalar float, Spearman rank correlation between f_pred and r_val
     """
     with torch.no_grad():
         preds = predict_eigenspace(model, X_val)
         A = model.likelihood.A.squeeze()
         lambda0 = model.likelihood.lambda0.squeeze()
-        f_mean = preds['f_pred']
-        val_ll = (r_val * (A * preds['lambda_m'] + lambda0) - f_mean).sum()
-    return val_ll.item()
+        f_pred = preds['f_pred']
+        val_ll = (r_val * (A * preds['lambda_m'] + lambda0) - f_pred).sum().item()
+        val_r = compute_pearson_correlation(r_val, f_pred)
+        val_rho = compute_spearman_correlation(r_val, f_pred)
+    return val_ll, val_r, val_rho
 
 
 def _save_model_state(model):
@@ -178,6 +182,7 @@ def train_eigenspace(
     interleave_fstep: bool = False,
     X_val: torch.Tensor = None,
     r_val: torch.Tensor = None,
+    es_metric: str = 'val_ll',
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -248,7 +253,7 @@ def train_eigenspace(
     stopped_early = False
     final_iteration = 0
     has_val = X_val is not None and r_val is not None
-    best_val_ll = float('-inf')
+    best_es_value = float('-inf')  # works for both val_ll and val_r (both higher=better)
     patience_counter = 0
     best_state = None
     best_iteration = 0
@@ -258,6 +263,10 @@ def train_eigenspace(
     train_ll_curve = []
     train_kl_curve = []
     val_ll_curve = []
+    train_r_curve = []
+    val_r_curve = []
+    train_rho_curve = []
+    val_rho_curve = []
     param_A_curve = []
     param_lambda0_curve = []
     param_beta_curve = []
@@ -388,11 +397,16 @@ def train_eigenspace(
         train_ll = (r * (A * lambda_m + lambda0) - f_mean).sum().item()
         # KL from ELBO decomposition: ELBO = log_lik - KL => KL = log_lik - ELBO
         train_kl = train_ll - elbo.item()
+        # Training correlations: same metrics as test_r
+        train_r = compute_pearson_correlation(r, f_mean.detach())
+        train_rho = compute_spearman_correlation(r, f_mean.detach())
 
         # ===== Validation evaluation =====
         val_ll = None
+        val_r = None
+        val_rho = None
         if has_val:
-            val_ll = _compute_val_log_lik(model, X_val, r_val)
+            val_ll, val_r, val_rho = _compute_val_metrics(model, X_val, r_val)
 
         # ===== Log curves =====
         # iter_elapsed does not include M-step time (M-step runs after logging);
@@ -402,6 +416,10 @@ def train_eigenspace(
         train_ll_curve.append(train_ll)
         train_kl_curve.append(train_kl)
         val_ll_curve.append(val_ll)
+        train_r_curve.append(train_r)
+        val_r_curve.append(val_r)
+        train_rho_curve.append(train_rho)
+        val_rho_curve.append(val_rho)
         param_A_curve.append(A.item())
         param_lambda0_curve.append(lambda0.item())
         param_beta_curve.append(model.kernel.beta.item())
@@ -420,17 +438,27 @@ def train_eigenspace(
 
         if iteration % print_every == 0 or iteration == 1:
             val_str = f", val_ll={val_ll:.2f}" if val_ll is not None else ""
-            print(f"Iter {iteration}/{n_iterations-1}: loss={loss:.2f}{val_str}, "
+            val_r_str = f", val_r={val_r:.4f}" if val_r is not None else ""
+            val_rho_str = f", val_rho={val_rho:.4f}" if val_rho is not None else ""
+            print(f"Iter {iteration}/{n_iterations-1}: loss={loss:.2f}{val_str}{val_r_str}{val_rho_str}, "
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
                   f"n_b={len(model.state.eigvals_b)}")
 
-        # ===== Patience-based early stopping on validation log-lik =====
+        # ===== Patience-based early stopping on selected validation metric =====
         if has_val:
-            # First observation always sets baseline (best_val_ll starts at -inf)
-            is_first = best_val_ll == float('-inf')
-            rel_improvement = (val_ll - best_val_ll) / max(abs(best_val_ll), 1e-8)
+            # Select which metric drives ES (all are higher=better)
+            if es_metric == 'val_ll':
+                es_value = val_ll
+            elif es_metric == 'val_r':
+                es_value = val_r
+            else:  # val_rho
+                es_value = val_rho
+
+            # First observation always sets baseline (best_es_value starts at -inf)
+            is_first = best_es_value == float('-inf')
+            rel_improvement = (es_value - best_es_value) / max(abs(best_es_value), 1e-8)
             if is_first or rel_improvement > min_delta_rel:
-                best_val_ll = val_ll
+                best_es_value = es_value
                 patience_counter = 0
                 best_iteration = iteration
                 if restore_best:
@@ -444,9 +472,9 @@ def train_eigenspace(
                     posterior = model(model.X_train)
                     lambda_m, lambda_var = posterior.mean, posterior.variance
                 stopped_early = True
-                print(f"Early stopping at iteration {iteration}: "
+                print(f"Early stopping at iteration {iteration} (metric={es_metric}): "
                       f"no val improvement for {patience} iters "
-                      f"(best={best_val_ll:.2f} at iter {best_iteration})"
+                      f"(best={best_es_value:.4f} at iter {best_iteration})"
                       f"{', restored best' if restore_best else ''}")
                 break
 
@@ -492,6 +520,10 @@ def train_eigenspace(
             'train_log_lik': train_ll_curve,
             'train_kl': train_kl_curve,
             'val_log_lik': val_ll_curve,
+            'train_r': train_r_curve,
+            'val_r': val_r_curve,
+            'train_rho': train_rho_curve,
+            'val_rho': val_rho_curve,
             'A': param_A_curve,
             'lambda0': param_lambda0_curve,
             'beta': param_beta_curve,

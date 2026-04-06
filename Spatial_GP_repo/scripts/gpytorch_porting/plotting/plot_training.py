@@ -31,10 +31,11 @@ import numpy as np
 
 # -- Style constants ----------------------------------------------------------
 
-# Row 1: Log-lik / ELBO
-COLOR_TRAIN_LL = '#2176AE'   # steel blue
-COLOR_VAL_LL = '#E63946'     # crimson
+# Row 1: NLL / ELBO (left axis) and Pearson r (right axis)
+COLOR_LL = '#2176AE'         # steel blue — train & val NLL (solid vs dashed)
 COLOR_ELBO = '#7D8491'       # slate gray
+COLOR_R = '#2CA02C'          # green — train & val Pearson r (solid vs dashed)
+COLOR_SPEARMAN = '#FF7F0E'   # orange — train & val Spearman rho (solid vs dashed)
 
 # Row 2: Likelihood params
 COLOR_A = '#2176AE'          # steel blue
@@ -108,72 +109,118 @@ def _apply_ylim(ax, ylim_ranges, key):
 
 def _plot_loglik_and_elbo(ax, curves, best_iteration, n_train, n_val,
                           ylim_ranges=None, is_first_col=True, is_last_col=True):
-    """Row 1: Normalized log-lik (train + val) on left axis, ELBO on right."""
+    """Row 1: Negated NLL + ELBO loss (left, decreasing) and Pearson r (right, increasing).
+
+    Left axis (blue/gray, decreasing = better):
+      - train NLL = -train_log_lik / n_train
+      - val NLL   = -val_log_lik / n_val  (dashed)
+      - ELBO loss = train_loss / n_train  (train_loss is already -ELBO)
+
+    Right axis (green, increasing = better):
+      - train r   = train_r   (solid)
+      - val r     = val_r     (dashed)
+    """
     train_ll = curves.get('train_log_lik', [])
     val_ll = curves.get('val_log_lik', [])
     train_loss = curves.get('train_loss', [])
+    train_r = curves.get('train_r', [])
+    val_r = curves.get('val_r', [])
+    train_rho = curves.get('train_rho', [])
+    val_rho = curves.get('val_rho', [])
 
-    if not train_ll and not val_ll and not train_loss:
+    if not train_ll and not val_ll and not train_loss and not train_r:
         ax.text(0.5, 0.5, 'No data', ha='center', va='center',
                 transform=ax.transAxes, fontsize=12, color="gray")
         return
 
-    # Normalized log-likelihood (per sample)
+    # Left axis: negated log-likelihood (NLL, per sample) — decreasing = better
     if train_ll:
         iters = np.arange(1, len(train_ll) + 1)
-        ll_norm = np.array(train_ll) / n_train
-        ax.plot(iters, ll_norm, color=COLOR_TRAIN_LL, linewidth=1.5,
-                label='train LL', zorder=3)
+        nll_train = -np.array(train_ll) / n_train
+        ax.plot(iters, nll_train, color=COLOR_LL, linewidth=1.5,
+                label='train NLL', zorder=3)
 
     if val_ll:
-        iters_v = np.arange(1, len(val_ll) + 1)
-        vll_norm = np.array(val_ll) / n_val
-        ax.plot(iters_v, vll_norm, color=COLOR_VAL_LL, linewidth=1.5,
-                linestyle='--', label='val LL', zorder=3)
+        vll_arr = np.array([v if v is not None else np.nan for v in val_ll])
+        iters_v = np.arange(1, len(vll_arr) + 1)
+        nll_val = -vll_arr / n_val
+        ax.plot(iters_v, nll_val, color=COLOR_LL, linewidth=1.5,
+                linestyle='--', label='val NLL', zorder=3)
+
+    # ELBO loss on left axis (train_loss is already -ELBO)
+    if train_loss:
+        iters_e = np.arange(1, len(train_loss) + 1)
+        elbo_loss = np.array(train_loss) / n_train
+        ax.plot(iters_e, elbo_loss, color=COLOR_ELBO, linewidth=1.0,
+                alpha=0.7, label='ELBO loss', zorder=2)
 
     _style_axis(ax)
     if is_first_col:
-        ax.set_ylabel('Log-lik / sample', fontsize=12)
+        ax.set_ylabel('NLL / sample', fontsize=12)
     else:
         ax.set_ylabel('')
         ax.tick_params(axis='y', labelleft=False)
 
-    # ELBO on right axis (also normalized per training sample)
-    if train_loss:
-        ax_elbo = ax.twinx()
-        iters_e = np.arange(1, len(train_loss) + 1)
-        elbo_norm = np.array([-l for l in train_loss]) / n_train
-        ax_elbo.plot(iters_e, elbo_norm, color=COLOR_ELBO, linewidth=1.0,
-                     alpha=0.7, label='ELBO', zorder=2)
-        ax_elbo.spines['top'].set_visible(False)
+    # Right axis: Correlations — Pearson r (green) and Spearman rho (orange)
+    ax_r = None
+    has_corr = (train_r and any(v is not None for v in train_r)) or \
+               (val_r and any(v is not None for v in val_r)) or \
+               (train_rho and any(v is not None for v in train_rho)) or \
+               (val_rho and any(v is not None for v in val_rho))
+    if has_corr:
+        ax_r = ax.twinx()
+        # Pearson r (green)
+        if train_r:
+            tr_arr = np.array([v if v is not None else np.nan for v in train_r])
+            iters_tr = np.arange(1, len(tr_arr) + 1)
+            ax_r.plot(iters_tr, tr_arr, color=COLOR_R, linewidth=1.5,
+                      label='train r', zorder=3)
+        if val_r:
+            vr_arr = np.array([v if v is not None else np.nan for v in val_r])
+            iters_vr = np.arange(1, len(vr_arr) + 1)
+            ax_r.plot(iters_vr, vr_arr, color=COLOR_R, linewidth=1.5,
+                      linestyle='--', label='val r', zorder=3)
+        # Spearman rho (orange)
+        if train_rho:
+            trho_arr = np.array([v if v is not None else np.nan for v in train_rho])
+            iters_trho = np.arange(1, len(trho_arr) + 1)
+            ax_r.plot(iters_trho, trho_arr, color=COLOR_SPEARMAN, linewidth=1.5,
+                      label='train rho', zorder=3)
+        if val_rho:
+            vrho_arr = np.array([v if v is not None else np.nan for v in val_rho])
+            iters_vrho = np.arange(1, len(vrho_arr) + 1)
+            ax_r.plot(iters_vrho, vrho_arr, color=COLOR_SPEARMAN, linewidth=1.5,
+                      linestyle='--', label='val rho', zorder=3)
+        ax_r.spines['top'].set_visible(False)
         if is_last_col:
-            ax_elbo.set_ylabel('ELBO / sample', color=COLOR_ELBO, fontsize=12)
-            ax_elbo.tick_params(axis='y', labelcolor=COLOR_ELBO, labelsize=9)
-            ax_elbo.spines['right'].set_linewidth(0.6)
+            ax_r.set_ylabel('Correlation', fontsize=12)
+            ax_r.tick_params(axis='y', labelsize=9)
+            ax_r.spines['right'].set_linewidth(0.6)
         else:
-            ax_elbo.set_ylabel('')
-            ax_elbo.tick_params(axis='y', labelright=False)
-            ax_elbo.spines['right'].set_visible(False)
+            ax_r.set_ylabel('')
+            ax_r.tick_params(axis='y', labelright=False)
+            ax_r.spines['right'].set_visible(False)
 
     # Legend only on first column
     if is_first_col:
         lines1, labels1 = ax.get_legend_handles_labels()
-        if train_loss:
-            lines2, labels2 = ax_elbo.get_legend_handles_labels()
+        if ax_r is not None:
+            lines2, labels2 = ax_r.get_legend_handles_labels()
             ax.legend(lines1 + lines2, labels1 + labels2,
-                      fontsize=10, loc='lower right', framealpha=0.8)
+                      fontsize=8, loc='center right', framealpha=0.8)
         elif lines1:
-            ax.legend(fontsize=10, loc='lower right', framealpha=0.8)
+            ax.legend(fontsize=8, loc='center right', framealpha=0.8)
 
-    # Apply fixed y-limits if provided (log-lik uses union of train + val ranges)
+    # Apply fixed y-limits if provided (negated: swap and negate)
     if ylim_ranges:
         ll_keys = [k for k in ('train_log_lik', 'val_log_lik') if k in ylim_ranges]
         if ll_keys:
-            pmin = min(ylim_ranges[k]['padded_min'] for k in ll_keys)
-            pmax = max(ylim_ranges[k]['padded_max'] for k in ll_keys)
+            # Original ranges are for positive LL; negate and swap for NLL
+            pmin = -max(ylim_ranges[k]['padded_max'] for k in ll_keys)
+            pmax = -min(ylim_ranges[k]['padded_min'] for k in ll_keys)
             ax.set_ylim(pmin, pmax)
-        if train_loss:
-            _apply_ylim(ax_elbo, ylim_ranges, 'train_loss')
+        if train_loss and 'train_loss' in ylim_ranges:
+            _apply_ylim(ax, ylim_ranges, 'train_loss')
 
     _add_best_line(ax, best_iteration)
 

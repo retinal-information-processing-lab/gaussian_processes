@@ -12,6 +12,7 @@ experiment:
   modes: [vargp_direct]
   inducing_points: [50]
   n_train: [500]
+  n_val_split: 250             # val carved from combined train+val pool
   seeds: [123]
   cells: [8]
   n_iterations: 50
@@ -72,6 +73,7 @@ early_stopping:
   min_delta_rel: 0.001
   min_iterations: 10
   restore_best: true
+  es_metric: val_ll                  # val_ll, val_r (Pearson), or val_rho (Spearman)
 
 # ===== NUMERICAL =====
 numerical:

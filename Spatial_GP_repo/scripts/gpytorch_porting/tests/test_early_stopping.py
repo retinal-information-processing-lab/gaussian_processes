@@ -77,7 +77,11 @@ def test_2_val_log_lik_formula():
     model = result['_model']
     likelihood = result['_likelihood']
 
-    # Load validation data the same way run_single_config does
+    # Load validation data directly from .npz for this test.
+    # NOTE: run_single_config() carves val from the combined train+val pool
+    # (seeded permutation), so the val set used during training differs from
+    # this .npz pre-split. That's fine here — we only test that
+    # _compute_val_log_lik() matches a manual computation on the SAME data.
     data_path = Path(config['data_path'])
     if not data_path.is_absolute():
         data_path = PROJ / data_path

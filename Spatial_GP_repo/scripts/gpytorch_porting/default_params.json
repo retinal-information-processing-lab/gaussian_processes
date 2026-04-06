@@ -45,7 +45,8 @@
     "patience": 15,
     "min_delta_rel": 0.001,
     "min_iterations": 10,
-    "restore_best": true
+    "restore_best": true,
+    "es_metric": "val_ll"
   },
 
   "model": {
@@ -62,6 +63,7 @@
   "data": {
     "path": "datasets/PNAS_108x108_original.npz",
     "n_train": 500,
+    "n_val_split": 250,
     "n_px_side": null,
     "cellid": 8,
     "ntilde": 100,
