@@ -1,5 +1,40 @@
 # Session Log
 
+## 2026-04-05/06: Early stopping investigation + paper gap branch close-out
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Fixed data loading regression (val_from_train bug: 2660 -> 2910 training images)
+- Ran ES sweeps with patience=15 and patience=30, 4 configs x 41 cells x 3 seeds
+- Added train_r/val_r (Pearson correlation) curves to training loop + plotting
+- Added es_metric parameter (val_ll or val_r) for ES metric selection
+- Redesigned plot_training.py Row 1: negated NLL + Pearson r on twin axes
+- Diagnostic runs proving val_ll instability is caused by interleaved F-step A transient
+- Deep analysis of Amp redundancy (mu(x) is independent of Amp in large-Amp limit)
+- Created investigations/optimization/possible_optimizations.md for next phase
+- Paper gap investigation declared RESOLVED, documentation updated
+
+**ES findings:** Doubling patience helped interleaved configs (+0.004) but gap to
+baseline remains ~0.02. The gap is fundamental: 8% data holdout + ES stopping before
+full convergence. ELBO convergence-based stopping proposed as alternative.
+
+**Amp finding:** Amp is near-unidentifiable. mu(x) cancels Amp exactly. Only affects
+variance correction (A^2 * Amp coupling) and KL (M/2 * log(Amp)). Fixing Amp=1
+improves results. Removal planned.
+
+**Hanging threads from 2026-03-30 — resolved:**
+- INVESTIGATION markers: already cleaned up (not found in current code)
+- sigma_0 parameterization: kept as direct, controlled test planned in optimization phase
+- Metric mismatch: unresolvable (GP eval code in private package), documented as probable
+- CLAUDE.md updates: done in this session
+
+## 2026-04-02: Paper Gap -- 64x64 Sweep + Amp/Interleaving Grid
+**Handoff**: `investigations/paper_gap/HANDOFF_SWEEP_SESSION.md`
+**Status**: Complete (folded into 2026-04-05/06 session)
+
+Ran 64x64 parameter sweeps (3 configs, 369 runs) to complete the Amp x Interleaving grid. Discovered n_train=2910 confound in prior 64x64 runs (negligible impact). Best config: 64_intl_fixAmp (test_r=0.838, 36/41 > 0.8). Free vs fixed Amp negligible. Interleaving is dominant factor. 108x108 free Amp grid still empty (run_sweep.py hardcodes fix_Amp=True).
+
 ## 2026-03-30: Paper gap investigation -- Gap A closed, metric mismatch discovered
 
 **Branch**: `pietro/investigate-paper-gap`
@@ -234,8 +269,3 @@ Explored 2D playground import chain (5+ levels deep), identified duplicated func
 
 User implemented the 2D import cleanup plan. Fixed test_acquisition.py (updated imports from old utility.py/utility_2d_rbf_base to gpytorch_porting/utils.py via importlib.util pattern). All 6 tests pass. Deep audit confirmed 2D playground imports are clean. Found r_max hardcoded defaults in compute_H, nd_utility_new, standard_utility, distribution_aware_utility, compute_mc_diagnostics_2d. Planned enforcement: remove all silent defaults, require explicit r_max or adaptive_r_max=True.
 
-## 2026-04-02: Paper Gap — 64x64 Sweep + Amp/Interleaving Grid
-**Handoff**: `investigations/paper_gap/HANDOFF_SWEEP_SESSION.md`
-**Status**: Continuing
-
-Ran 64x64 parameter sweeps (3 configs, 369 runs) to complete the Amp x Interleaving grid. Discovered n_train=2910 confound in prior 64x64 runs (negligible impact). Best config: 64_intl_fixAmp (test_r=0.838, 36/41 > 0.8). Free vs fixed Amp negligible. Interleaving is dominant factor. 108x108 free Amp grid still empty (run_sweep.py hardcodes fix_Amp=True).

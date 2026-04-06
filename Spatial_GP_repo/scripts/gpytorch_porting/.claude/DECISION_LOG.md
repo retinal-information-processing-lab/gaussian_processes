@@ -346,3 +346,52 @@ For project status and quick reference, see `CLAUDE.md`.
 
 **Q26: Bug fix — vargp_direct ignored `--lr` CLI flag**
 > The old `run_single_mode.py` line 481 used `defaults['training']['lr']` directly instead of `args.lr` for vargp_direct mode. This meant `--lr` CLI overrides were silently ignored. Fixed during the `run_single_config()` refactor — `lr` now comes from the config dict in all modes.
+
+## Paper Gap Investigation (March-April 2026)
+
+**Q27: Should Amp be free or fixed?**
+> A: Fixed at 1.0 (fix_Amp=True).
+> Rationale: In the large-Amp limit, the posterior mean mu(x) is completely
+> independent of Amp (Amp cancels between k(x) and K_tilde^{-1}). Amp only
+> affects predictions through a second-order variance correction (A^2 * Amp
+> coupling) and the KL divergence (M/2 * log(Amp)). This makes Amp
+> near-unidentifiable, causing the M-step to waste iterations on a parameter
+> with negligible predictive effect. Empirically, fixing Amp=1 improves
+> results across 41-cell sweeps. The paper (Goldin et al. 2023) does not
+> use Amp. Full removal planned (see investigations/optimization/).
+> Alternative rejected: free Amp (creates optimization ridge, seed variance).
+
+**Q28: Should the F-step be interleaved with the E-step?**
+> A: Yes (interleave_fstep=True), with damped Newton (alpha=0.25).
+> Rationale: Non-interleaved F-step runs after all E-step iterations,
+> meaning (m, V) converge toward a posterior optimized for a stale A.
+> Interleaving updates A at every E-step iteration, keeping it synchronized
+> with the evolving posterior. 41-cell sweeps show interleaving is the
+> dominant factor in test_r improvement. Downside: A transients in early
+> iterations cause validation metric instability, complicating early stopping.
+> Alternative rejected: non-interleaved LBFGS (simpler but lower test_r).
+> Note: The paper uses interleaving with the same alpha=0.25.
+
+**Q29: sigma_0 parameterization — exp vs direct?**
+> A: Direct (identity) transform, kept from paper gap investigation.
+> Rationale: Direct matched vargp_old and closed a 0.004 gap. sigma_0
+> enters the kernel squared (v_x = x^T C x + sigma_0^2), so exp or log-space
+> is arguably more principled. A controlled comparison is planned in the
+> optimization phase (investigations/optimization/possible_optimizations.md).
+> The current direct parameterization works and matches vargp_old behavior.
+
+**Q30: Paper metric mismatch (adjusted R^2 vs explained variance)**
+> A: The paper likely reports unsquared explained_var (accuracy/reliability)
+> despite calling it "adjusted R^2". Evidence: our 36/41 cells > 0.8 on
+> explained_var matches the paper's "36/41" claim exactly, while our
+> adjusted_r2 (squared, Eq. 5) gives only 15/41 > 0.8. Unconfirmed because
+> the paper's GP evaluation code is in a private package. Documented in
+> investigations/paper_gap/METRICS_COMPARISON.md.
+
+**Q31: Data loading — validation set source**
+> A: Always combine .npz train+val into a 3160-image pool, carve 250 val
+> images via seeded random permutation. The pre-baked .npz val split has
+> a biased response distribution (80% zeros vs 56% in training) and is
+> unsuitable for early stopping. The val_from_train flag was removed.
+> This costs 8% of training data (250/3160) but ensures unbiased,
+> seed-reproducible validation splits.

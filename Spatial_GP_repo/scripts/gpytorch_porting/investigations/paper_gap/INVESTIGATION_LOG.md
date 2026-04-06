@@ -691,10 +691,9 @@ sigma_0 appears SQUARED in the kernel: v_x = x^T C x + sigma_0^2. This means:
 - It's possible exp was fine all along and the stagnation we saw earlier was
   caused by the other confounds, not by the transform itself
 
-DEFERRED: Re-evaluate sigma_0 parameterization (exp vs direct vs optimize
-sigma_0^2 directly). Needs a controlled test with all confounds fixed. The
-current direct parameterization works but is not mathematically principled
-for a parameter that enters squared.
+DECISION (April 2026): Keep direct parameterization. Controlled comparison
+(exp vs direct vs optimize sigma_0^2 directly) planned in the optimization
+phase. See investigations/optimization/possible_optimizations.md.
 
 **Investigation rules established:**
 - ip_selection='random' for all mode comparisons (pivoted silently differs for vargp_old)

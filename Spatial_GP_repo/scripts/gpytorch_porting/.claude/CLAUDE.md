@@ -81,21 +81,26 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
 
-**sigma_0 parameterization (NEEDS REVIEW)**: On branch `pietro/investigate-paper-gap`, sigma_0 was changed from exp transform to direct (identity) parameterization. This matched vargp_old and closed a 0.004 gap. However, sigma_0 enters the kernel SQUARED (v_x = x^T C x + sigma_0^2), so exp transform (log-space optimization) is arguably more principled -- the paper uses exp(sigma_b). The improvement from direct may have been confounded with other fixes applied in the same investigation. DEFERRED: needs controlled re-evaluation before merging to workingbranch. See `investigations/paper_gap/INVESTIGATION_LOG.md` caveat section.
+**sigma_0 parameterization**: Uses direct (identity) transform. Changed from exp transform during the paper gap investigation (closed a 0.004 gap). sigma_0 enters the kernel squared (v_x = x^T C x + sigma_0^2), so exp or log-space optimization could be more principled. A controlled re-evaluation (exp vs direct vs optimize sigma_0^2 directly) is planned in `investigations/optimization/possible_optimizations.md`.
 
 **STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
 
 **PNAS datasets** (all have identical train/val/test splits, same images at different resolutions):
 
-| Dataset | Path | train | val | total | test |
-|---------|------|-------|-----|-------|------|
+| Dataset | Path | .npz train | .npz val | pool | test |
+|---------|------|------------|----------|------|------|
 | 108x108 | `datasets/PNAS_108x108_original.npz` | 2910 | 250 | 3160 | 30 |
 | 64x64 | `datasets/PNAS_64x64_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
 | 48x48 | `datasets/PNAS_48x48_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
 
-**IMPORTANT**: When using full training data, always use n_train=3160 (train+val combined) for ALL resolutions. The datasets store train (2910) and val (250) separately, but for final fits we combine them. Using n_train=2910 is a confound that was caught in the paper gap investigation (all 64x64 runs before the fix were affected).
+**Data loading (run_single_mode.py)**: The .npz files store a pre-baked train/val split, but that split has a **biased response distribution** (80% zeros in val vs 56% in train). The code always:
+1. Combines `images_train` + `images_val` into a single pool of 3160
+2. Carves 250 validation images via seeded random permutation (seed = model fitting seed)
+3. Remaining 2910 images form the training pool (capped to `n_train` if smaller)
 
-**BUG — Data loading regression with val_from_train (NEXT PRIORITY)**: The `val_from_train` feature (commit 1be8b8a) broke the train+val combination path in `run_single_mode.py`. The old code (commit 7508423) always did `X = cat(X_train, X_val)` → 3160 images. The new code loads only `X_train` (2910) then carves 250 for validation → 2660 effective training, not 2910 as intended. The ES sweep (`sweep_64x64_es_results.jsonl`) trained on 2660 images instead of 2910, a 16% reduction vs intended. Fix plan: (1) restore the cat(train,val) path so X starts as 3160 when n_train=3160, (2) val_from_train carves from that pool → 2910 effective training, (3) consider removing the pre-baked train/val split from the .npz files entirely since it was found to have mismatched response distributions (80% zeros in val vs 56% in train).
+This means **effective max training size is 2910**, not 3160. The 250-image validation holdout costs ~8% of total data but ensures: (a) unbiased val distribution, (b) consistent splits across ES and no-ES runs, (c) seed-reproducible comparisons. Validation is always carved even with `early_stop=False` (curves are logged for post-hoc analysis).
+
+Use `n_train=3160` in configs — it gets capped to 2910 after carving. The `n_val_split` parameter (default 250) controls the carve size.
 
 **Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
@@ -128,9 +133,7 @@ Use `--gradient-mode MODE` in CLI:
 
 ## Early Stopping & Validation
 
-**Validation data is ALWAYS held out** (250 images, never in training set). When
-`n_train=3160` is requested, effective training size is 2910. Prior experiment
-showed negligible difference (0.828 vs 0.827 test_r).
+**Validation data is ALWAYS held out** (250 images carved from combined train+val pool via seeded permutation, never in training set). When `n_train=3160` is requested, effective training size is 2910. See "Data loading" section above for details on why the .npz pre-baked val split is not used.
 
 **Mechanism**: Patience-based stopping on validation expected log-likelihood:
 1. At each outer EM iteration, compute val_ll on held-out 250 images
@@ -272,7 +275,8 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 | Path | Purpose |
 |------|---------|
 | `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
-| `investigations/paper_gap/` | Paper performance gap investigation. 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md` (full findings), `METRICS_COMPARISON.md` (metric definitions + results). Scripts: `run_sweep.py` (6 configs x 41 cells x 3 seeds). |
+| `investigations/paper_gap/` | Paper performance gap investigation (RESOLVED). Gap A closed (Finding 19), Gap B explained by metric mismatch (Finding 21). 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md`, `METRICS_COMPARISON.md`. |
+| `investigations/optimization/` | Training loop optimization investigations. See `possible_optimizations.md` for the full list (Amp removal, ELBO-based ES, E-step convergence, F-step comparison). |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -447,5 +451,6 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 ---
 
-*Last updated: March 2026*
-*Paper gap investigation: Gap A closed, metric mismatch discovered, rf_init config added*
+*Last updated: April 2026*
+*Paper gap investigation: RESOLVED (April 2026). Gap A closed, Gap B explained by metric mismatch. See investigations/paper_gap/INVESTIGATION_LOG.md.*
+*Next phase: training loop optimization (investigations/optimization/possible_optimizations.md)*
