@@ -81,10 +81,34 @@ consecutive iterations.
 - Mathematically principled for variational inference
 - Already logged in training curves
 
-**Verification**: Re-analyze existing 80-iteration baseline sweeps. Compute
-ELBO staleness at each iteration. Check when it would have stopped and
-compare the resulting test_r with full 80-iteration results. No new runs
-needed.
+**Verification strategy**: Two complementary approaches.
+
+*Approach 1 (partial, no re-runs needed)*: The existing ES sweeps
+(`sweep_64x64_es_results.jsonl`, `sweep_64x64_es_p30_results.jsonl`) embed
+per-iteration `train_loss` (= -ELBO) and `val_log_lik` curves in each
+record. Post-process these to check: "if we had used ELBO staleness instead
+of val_ll, would we have stopped at a better iteration?" Limited because
+the ES truncated runs at 33-50 iters — we don't see what happens after
+the ES trigger.
+
+*Approach 2 (complete, requires re-run)*: Re-run the baseline sweep
+(3 configs x 41 cells x 3 seeds = 369 runs, 80 iters, no ES) with the
+curve logging now enabled in `eigenspace_training.py` (added in this
+session's code changes). This gives full 80-iteration curves for every
+run, enabling post-hoc simulation of any ES criterion. Compute cost: ~6-8
+hours sequential GPU time.
+
+**Existing baseline data**: `experiments/2026-04-06_es_sweeps_64x64/` —
+see README for detailed file inventory and reference values table.
+
+**Warning**: The current baseline file `sweep_64x64_results_ntrain3160.jsonl`
+was generated BEFORE curve logging was added. It does NOT contain per-iteration
+curves. The final stats (test_r, explained_var) are there but you can't
+reconstruct ELBO trajectories from it. A fresh baseline run is needed for
+full post-hoc ES analysis.
+
+Best no-ES baseline: `intl_fixAmp` at test_r=0.8382, 37/41 cells > 0.8.
+Current val_ll ES gap: ~0.02 test_r.
 
 ---
 

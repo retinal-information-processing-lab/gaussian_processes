@@ -11,6 +11,88 @@ investigation was declared RESOLVED. Preserved here as reference data.
 
 ---
 
+## Reference values for future ES comparisons
+
+**For the next Claude session**: these are the numbers to compare against
+when testing new early stopping methods (e.g., ELBO-based ES from
+`investigations/optimization/possible_optimizations.md` Investigation 2).
+
+All values computed over 3 seeds x 41 cells. Best-seed cells>0.8 takes the
+max across 3 seeds per cell, then counts cells above 0.8.
+
+| Config | Interleave | Amp | A_init | ES | Patience | mean test_r | mean exp_var | cells>0.8 ev | mean iters | Notes |
+|--------|-----------|-----|--------|-----|----------|-------------|--------------|--------------|-----------|-------|
+| A01_free_no_intl | no | free | 0.01 | off | -- | 0.8272 | 0.8880 | 35/41 | 80 | baseline |
+| intl_fixAmp | yes | 1.0 | 1e-4 | off | -- | **0.8382** | **0.8994** | **37/41** | 80 | **best baseline** |
+| intl_freeAmp | yes | free | 1e-4 | off | -- | 0.8354 | 0.8965 | 37/41 | 80 | baseline |
+| A01_free_no_intl | no | free | 0.01 | val_ll | 15 | 0.8100 | 0.8694 | 35/41 | 37.3 | p=15 |
+| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 15 | 0.8143 | 0.8735 | 36/41 | 33.1 | p=15 |
+| intl_freeAmp | yes | free | 1e-4 | val_ll | 15 | 0.8128 | 0.8719 | 35/41 | 30.6 | p=15 |
+| A01_free_no_intl | no | free | 0.01 | val_ll | 30 | 0.8096 | 0.8690 | 35/41 | 52.9 | p=30 |
+| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 30 | **0.8185** | **0.8780** | 36/41 | 50.7 | p=30, best ES |
+| intl_freeAmp | yes | free | 1e-4 | val_ll | 30 | 0.8154 | 0.8748 | 35/41 | 49.2 | p=30 |
+| no_intl_fixAmp | no | 1.0 | 1e-4 | val_ll | 30 | 0.7542 | 0.8055 | 31/41 | 63.8 | p=30, A_init too small for LBFGS |
+
+**Key reference**: the best no-ES baseline is `intl_fixAmp` at **test_r=0.8382,
+exp_var=0.8994, 37/41 cells > 0.8**. Any new ES method should aim to match or
+beat this while saving compute.
+
+**Gap cost of current val_ll ES** (best-to-best): 0.02 test_r, 1-2 cells>0.8.
+
+### File → Sweep mapping
+
+| JSONL file | Sweep | Runs |
+|-----------|-------|------|
+| `sweep_64x64_results_ntrain3160.jsonl` | Sweep 1 (baseline no-ES) | 369 |
+| `sweep_64x64_es_results.jsonl` | Sweep 2 (ES p=15, fixed) | 369 |
+| `sweep_64x64_es_results_STALE_n2660.jsonl` | Sweep 3 (STALE, n=2660 bug) | 369 |
+| `sweep_64x64_es_p30_results.jsonl` | Sweep 4 (ES p=30, 4 configs) | 492 |
+| `diagnostic_no_es_results.jsonl` | Diagnostic interleaved | 7 |
+| `diagnostic_no_es_no_interleaved_results.jsonl` | Diagnostic non-interleaved | 7 |
+| `sweep_64x64_results.jsonl` | Old stale (n=2910 bug), superseded | 246 |
+
+---
+
+## How to use this data for new ES comparison
+
+1. Read `investigations/optimization/possible_optimizations.md` for context
+   on the proposed ELBO ES (Investigation 2).
+
+2. **Important: curve availability is uneven**:
+
+   | File | has per-iter curves? | n_iters stored |
+   |------|---------------------|----------------|
+   | `sweep_64x64_results.jsonl` (old stale) | NO | — |
+   | `sweep_64x64_results_ntrain3160.jsonl` (baseline no-ES) | **NO** | — |
+   | `sweep_64x64_es_results.jsonl` (ES p=15 fixed) | yes | 33-37 (stopped) |
+   | `sweep_64x64_es_results_STALE_n2660.jsonl` | yes | ~36 (stopped) |
+   | `sweep_64x64_es_p30_results.jsonl` | yes | 30-54 (stopped) |
+   | `diagnostic_no_es_results.jsonl` | yes | 79 (full) |
+   | `diagnostic_no_es_no_interleaved_results.jsonl` | yes | 79 (full) |
+
+   The baseline sweeps predate the curve logging feature. The ES sweeps
+   embed `train_loss` (= -ELBO), `val_log_lik`, and (p=30 only) `train_r`,
+   `val_r` curves per record, but the runs were truncated by ES so the
+   curves only extend to the stopping iteration. The diagnostics have full
+   80-iteration curves but only cover 7 cells.
+
+3. **Post-hoc ELBO ES simulation has limits**: You can analyze ELBO
+   staleness on the existing ES curves, but only up to the iteration where
+   val_ll-based ES triggered. To compare ELBO ES against the full
+   80-iteration baseline, you need to re-run the baseline sweep with
+   curve logging enabled (now available in `eigenspace_training.py`).
+
+4. **For new runs**: use the sweep scripts here (`run_sweep_64x64.py` for
+   baselines, `run_sweep_64x64_es.py` or `run_sweep_64x64_es_p30.py` for
+   ES variants) as templates. Same configs, change the ES logic in
+   `eigenspace_training.py` to implement ELBO staleness.
+
+5. **For the results table**: use the `/present-results` skill with the
+   reference values table at the top of this README as the baseline. Add
+   new rows for each new ES variant.
+
+---
+
 ## Purpose
 
 This folder archives the 64x64 sweeps generated during the paper gap

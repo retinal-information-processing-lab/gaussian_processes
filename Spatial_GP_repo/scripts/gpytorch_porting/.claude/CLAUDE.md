@@ -453,4 +453,4 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 *Last updated: April 2026*
 *Paper gap investigation: RESOLVED (April 2026). Gap A closed, Gap B explained by metric mismatch. See investigations/paper_gap/INVESTIGATION_LOG.md.*
-*Next phase: training loop optimization (investigations/optimization/possible_optimizations.md)*
+*Next phase: training loop optimization. See investigations/optimization/possible_optimizations.md for the full list. Reference baselines for comparison: experiments/2026-04-06_es_sweeps_64x64/README.md.*
