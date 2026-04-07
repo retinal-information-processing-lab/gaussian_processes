@@ -1,5 +1,57 @@
 # Session Log
 
+## 2026-04-07: ELBO ES sweep complete + design stabilization
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Completed the 4-config ELBO ES sweep (492 runs, ~7h). Best config
+  `intl_fixAmp` + ELBO ES p=15: test_r=0.8375, exp_var=0.8987, 37/41
+  cells > 0.8, 37.5 mean iters. Matches no-ES baseline within 0.0007
+  test_r while saving ~53% compute.
+- Closed Investigation 2 in `possible_optimizations.md`. Marked DONE
+  with full empirical results.
+- **Stabilized the ES design choice across the codebase**:
+  - `es_metric` is now restricted to `'elbo'` or `'none'` (val_ll/val_r/val_rho
+    branches removed from training code).
+  - `default_params.json`: `es_metric='elbo'`, `n_val_split=0`.
+  - `configs/canonical.yaml` and `configs/quick.yaml`: same.
+  - `flatten_yaml_config()` fallback: `es.get('es_metric', 'elbo')`,
+    `dat.get('n_val_split', 0)`.
+  - `--es-metric` CLI choices restricted to `['elbo', 'none']`.
+- Smoke-tested ELBO ES on `default_gpy` mode (the previously untested
+  parallel code path). Works correctly.
+- Updated CLAUDE.md "Early Stopping" and "Data loading" sections to
+  reflect the new defaults and link to the rationale.
+- Added `.claude/DECISION_LOG.md` Q32 (ELBO ES decision) and Q33
+  (best-tracking semantics fix).
+- Updated `tests/test_early_stopping.py`:
+  - test_1 now exercises both `n_val_split=0` (default) and `n_val_split=250`
+    (opt-in val carving) paths.
+  - test_4 rewritten to verify the new best-tracking semantics
+    (`best_iter` is the true argmax of ELBO, independent from
+    patience_reference).
+  - test_9 checks `best_iter` against argmax of ELBO instead of val_ll.
+  - All 10 tests pass.
+- Moved ELBO ES sweep results + script + buggy reference to
+  `experiments/2026-04-06_es_sweeps_64x64/`. Updated that folder's README
+  with ELBO ES rows in the reference values table and a TL;DR section.
+
+**Decision summary:**
+- ELBO is the chosen ES metric. val_ll/val_r/val_rho were tested and
+  underperformed by ~0.02 mean test_r due to A-transient noise on the
+  small validation set.
+- `n_val_split=0` is the default — no validation carving, all 3160
+  training images are used.
+- `n_val_split>0` remains an opt-in for diagnostic val_log_lik/val_r/val_rho
+  curves but they are NOT used for ES decisions.
+
+**Investigation 2 (ELBO ES) is closed**. Other open optimization
+investigations: Amp removal (#1, high priority), E-step convergence
+check (#3), F-step method comparison (#4), redundant kernel computation
+(#5), M-step iteration count (#6), why-does-ELBO-decrease sub-investigation
+(#7), sigma_0 parameterization (#8). See `investigations/optimization/possible_optimizations.md`.
+
 ## 2026-04-05/06: Early stopping investigation + paper gap branch close-out
 
 **Branch**: `pietro/investigate-paper-gap`

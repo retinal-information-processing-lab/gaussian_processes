@@ -395,3 +395,68 @@ For project status and quick reference, see `CLAUDE.md`.
 > unsuitable for early stopping. The val_from_train flag was removed.
 > This costs 8% of training data (250/3160) but ensures unbiased,
 > seed-reproducible validation splits.
+>
+> **SUPERSEDED by Q32 (April 2026)**: After choosing ELBO ES, validation
+> carving became unnecessary. The new default is `n_val_split=0` (no
+> carving, all 3160 images used for training). Carving is still available
+> as an opt-in for diagnostic val_log_lik/val_r/val_rho curves when
+> `n_val_split > 0`.
+
+## Optimization Phase (April 2026)
+
+**Q32: Early stopping — which metric and why?**
+> A: ELBO is the only supported `es_metric` (with `'none'` to disable ES
+> entirely). val_ll/val_r/val_rho options were removed.
+>
+> Rationale: We empirically tested four ES metrics on 64x64 PNAS data
+> (4 configs x 41 cells x 3 seeds, see
+> `experiments/2026-04-06_es_sweeps_64x64/README.md` for full results):
+> - **ELBO ES**: matches the no-ES baseline within 0.0007 mean test_r
+>   while saving ~53% compute. Best config (intl_fixAmp + ELBO ES p=15)
+>   gives test_r=0.8375, exp_var=0.8987, 37/41 cells > 0.8.
+> - **val_ll/val_r/val_rho ES**: all underperform the no-ES baseline by
+>   ~0.02 mean test_r. The interleaved damped Newton F-step causes A
+>   transients in early iterations, which produce noisy predictions on
+>   the small (250-image) validation set. ELBO is computed over all
+>   3160 training points so the per-image noise averages out.
+>
+> Diagnostic data showing val_ll instability for early-stopper cells:
+> `experiments/2026-04-06_es_sweeps_64x64/diagnostic_no_es_results.jsonl`
+> and `_no_interleaved_results.jsonl`. Full investigation:
+> `investigations/optimization/possible_optimizations.md` Investigation 2.
+>
+> Side benefit: ELBO ES doesn't need a held-out val set, so the default
+> is now `n_val_split=0` — all 3160 training images are used. This
+> contributes part of the improvement vs val_ll ES on its own.
+> Alternative rejected: val_ll/val_r/val_rho ES (empirically worse and
+> wastes 8% of training data).
+
+**Q33: ES best-tracking vs patience-threshold semantics**
+> A: Two separate state variables, updated by different rules. Matches
+> PyTorch Lightning's separated `ModelCheckpoint` + `EarlyStopping`
+> design, NOT Keras's conflated single callback.
+>
+> Rationale: The original ES code (inherited from val_ll ES) used a
+> single `best_es_value` updated only when `rel_improvement > min_delta_rel`.
+> This had a subtle bug for monotonic metrics like ELBO: slow-but-steady
+> improvements (each below the 0.1% threshold) accumulated to large gains
+> that were never tracked, and `restore_best` would revert to the
+> "last meaningful improvement" rather than the true argmax of the metric.
+> Empirical analysis of a 32-run partial ELBO sweep showed 28/32 runs
+> (87.5%) had `elbo_final > elbo_best_iter` — restoration was discarding
+> ~0.76 ELBO units per run on average.
+>
+> Fix: track two state variables independently:
+> - `best_es_value` / `best_iteration`: updated on ANY improvement
+>   (tracks the true argmax, used by `restore_best`).
+> - `patience_reference`: updated only when `rel_improvement > min_delta_rel`
+>   from the last reset. Used only for the patience counter, so
+>   slow-steady growth eventually triggers a reset.
+>
+> Verified on cell 8 seed 1: test_r 0.8625 -> 0.8740 (+0.011) with the
+> fix. All 10 ES tests pass.
+>
+> Reference: `eigenspace_training.py` lines ~470-510. The historically
+> conflated behavior is preserved in
+> `experiments/2026-04-06_es_sweeps_64x64/sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl`
+> (32-run partial sweep, kept as evidence for the bug fix).

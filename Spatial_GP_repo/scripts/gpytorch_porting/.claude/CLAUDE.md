@@ -93,12 +93,12 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 | 64x64 | `datasets/PNAS_64x64_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
 | 48x48 | `datasets/PNAS_48x48_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
 
-**Data loading (run_single_mode.py)**: The .npz files store a pre-baked train/val split, but that split has a **biased response distribution** (80% zeros in val vs 56% in train). The code always:
-1. Combines `images_train` + `images_val` into a single pool of 3160
-2. Carves 250 validation images via seeded random permutation (seed = model fitting seed)
-3. Remaining 2910 images form the training pool (capped to `n_train` if smaller)
+**Data loading (run_single_mode.py)**: The .npz files store a pre-baked train/val split, but that split has a **biased response distribution** (80% zeros in val vs 56% in train), so it's never used as-is. The code always combines `images_train` + `images_val` into a single pool of 3160 images, then optionally carves a validation subset via seeded random permutation:
 
-This means **effective max training size is 2910**, not 3160. The 250-image validation holdout costs ~8% of total data but ensures: (a) unbiased val distribution, (b) consistent splits across ES and no-ES runs, (c) seed-reproducible comparisons. Validation is always carved even with `early_stop=False` (curves are logged for post-hoc analysis).
+- **Default since April 2026: `n_val_split=0`** — no validation carving. All 3160 images are used for training. The chosen ELBO-based early stopping (see below) does not need validation data.
+- **Opt-in: `n_val_split=250`** — carves 250 validation images via seeded permutation, leaving 2910 for training. This populates the diagnostic `val_log_lik`/`val_r`/`val_rho` curves but is no longer the default. Useful only when you want those curves for post-hoc analysis.
+
+`n_train` is capped to the available training pool size after carving.
 
 Use `n_train=3160` in configs — it gets capped to 2910 after carving. The `n_val_split` parameter (default 250) controls the carve size.
 
@@ -131,27 +131,19 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
-## Early Stopping & Validation
+## Early Stopping
 
-**Validation data is ALWAYS held out** (250 images carved from combined train+val pool via seeded permutation, never in training set). When `n_train=3160` is requested, effective training size is 2910. See "Data loading" section above for details on why the .npz pre-baked val split is not used.
+**Default: ELBO-based early stopping** (since April 2026). The `es_metric` parameter only accepts `'elbo'` (default) or `'none'` (disabled). val_ll/val_r/val_rho options were removed — see `investigations/optimization/possible_optimizations.md` Investigation 2 for the rationale, and `experiments/2026-04-06_es_sweeps_64x64/README.md` for the empirical comparison that drove this decision.
 
-**Mechanism**: Patience-based stopping on validation expected log-likelihood:
-1. At each outer EM iteration, compute val_ll on held-out 250 images
-2. Track best val_ll seen so far
-3. If val_ll improves by > `min_delta_rel` (0.1% relative), reset patience counter
-4. If patience counter reaches `patience` (15) and `iteration >= min_iterations` (10), stop
-5. On stop, restore model state from best-validation iteration
+**Why ELBO and not validation metrics**: We tested val_log_lik (val_ll), val Pearson r, and val Spearman rho as ES metrics against the training ELBO. All three validation-based metrics underperformed the no-ES baseline by ~0.02 mean test_r because the interleaved damped Newton F-step causes A transients in the first ~20 iterations, which produce noisy predictions on the small (250-image) validation set. The ELBO is computed over all 3160 training points so the per-image noise averages out. ELBO ES matches the no-ES baseline within 0.0007 test_r while saving ~53% compute. **Best documented config**: `intl_fixAmp` + ELBO ES p=15 → test_r=0.8375, exp_var=0.8987, 37/41 cells > 0.8.
 
-**Validation metric formula**: Expected log-likelihood (same as ELBO's log-lik term):
-```
-val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
-where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
-```
+**Mechanism**: Patience-based stopping with separated best-tracking and patience-threshold logic (matches PyTorch Lightning's design, NOT Keras's conflated single callback — see DECISION_LOG Q33):
 
-Alternative not used: plug-in Poisson log-prob `sum(r*log(f_pred) - f_pred)`, which
-additionally penalizes high posterior variance via an extra `r * 0.5*A^2*var` term.
-Both track the same direction during training; the expected log-lik was chosen for
-direct comparability with the training ELBO.
+1. At each outer EM iteration, compute `es_value = -train_loss` (= ELBO).
+2. **Best tracking** (for `restore_best`): if `es_value > best_es_value`, update `best_es_value` and save model state. Tracks the **true argmax** of ELBO across the run.
+3. **Patience counter** (for stopping decision): compute `rel_improvement = (es_value - patience_reference) / |patience_reference|`. If `rel_improvement > min_delta_rel`, update `patience_reference` and reset counter to 0. Otherwise increment counter. The patience reference is updated independently from `best_es_value` so slow-steady ELBO growth accumulates against a fixed reference and eventually triggers a reset.
+4. If counter reaches `patience` (15) AND `iteration >= min_iterations` (10), stop.
+5. On stop, restore model state from `best_iteration` (the true argmax).
 
 **Config** (`default_params.json` / YAML):
 ```json
@@ -160,16 +152,16 @@ direct comparability with the training ELBO.
     "patience": 15,
     "min_delta_rel": 0.001,
     "min_iterations": 10,
-    "restore_best": true
+    "restore_best": true,
+    "es_metric": "elbo"
 }
 ```
 
-**Curve logging**: Every training run logs per-iteration curves in `result['curves']`:
-`train_loss`, `train_log_lik`, `train_kl`, `val_log_lik`, `A`, `lambda0`, `beta`,
-`rho`, `sigma_0`, `eps_0x`, `eps_0y`, `Amp`, `iter_time`. Curves are logged even
-with `early_stop=False` (useful for post-hoc convergence analysis).
+**Curve logging**: Every training run always logs per-iteration training curves in `result['curves']`: `train_loss` (= -ELBO), `train_log_lik`, `train_kl`, `train_r`, `A`, `lambda0`, `beta`, `rho`, `sigma_0`, `eps_0x`, `eps_0y`, `Amp`, `iter_time`. When `n_val_split > 0` (opt-in), also logs `val_log_lik`, `val_r`, `val_rho` for diagnostic purposes — these are NOT used for ES decisions. Curves are logged even with `early_stop=False`.
 
-**Tests**: `tests/test_early_stopping.py` (10 strict tests, ~17s on GPU).
+**Tests**: `tests/test_early_stopping.py` (10 strict tests, ~22s on GPU).
+
+**Historical**: For the val_ll noise findings that led to switching to ELBO ES, see `investigations/optimization/possible_optimizations.md` Investigation 2 (full diagnostic data + comparison sweeps), `.claude/DECISION_LOG.md` Q32 (decision rationale), and `experiments/2026-04-06_es_sweeps_64x64/README.md` (reference values for all 4 ES methods compared).
 
 ---
 
@@ -453,4 +445,5 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 *Last updated: April 2026*
 *Paper gap investigation: RESOLVED (April 2026). Gap A closed, Gap B explained by metric mismatch. See investigations/paper_gap/INVESTIGATION_LOG.md.*
-*Next phase: training loop optimization. See investigations/optimization/possible_optimizations.md for the full list. Reference baselines for comparison: experiments/2026-04-06_es_sweeps_64x64/README.md.*
+*Optimization phase Investigation 2 (ELBO ES): DONE (April 2026). ELBO is the chosen ES default; val_ll/val_r/val_rho removed. See `experiments/2026-04-06_es_sweeps_64x64/README.md` for the empirical comparison and `.claude/DECISION_LOG.md` Q32-Q33 for the decision.*
+*Other optimization phase investigations remain open: see `investigations/optimization/possible_optimizations.md`.*

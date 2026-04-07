@@ -54,143 +54,91 @@ optimization, reduce kernel params from 6 to 5). Run 41-cell comparison sweep.
 
 ---
 
-## 2. ELBO Convergence as Early Stopping (High Priority)
+## 2. ELBO Convergence as Early Stopping — **DONE (April 2026)**
 
-**Problem**: Current ES uses validation log-likelihood (val_ll), which is
-noisy due to:
-- A transients from the interleaved F-step (exp(A*mu) swings when A changes)
-- Small validation set (250 images) with Poisson noise (many zeros)
-- 8% data cost: 250 images held out from training
+**Status**: Closed and merged into the codebase as the chosen default.
 
-We also tried val Pearson r and Spearman rho as alternatives. Both are
-equally noisy — the issue is not the metric choice but the A transient
-affecting all predictions on held-out data.
+**Outcome**: ELBO-based ES is the default `es_metric` in
+`default_params.json`, `configs/canonical.yaml`, and `configs/quick.yaml`.
+The val_ll/val_r/val_rho options were removed entirely. See
+`.claude/DECISION_LOG.md` Q32 (decision rationale) and Q33 (the bug fix
+in best-tracking semantics that surfaced during this investigation).
 
-**Proposed alternative**: Monitor training ELBO staleness. The ELBO =
-log_lik - KL is the objective we maximize. The KL term acts as a built-in
-regularizer (penalizes the posterior for deviating from the prior), so the
-training ELBO already balances fit vs. complexity. Overfitting in the
-neural-network sense is unlikely with M/N ~ 0.09.
+**Empirical result** (from the 4-config x 41-cell x 3-seed sweep at 64x64):
+- Best ELBO ES config (`intl_fixAmp` + `n_val_split=0` + patience=15):
+  test_r = **0.8375**, exp_var = **0.8987**, **37/41 cells > 0.8**,
+  mean iters = **37.5** (vs 80 for no ES).
+- Best no-ES baseline (`intl_fixAmp`, 80 iters): test_r = 0.8382,
+  exp_var = 0.8994, 37/41 cells > 0.8.
+- **Gap**: ELBO ES is within **0.0007 mean test_r** of the no-ES baseline
+  while saving ~53% compute.
+- val_ll ES (the original method): test_r = 0.8143-0.8185 across patience
+  values, gap of ~0.020 vs baseline.
 
-Stop when: |ELBO(t) - ELBO(t-k)| / |ELBO(t)| < threshold for several
-consecutive iterations.
+Full comparison in `experiments/2026-04-06_es_sweeps_64x64/README.md`.
 
-**Advantages**:
-- Uses all 3160 images for training (no holdout cost)
-- Not affected by A transients (ELBO averages over all N training points)
-- Mathematically principled for variational inference
-- Already logged in training curves
+### Why ELBO works where val metrics failed
 
-**Implementation status (in progress, 2026-04-06)**:
-- 'elbo' added as an `es_metric` option in `eigenspace_training.py` and
-  `gpy_training.py`. Triggers on relative improvement of `-train_loss`
-  (= ELBO), same patience logic as val_ll/val_r ES.
-- `n_val_split=0` support added to `run_single_mode.py`: when set, no
-  validation is carved and all 3160 images are used for training. Only
-  safe when ES doesn't need val (i.e., ELBO-based ES).
-- Sweep script: `investigations/optimization/run_sweep_elbo_es_64x64.py`
-  runs 4-config grid (interleave × fix_Amp) on 64x64, 41 cells, 3 seeds.
-  Uses ELBO ES with patience=15, n_val_split=0. Output:
-  `investigations/optimization/sweep_64x64_elbo_es_results.jsonl`.
+The interleaved damped Newton F-step causes A transients in the first
+~20 iterations: A jumps from 1e-4 to ~0.03 quickly, which makes
+predictions `exp(A*mu + lambda0)` swing dramatically. On the small
+validation set (250 images), val_log_lik / val_r / val_rho all become
+noisy because individual prediction swings dominate the per-image average.
+Patience-based ES on these noisy metrics triggers prematurely for ~27% of
+runs (best_iter at iteration 1, restored to a barely-trained model).
 
-**Note on A_init** (physical constraint, not tuning): interleaved configs
-MUST use `A_init=1e-4` because the E-step Newton gradient scales with A,
-and A=0.01 causes the first E-step to overshoot and hit the f_mean
-stability threshold (verified empirically: 19/19 E-step divergences on
-cell 8 with A_init=0.01 + interleave, test_r collapses to 0.64). Non-
-interleaved configs must use `A_init=0.01` because LBFGS can't bootstrap
-A from 1e-4 in the 10 iterations per EM cycle. See the sweep script
-docstring for the full explanation.
+The training ELBO is computed over all 3160 training points, so the per-image
+A-transient noise averages out. ELBO converges smoothly even during the
+A transient, allowing patience-based ES to wait for genuine plateaus.
 
-**Tolerance (min_delta_rel=0.001) is not empirically motivated for ELBO**:
-This value was inherited from the val_ll ES default. Post-hoc analysis of
-existing p30 sweep data shows only 36.8% of iterations have ELBO
-improvement > 0.1%, and the median per-iteration improvement is 0.04%.
-A tighter tolerance (e.g., 0.0001 = 0.01%) would let training run longer
-in the tail. The initial sweep uses 0.001 anyway — first results show it's
-matching or beating baseline, likely because the 8% extra training data
-(n_val_split=0) compensates. If future ELBO ES experiments underperform,
-revisit this tolerance first.
+Diagnostic data showing val_ll instability is in
+`experiments/2026-04-06_es_sweeps_64x64/diagnostic_no_es_results.jsonl`
+(7-cell diagnostic with full 80-iter curves, intl_fixAmp config).
 
-**FIXED (2026-04-06): ES best-tracking vs patience-threshold conflation**.
-The original ES code (inherited from val_ll ES) conflated two concerns into
-one rule: `best_es_value` was only updated when rel_improvement > min_delta_rel,
-which meant slow-but-steady metric improvements were not tracked, and
-restore_best reverted to the "last meaningful improvement" rather than the
-true argmax. Analysis of a 32-run aborted ELBO sweep showed 28/32 runs
-(87.5%) had `elbo_final > elbo_best` (restoration was throwing away
-~0.76 ELBO units per run on average).
+### Implementation summary
 
-This matches Keras's EarlyStopping design (which conflates the two for
-historical reasons), but NOT PyTorch Lightning's design (which uses
-separate ModelCheckpoint + EarlyStopping callbacks). For monotonic or
-near-monotonic metrics like ELBO, the Lightning-style separation is
-correct.
+- `eigenspace_training.py` and `gpy_training.py`: `es_metric ∈ {'elbo', 'none'}`.
+  When `'elbo'`, `es_value = -train_loss`. When `'none'`, ES is disabled.
+  Tracks best_es_value (true argmax) and patience_reference (last meaningful
+  improvement) as **two separate state variables** (matching PyTorch
+  Lightning's design).
+- `run_single_mode.py`: `n_val_split=0` path skips validation carving
+  entirely. All 3160 training images used.
+- `default_params.json`, `configs/canonical.yaml`, `configs/quick.yaml`:
+  defaults `es_metric=elbo`, `n_val_split=0`.
+- `tests/test_early_stopping.py`: 10 tests, all pass under new defaults.
+- Sweep script: `experiments/2026-04-06_es_sweeps_64x64/run_sweep_elbo_es_64x64.py`
+  (492 runs, ~7h sequential GPU).
 
-Fix: `eigenspace_training.py` and `gpy_training.py` now track two
-independent state variables:
-- `best_es_value`: updates on ANY improvement (tracks true argmax,
-  used by restore_best).
-- `patience_reference`: updates only on "meaningful" improvements
-  (> min_delta_rel cumulative since last reset). Used only for the
-  patience counter, so slow-steady growth can accumulate and still
-  trigger a reset.
+### Notes / loose ends
 
-Verified on cell 8 seed 1: best_iter now matches true argmax (8 vs 3
-with the buggy code), test_r improved from 0.8625 -> 0.8740 (+0.011).
-All 10 early stopping tests still pass.
+**A_init constraint (physical, not tuning)**: Interleaved configs MUST
+use `A_init=1e-4` (else the first E-step Newton overshoots — verified
+empirically with 19/19 E-step divergences on cell 8 when using A_init=0.01
+with interleave). Non-interleaved configs MUST use `A_init=0.01` (else LBFGS
+F-step can't bootstrap A in 10 iters). This is documented in the sweep
+script docstring.
 
-**Related follow-up investigation: why does ELBO sometimes decrease?**
-In 3/32 runs of the aborted sweep, ELBO actually DECREASED after its
-peak — violating the coordinate ascent theory. Likely culprits:
+**Tolerance (`min_delta_rel=0.001`)**: Inherited from val_ll ES, not
+empirically motivated for ELBO specifically. The 4-config sweep results
+show it's working well in practice (matches baseline within 0.001 test_r),
+but it might be improvable. Post-hoc analysis of existing curves shows
+~37% of iterations have rel improvement > 0.1%; tighter tolerance
+(e.g., 0.0001) might let training run longer in the tail. Revisit if
+future ELBO ES experiments underperform.
+
+**Sub-investigation: why does ELBO sometimes decrease?** In 3/32 runs
+of the buggy partial sweep, ELBO actually decreased after its peak,
+violating the coordinate ascent guarantee. The current best-tracking
+fix (Q33) handles this correctly via restoration, but the root cause
+deserves a separate investigation. Likely culprits:
 - Interleaved damped Newton's fixed alpha=0.25 not guaranteeing ELBO
   increase at every step
 - LBFGS M-step line search accepting numerically bad steps
 - Kernel hyperparameter changes triggering eigenspace recomputation
-
-The bug-fix above handles this correctly (restoration saves us), but
-investigating the root cause is a separate follow-up:
-- Identify WHICH optimization step (E/F/M) causes ELBO to decrease
-- Add adaptive damping in the interleaved F-step (reject steps that
-  decrease ELBO)
-- Tighten LBFGS convergence criteria in M-step
-
-**Verification approaches**:
-
-*The ELBO ES sweep itself* (the in-progress sweep above) is the primary
-verification: it runs the 4 configs with ELBO ES from scratch and
-compares directly with the baselines in
-`experiments/2026-04-06_es_sweeps_64x64/README.md`.
-
-*Post-hoc analysis of existing ES data*: The val_ll-based ES sweeps
-(`sweep_64x64_es_results.jsonl`, `sweep_64x64_es_p30_results.jsonl`)
-embed per-iteration `train_loss` (= -ELBO) and `val_log_lik` curves.
-You can post-process to check when ELBO staleness would have stopped —
-limited because runs were truncated at 33-50 iters.
-
-*Full post-hoc analysis*: Would require re-running the baseline sweep
-(no ES, 80 iters) with curve logging enabled, which wasn't available
-when the current baseline was generated. Not needed if the ELBO ES
-sweep above produces clean results.
-
-**Existing baseline data**: `experiments/2026-04-06_es_sweeps_64x64/` —
-see README for detailed file inventory and reference values table.
-Best no-ES baseline: `intl_fixAmp` at test_r=0.8382, 37/41 cells > 0.8.
-Current val_ll ES gap: ~0.02 test_r.
-
-**TODO once this investigation is complete**: If ELBO ES works well,
-the experiment system and quick-run system need to be updated to
-accommodate it:
-- `run_experiment.py` + `configs/canonical.yaml` + `configs/quick.yaml`:
-  the YAML schema needs to accept `es_metric: elbo` and `n_val_split: 0`.
-  Currently `es_metric` is in the yaml (val_ll default) but the full
-  elbo+no-val flow is untested via the experiment system.
-- `run_single_mode.py` quick-dev path: works already via the CLI
-  (`--es-metric elbo --n-val-split 0`), but the default in
-  `default_params.json` (`es_metric: val_ll`) should be revisited if
-  ELBO ES becomes the recommended default.
-- Validation: update `tests/test_early_stopping.py` to include ELBO ES
-  test cases.
+Future work: identify WHICH optimization step causes the decrease, add
+adaptive damping in the interleaved F-step (reject steps that decrease
+ELBO), or tighten LBFGS convergence criteria in M-step.
 
 ---
 
@@ -325,10 +273,12 @@ Compare test_r, convergence speed, and sigma_0 trajectory stability.
 ## Priority Order
 
 1. Remove Amp (simplifies everything downstream)
-2. ELBO convergence ES (eliminates validation set, enables using all data)
+2. ~~ELBO convergence ES~~ — **DONE (April 2026)**: chosen as the default
 3. E-step convergence check (easy compute savings)
 4. F-step comparison (informs default config choice)
 5. Redundant kernel computation (moderate compute savings)
 6. M-step iteration count (minor tuning)
-7. Adaptive damping (only if ELBO ES doesn't solve the transient problem)
+7. Adaptive damping / "why does ELBO sometimes decrease?" sub-investigation
+   (was originally a fallback for ELBO ES; now a separate question about
+   optimizer correctness — see Investigation 2 notes)
 8. sigma_0 parameterization (controlled comparison, low priority)

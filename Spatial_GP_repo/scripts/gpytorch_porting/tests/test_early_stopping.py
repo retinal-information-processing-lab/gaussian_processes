@@ -48,22 +48,24 @@ def _make_config(**overrides):
 # ===== Test functions =====
 
 def test_1_data_flow_integrity():
-    """Validation data never leaks into training set."""
+    """Validation carving works as documented for both n_val_split=0 and >0."""
     print("Test 1: Data flow integrity...", end=' ', flush=True)
 
-    config = _make_config(early_stop=False)
+    # Default since April 2026: n_val_split=0 (no carving). n_train=3160 uses
+    # all 3160 training images.
+    config = _make_config(n_train=3160, early_stop=False, n_val_split=0)
     result = run_single_config(config)
-
     assert result is not None, "run_single_config returned None"
-    # n_train should be <= 2910 (no val data in training)
-    assert result['n_train'] <= 2910, (
-        f"n_train={result['n_train']} > 2910: validation data leaked into training")
+    assert result['n_train'] == 3160, (
+        f"n_train={result['n_train']} != 3160 when requesting 3160 with n_val_split=0")
+    assert result['n_val'] == 0, f"n_val={result['n_val']} != 0 when n_val_split=0"
 
-    # With n_train=3160, effective should be capped to 2910
-    config2 = _make_config(n_train=3160, early_stop=False)
+    # Opt-in val carving (n_val_split=250) caps n_train to 2910.
+    config2 = _make_config(n_train=3160, early_stop=False, n_val_split=250)
     result2 = run_single_config(config2)
     assert result2['n_train'] == 2910, (
-        f"n_train={result2['n_train']} != 2910 when requesting 3160 (val not held out)")
+        f"n_train={result2['n_train']} != 2910 when requesting 3160 with n_val_split=250")
+    assert result2['n_val'] == 250, f"n_val={result2['n_val']} != 250 when n_val_split=250"
 
     print("PASS")
 
@@ -139,8 +141,18 @@ def test_3_elbo_decomposition():
 
 
 def test_4_patience_fires_correctly():
-    """With patience=3, stopping happens 3 iters after best validation."""
-    print("Test 4: Patience fires at correct iteration...", end=' ', flush=True)
+    """With patience=3, ES triggers and best_iter is the true argmax of ELBO.
+
+    Note: As of the April 2026 ES rewrite, `best_iter` tracks the true argmax
+    of the ES metric (independent of patience_reference, which counts plateau
+    iterations). The relationship `final_iter == best_iter + patience` no
+    longer holds in general — best_iter can update during a plateau while
+    patience_reference does not. This test instead verifies:
+      (1) ES triggered,
+      (2) best_iter is genuinely the argmax of the metric in the curves,
+      (3) final_iter respects min_iterations.
+    """
+    print("Test 4: Patience fires + best_iter is true argmax...", end=' ', flush=True)
 
     config = _make_config(
         n_iterations=50,
@@ -148,22 +160,31 @@ def test_4_patience_fires_correctly():
         patience=3,
         min_delta_rel=0.001,
         min_iterations=5,
-        restore_best=False,  # Don't restore, so we can check timing cleanly
+        restore_best=False,
     )
     result = run_single_config(config)
 
     assert result['stopped_early'], "Expected early stopping but it didn't trigger"
     best_iter = result['best_iteration']
     final_iter = result['n_iterations_run']
+    curves = result['curves']
 
-    # Final iteration should be best_iteration + patience
-    # (unless min_iterations pushed it later)
-    expected_stop = max(best_iter + 3, config['min_iterations'])
-    assert final_iter == expected_stop, (
-        f"final_iter={final_iter} != expected {expected_stop} "
-        f"(best_iter={best_iter}, patience=3, min_iter={config['min_iterations']})")
+    # ELBO ES tracks -train_loss as the metric; best_iter is its argmax.
+    elbo = [-l for l in curves['train_loss']]
+    true_argmax = max(range(len(elbo)), key=lambda i: elbo[i]) + 1  # 1-indexed
+    assert best_iter == true_argmax, (
+        f"best_iter={best_iter} != true argmax of ELBO={true_argmax}. "
+        f"This violates the new (April 2026) best-tracking semantics.")
 
-    print(f"PASS (best={best_iter}, stopped={final_iter})")
+    # min_iterations is a hard floor
+    assert final_iter >= config['min_iterations'], (
+        f"final_iter={final_iter} < min_iterations={config['min_iterations']}")
+
+    # Stop must happen after best (or at best, if best == final)
+    assert best_iter <= final_iter, (
+        f"best_iter={best_iter} > final_iter={final_iter} — should not happen")
+
+    print(f"PASS (best={best_iter}, stopped={final_iter}, true argmax verified)")
 
 
 def test_5_min_iterations_hard_floor():
@@ -291,14 +312,14 @@ def test_9_early_stop_false_still_logs():
         assert len(vals) == 11, (
             f"curves['{key}'] length {len(vals)} != 11")
 
-    # best_iteration should be the iter with max val_log_lik
-    val_lls = curves['val_log_lik']
-    if val_lls[0] is not None:  # has validation data
-        max_idx = max(range(len(val_lls)), key=lambda i: val_lls[i])
-        expected_best = max_idx + 1  # 1-indexed
-        assert result['best_iteration'] == expected_best, (
-            f"best_iteration={result['best_iteration']} != {expected_best} "
-            f"(iter with max val_ll)")
+    # best_iteration should be the iter with max ELBO (= -train_loss),
+    # since es_metric='elbo' is the default since April 2026.
+    elbo = [-l for l in curves['train_loss']]
+    max_idx = max(range(len(elbo)), key=lambda i: elbo[i])
+    expected_best = max_idx + 1  # 1-indexed
+    assert result['best_iteration'] == expected_best, (
+        f"best_iteration={result['best_iteration']} != {expected_best} "
+        f"(iter with max ELBO)")
 
     print(f"PASS (best_iter={result['best_iteration']})")
 
