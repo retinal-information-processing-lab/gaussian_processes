@@ -110,11 +110,30 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **Known bug**: `_validate_model_params()` in `run_single_mode.py` crashes for `vargp_direct` mode with `AttributeError: 'DirectVGPModel' object has no attribute 'covar_module'`. Training and evaluation complete fine — only the post-training parameter check fails. Needs fixing.
 
+**vargp_old IP selection confound**: `run_single_mode.py` line 672 has `if ip_selection == 'pivoted' and mode != 'vargp_old'` — vargp_old ALWAYS gets random IPs regardless of config. Use `ip_selection='random'` for fair mode comparisons.
+
 **Import side effects**: Importing from old codebase (1D/2D playgrounds, utility.py) can change global state (e.g., `torch.set_default_dtype`). Always guard with save/restore pattern. See `acquisition.py` for example.
 
 **Note on whitening**: GPyTorch's `VariationalStrategy` uses whitened parameterization internally. The deprecated `vargp_style` mode attempted to combine custom E-step with GPyTorch's whitened params, but this caused instability. `vargp_direct` bypasses GPyTorch's `VariationalDistribution` entirely, storing (m, V) directly in eigenspace.
 
+**sigma_0 parameterization**: Uses direct (identity) transform. Changed from exp transform during the paper gap investigation (closed a 0.004 gap). sigma_0 enters the kernel squared (v_x = x^T C x + sigma_0^2), so exp or log-space optimization could be more principled. A controlled re-evaluation (exp vs direct vs optimize sigma_0^2 directly) is planned in `investigations/optimization/possible_optimizations.md`.
+
 **STA edge artifact (108x108)**: For 6/41 cells (0, 5, 6, 15, 22, 39), the z-scored STA on 108x108 images picks a spurious peak at the image edge due to natural image correlation leakage. These cells have near-zero test_r on 108x108. Center crops (48x48, 64x64) avoid this because edge pixels are excluded from the STA computation. Investigation and diagnostics in `investigations/sta_edge_artifact/`.
+
+**PNAS datasets** (all have identical train/val/test splits, same images at different resolutions):
+
+| Dataset | Path | .npz train | .npz val | pool | test |
+|---------|------|------------|----------|------|------|
+| 108x108 | `datasets/PNAS_108x108_original.npz` | 2910 | 250 | 3160 | 30 |
+| 64x64 | `datasets/PNAS_64x64_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
+| 48x48 | `datasets/PNAS_48x48_center_crop_no_renorm.npz` | 2910 | 250 | 3160 | 30 |
+
+**Data loading (run_single_mode.py)**: The .npz files store a pre-baked train/val split, but that split has a **biased response distribution** (80% zeros in val vs 56% in train), so it's never used as-is. The code always combines `images_train` + `images_val` into a single pool of 3160 images, then optionally carves a validation subset via seeded random permutation:
+
+- **Default since April 2026: `n_val_split=0`** — no validation carving. All 3160 images are used for training. The chosen ELBO-based early stopping (see below) does not need validation data.
+- **Opt-in: `n_val_split=250`** — carves 250 validation images via seeded permutation, leaving 2910 for training. This populates the diagnostic `val_log_lik`/`val_r`/`val_rho` curves but is no longer the default. Useful only when you want those curves for post-hoc analysis.
+
+`n_train` is capped to the available training pool size after carving (or to 3160 when `n_val_split=0`).
 
 **Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
@@ -147,12 +166,48 @@ Use `--gradient-mode MODE` in CLI:
 
 ---
 
-### Training Modes
+## Early Stopping
+
+**Default: ELBO-based early stopping** (since April 2026). The `es_metric` parameter only accepts `'elbo'` (default) or `'none'` (disabled). val_ll/val_r/val_rho options were removed — see `investigations/optimization/possible_optimizations.md` Investigation 2 for the rationale, and `experiments/2026-04-06_es_sweeps_64x64/README.md` for the empirical comparison that drove this decision.
+
+**Why ELBO and not validation metrics**: We tested val_log_lik (val_ll), val Pearson r, and val Spearman rho as ES metrics against the training ELBO. All three validation-based metrics underperformed the no-ES baseline by ~0.02 mean test_r because the interleaved damped Newton F-step causes A transients in the first ~20 iterations, which produce noisy predictions on the small (250-image) validation set. The ELBO is computed over all 3160 training points so the per-image noise averages out. ELBO ES matches the no-ES baseline within 0.0007 test_r while saving ~53% compute. **Best documented config**: `intl_fixAmp` + ELBO ES p=15 → test_r=0.8375, exp_var=0.8987, 37/41 cells > 0.8.
+
+**Reproducibility**: The documented numbers above are reproduced by running `experiments/2026-04-06_es_sweeps_64x64/run_sweep_elbo_es_64x64.py` (4 configs x 41 cells x 3 seeds = 492 runs, ~7h sequential GPU). The script's output is `sweep_64x64_elbo_es_results.jsonl` in the same folder. Per-config statistics can be derived directly from that JSONL — no separate analysis script is needed.
+
+**Mechanism**: Patience-based stopping with separated best-tracking and patience-threshold logic (matches PyTorch Lightning's design, NOT Keras's conflated single callback — see DECISION_LOG Q33):
+
+1. At each outer EM iteration, compute `es_value = -train_loss` (= ELBO).
+2. **Best tracking** (for `restore_best`): if `es_value > best_es_value`, update `best_es_value` and save model state. Tracks the **true argmax** of ELBO across the run.
+3. **Patience counter** (for stopping decision): compute `rel_improvement = (es_value - patience_reference) / |patience_reference|`. If `rel_improvement > min_delta_rel`, update `patience_reference` and reset counter to 0. Otherwise increment counter. The patience reference is updated independently from `best_es_value` so slow-steady ELBO growth accumulates against a fixed reference and eventually triggers a reset.
+4. If counter reaches `patience` (15) AND `iteration >= min_iterations` (10), stop.
+5. On stop, restore model state from `best_iteration` (the true argmax).
+
+**Config** (`default_params.json` / YAML):
+```json
+"early_stopping": {
+    "enabled": true,
+    "patience": 15,
+    "min_delta_rel": 0.001,
+    "min_iterations": 10,
+    "restore_best": true,
+    "es_metric": "elbo"
+}
+```
+
+**Curve logging**: Every training run always logs per-iteration training curves in `result['curves']`: `train_loss` (= -ELBO), `train_log_lik`, `train_kl`, `train_r`, `A`, `lambda0`, `beta`, `rho`, `sigma_0`, `eps_0x`, `eps_0y`, `Amp`, `iter_time`. When `n_val_split > 0` (opt-in), also logs `val_log_lik`, `val_r`, `val_rho` for diagnostic purposes — these are NOT used for ES decisions. Curves are logged even with `early_stop=False`.
+
+**Tests**: `tests/test_early_stopping.py` (13 strict tests, ~25s on GPU). Covers ELBO ES behavior, `es_metric='none'` disables ES, invalid `es_metric` raises, `default_gpy` mode ELBO ES.
+
+**Historical**: For the val_ll noise findings that led to switching to ELBO ES, see `investigations/optimization/possible_optimizations.md` Investigation 2 (full diagnostic data + comparison sweeps), `.claude/DECISION_LOG.md` Q32 (decision rationale), and `experiments/2026-04-06_es_sweeps_64x64/README.md` (reference values for all 4 ES methods compared).
+
+---
+
+## Training Modes
 
 | Mode | Description |
 |------|-------------|
-| `vargp_old` | Original varGP implementation (reference baseline) |
-| `vargp_direct` | Eigenspace projection, exact match to varGP (use --float32) |
+| `vargp_old` | utils.py varGP() -- our approximation of the paper (NOT identical to paper's code, see Reference Code section) |
+| `vargp_direct` | Eigenspace reimplementation, same algorithm as vargp_old but with GPyTorch patterns |
 | `default_gpy` | Standard GPyTorch variational inference with LBFGS (use --float32)|
 
 **Note**: `vargp_style` mode has been deprecated and moved to `deprecated/` folder. Use `vargp_direct` or `default_gpy` instead.
@@ -242,7 +297,7 @@ Spatial_GP_repo/
 | `eigenspace_gradients.py` | Analytical gradient functions for eigenspace M-step |
 | `eigenspace_training.py` | train_eigenspace(), predict_eigenspace(), compute_elbo_eigenspace() |
 | `eigenspace_estep.py` | E-step: Newton update in eigenspace |
-| `eigenspace_fstep.py` | F-step: LBFGS for A with analytical lambda0 |
+| `eigenspace_fstep.py` | F-step: LBFGS for A with analytical lambda0; `damped_newton_update_A_lambda0()` for interleaved F-step |
 | `eigenspace_mstep.py` | M-step: LBFGS for kernel (autograd & analytical) |
 
 ### GPyTorch Implementation (default_gpy mode)
@@ -275,12 +330,19 @@ Spatial_GP_repo/
 | File | Purpose |
 |------|---------|
 | `rank1_update.py` | Rank-1 model extension for active learning (warm-start M+1) |
+| `run_active_loop.py` | Simulated active learning loop (vargp_direct only). Phase 1 via `run_single_config`, Phase 2 via rank-1 extend + retrain. Supports `argmax` and `random` strategies. |
 | `investigations/utility/workbench.py` | Shared setup + helpers for all utility scripts |
 | `investigations/utility/gradient_ascent.py` | Method A: LBFGS pixel-space gradient ascent |
 | `investigations/utility/subspace_optimization.py` | Methods B/C: PCA and C-eigenspace subspace optimization |
-| `investigations/diffusion/guided_reverse.py` | Method D: diffusion-guided reverse with utility guidance |
 | `investigations/structured_optimization/META_PLAN.md` | Session roadmap — read first |
 | `investigations/structured_optimization/EVALUATION_FRAMEWORK.md` | Metric definitions, confound analysis |
+
+### Plotting (`plotting/`)
+| File | Purpose |
+|------|---------|
+| `plotting/plot_training.py` | Per-cell training curve visualization (3 rows: log-lik, likelihood params, kernel params). Supports `--ylim-json` for fixed y-axis limits across cells. |
+| `plotting/visualize_experiment.py` | Summary visualizations for all-cells experiments (STA galleries, RF overlays, performance plots). |
+| `plotting/compute_param_ranges.py` | Compute y-axis ranges from sweep JSONL for consistent cross-cell plotting. Outputs `param_ranges_*.json`. |
 
 ### Archived data
 | Path | Purpose |
@@ -295,10 +357,9 @@ Spatial_GP_repo/
 ### Other Investigation Folders
 | Path | Purpose |
 |------|---------|
-| `investigations/utility/` | Also contains: `entropy_landscape.py`, `test_compute_H_MC.py`, `test_subspace_optimization.py` (52 tests), docs in `docs/` |
-| `investigations/diffusion/` | Also contains: `train.py`, `sample.py`, `diffusion_model.py`, reference docs |
-| `investigations/paper_gap/` | Paper vs implementation gap investigation (separate branch) |
-| `investigations/sta_edge_artifact/` | STA edge artifact diagnostics for 108x108 |
+| `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
+| `investigations/paper_gap/` | Paper performance gap investigation (RESOLVED). Gap A closed (Finding 19), Gap B explained by metric mismatch (Finding 21). 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md`, `METRICS_COMPARISON.md`. 64x64 ES sweep data moved to `experiments/2026-04-06_es_sweeps_64x64/`. |
+| `investigations/optimization/` | Training loop optimization investigations. See `possible_optimizations.md` for the full list (Amp removal, ELBO-based ES, E-step convergence, F-step comparison). |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`
@@ -333,6 +394,71 @@ The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Sinc
 - **Remaining hardcoded params**: kernel_bounds, lbfgs_tolerance/history_size, lambda_var_clamp, stability_threshold are documented in YAML with `HARDCODED` tags and file:line refs but NOT yet wired through code. Changing their YAML values has no effect.
 - **Canonical/quick YAML sync hook**: Non-experiment sections of `canonical.yaml` and `quick.yaml` should stay in sync. A Claude Code hook is planned but not yet implemented.
 - **`run_single_mode.py` early stopping defaults**: Now read from `default_params.json`.
+
+---
+
+## vargp_direct Mode
+
+**Key characteristics**:
+- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
+- K_tilde_b is DIAGONAL (trivial inverse)
+- Matches vargp_old E-step formulas exactly
+- **IMPORTANT**: Use `--float32` for performance
+
+**Usage**:
+```bash
+python run_single_mode.py --mode vargp_direct
+```
+
+**Performance** (M=50, 50 iterations):
+| Mode | Dtype | Total Time | Test r |
+|------|-------|------------|--------|
+| vargp_old | float32 | 6.3s | 0.84 |
+| vargp_direct | float32 | 5.6s | 0.84 |
+| vargp_direct | float64 | 18.9s | 0.81 |
+
+See `EIGENSPACE_REFERENCE.md` for full implementation details.
+
+---
+
+## Reference Code
+
+### Three Codebases (IMPORTANT DISTINCTION)
+
+There are three distinct implementations. They are NOT equivalent:
+
+1. **Paper's actual code** (Goldin et al. 2023 GitHub notebook): `Variational GP-Single change-GPU-ver2.0.ipynb`. We cannot run it but extracted its structure. Key unique features: F-step interleaved inside E-step (damped Newton), no Amp parameter, no eigenspace projection, scipy L-BFGS-B, float64.
+
+2. **vargp_old** (`utils.py:varGP()`): Our approximation of the paper's approach. Has modifications NOT in the paper: Amp parameter, eigenspace projection. Does NOT interleave F-step (hardcoded `for i_estep in range(1)` loop). Uses torch LBFGS, float32.
+
+3. **vargp_direct** (`eigenspace_*.py`): GPyTorch-based reimplementation. Proven equivalent to vargp_old within 0.002 avg adj_r2 when confounds are controlled (Finding 19). New features: `interleave_fstep` (damped Newton F-step inside E-step), `fix_Amp` (freeze Amp at 1.0).
+
+See `investigations/paper_gap/INVESTIGATION_LOG.md` Finding 18 for the full three-way comparison table.
+
+**Paper init** (verified parameterization mapping, both use [-1,1] coordinates):
+- beta_nat=0.0452, rho_nat=0.0821, A=1e-4, lambda0=-1, sigma_0=1.0, NO Amp
+- Paper: `0.5*exp(theta[4])` in locality exponent = our `exp(raw_m2log2beta)` = `1/(4*beta_nat^2)`
+
+**Metric note**: Paper reports "adjusted R^2 > 0.8 for 36/41 cells" but likely computed the unsquared metric (mean_accuracy / reliability, our `explained_var`). Our best config matches 36/41 on that metric. See `investigations/paper_gap/METRICS_COMPARISON.md` and Finding 21.
+
+### Original varGP (utils.py) -- vargp_old
+| Function | Location | Purpose |
+|----------|----------|---------|
+| `varGP()` | utils.py:5291 | Main training function |
+| `Estep()` | utils.py:4215 | Newton update for (m, V) |
+| `localker()` | utils.py | Compute C matrix |
+| `acosker()` | utils.py | Arc-cosine kernel |
+| `lambda_moments()` | utils.py | Posterior mean/var |
+
+### Codebase Structure
+```
+Spatial_GP_repo/
+├── utils.py           - Main GP: varGP(), Estep(), acosker()
+├── utility.py         - Active learning (OUT OF SCOPE)
+├── kernels/kernels.py - Clean kernel implementations
+├── notebooks/PNAS_paper_sorted_data.npz - Dataset
+└── scripts/gpytorch_porting/  - THIS PROJECT
+```
 
 ---
 
@@ -401,3 +527,7 @@ During session wrap-up, Claude MUST check for conflicting information between do
 
 *Last updated: April 2026*
 *Restructured for evaluation framework focus. GP porting complete.*
+*Paper gap investigation: RESOLVED (April 2026). Gap A closed, Gap B explained by metric mismatch. See investigations/paper_gap/INVESTIGATION_LOG.md.*
+*Optimization phase Investigation 2 (ELBO ES): DONE (April 2026). ELBO is the chosen ES default; val_ll/val_r/val_rho removed. See `experiments/2026-04-06_es_sweeps_64x64/README.md` for the empirical comparison and `.claude/DECISION_LOG.md` Q32-Q33 for the decision.*
+*Other optimization phase investigations remain open: see `investigations/optimization/possible_optimizations.md`.*
+*Merged pietro/workingbranch into pietro/utility_optimization (April 2026) to pick up curves + ELBO ES infrastructure for active loop work.*

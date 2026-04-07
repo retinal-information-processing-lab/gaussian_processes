@@ -404,7 +404,7 @@ def test_vjp_correctness():
     loss_auto.backward()
 
     # Get raw gradients from autograd
-    # Note: sigma_0 and Amp use Positive() constraint (softplus), so we need to account for this
+    # Note: sigma_0 uses exp constraint, Amp uses softplus constraint
     # when comparing with VJP which operates on constrained values directly
     raw_sigma0 = kernel_auto.raw_sigma_0.clone().detach()
     raw_Amp = kernel_auto.raw_Amp.clone().detach()
@@ -421,7 +421,7 @@ def test_vjp_correctness():
     # VJP implementation - we pass constrained sigma_0 and Amp directly
     # The VJP computes dL/d(sigma_0), not dL/d(raw_sigma_0)
     # To compare: dL/d(raw_sigma_0) = dL/d(sigma_0) * d(sigma_0)/d(raw_sigma_0)
-    # For softplus: d(softplus(x))/dx = sigmoid(x)
+    # For exp: d(exp(x))/dx = exp(x) = sigma_0
     sigma_0 = kernel_auto.sigma_0.clone().detach().requires_grad_(True)
     Amp = kernel_auto.Amp.clone().detach().requires_grad_(True)
     eps_0x = kernel_auto.eps_0x.clone().detach().requires_grad_(True)
@@ -438,10 +438,10 @@ def test_vjp_correctness():
     loss_vjp.backward()
 
     # Convert VJP gradients to raw gradients for comparison
-    # d(sigma_0)/d(raw_sigma_0) = sigmoid(raw_sigma_0) for softplus constraint
-    sigmoid_raw_sigma0 = torch.sigmoid(raw_sigma0).item()
+    # sigma_0: identity transform -> d(raw)/d(raw) = 1.0 (no conversion needed)
+    # Amp: softplus transform -> d(softplus(raw))/d(raw) = sigmoid(raw)
     sigmoid_raw_Amp = torch.sigmoid(raw_Amp).item()
-    vjp_grad_raw_sigma0 = sigma_0.grad.item() * sigmoid_raw_sigma0 if sigma_0.grad is not None else 0
+    vjp_grad_raw_sigma0 = sigma_0.grad.item() if sigma_0.grad is not None else 0
     vjp_grad_raw_Amp = Amp.grad.item() * sigmoid_raw_Amp if Amp.grad is not None else 0
 
     vjp_grads = {
@@ -454,7 +454,7 @@ def test_vjp_correctness():
     }
 
     print(f"\nK matrix max diff: {(K_auto - K_vjp).abs().max().item():.2e}")
-    print(f"Softplus constraint derivatives: sigmoid(raw_sigma0) = {sigmoid_raw_sigma0:.4f}, sigmoid(raw_Amp) = {sigmoid_raw_Amp:.4f}")
+    print(f"Constraint derivatives: sigma_0=identity (factor 1.0), sigmoid(raw_Amp)={sigmoid_raw_Amp:.4f} (softplus)")
     print("\nGradient comparison (autograd vs VJP):")
 
     all_pass = True

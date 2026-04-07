@@ -14,7 +14,7 @@
     "Amp": 1.0,
     "beta": 0.1,
     "rho": 0.1,
-    "_comment_rf_init": "ground_truth | sta | center",
+    "_comment_rf_init": "sta = RF center from natural images STA (smoothed argmax). ground_truth = from white noise/checkerboard ellipse fits (datasets/rf_centers_ground_truth.npz). center = image center (0,0).",
     "rf_init": "ground_truth",
     "eps_0x": 0.0,
     "eps_0y": 0.0,
@@ -41,10 +41,13 @@
   },
 
   "early_stopping": {
+    "_comment_es_metric": "Only 'elbo' or 'none' are valid since April 2026. val_ll/val_r/val_rho were removed — see investigations/optimization/possible_optimizations.md Investigation 2 and DECISION_LOG Q32 for the rationale.",
     "enabled": true,
-    "window": 20,
-    "threshold": 0.005,
-    "min_iterations": 10
+    "patience": 15,
+    "min_delta_rel": 0.001,
+    "min_iterations": 10,
+    "restore_best": true,
+    "es_metric": "elbo"
   },
 
   "model": {
@@ -54,12 +57,15 @@
     "eigval_tol": 0.0001,
     "gpy_lbfgs_max_iter": 20,
     "lambda_var_clamp": 1e-6,
-    "stability_threshold": 1000
+    "f_mean_max_threshold": 500,
+    "f_mean_mean_threshold": 100
   },
 
   "data": {
+    "_comment_n_val_split": "0 = no validation carving (default since April 2026; ELBO ES does not need val data). Set >0 to enable diagnostic val_log_lik / val_r / val_rho curves. Those curves are NOT used for ES, which remains ELBO-based.",
     "path": "datasets/PNAS_108x108_original.npz",
     "n_train": 500,
+    "n_val_split": 0,
     "n_px_side": null,
     "cellid": 8,
     "ntilde": 100,

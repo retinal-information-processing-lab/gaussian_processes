@@ -242,11 +242,13 @@ dKL[key] = 0.5*trace(B) - 0.5*trace(c@B) - 0.5*b.T@(B@m)
 
 ### Parameter Transform Correction
 
-GPyTorch uses softplus for sigma_0 and Amp:
+sigma_0 uses exp transform, Amp uses softplus:
 ```python
-# param = softplus(raw_param)
-# Gradient chain: d/d(raw) = d/d(param) * sigmoid(raw)
-kernel.raw_sigma_0.grad = dL['sigma_0'] * torch.sigmoid(kernel.raw_sigma_0)
+# sigma_0: exp transform (raw = log(value))
+# d/d(raw) = d/d(sigma_0) * exp(raw) = d/d(sigma_0) * sigma_0
+kernel.raw_sigma_0.grad = dL['sigma_0'] * kernel.sigma_0
+# Amp: softplus transform (raw = inv_softplus(value))
+# d/d(raw) = d/d(Amp) * sigmoid(raw)
 kernel.raw_Amp.grad = dL['Amp'] * torch.sigmoid(kernel.raw_Amp)
 ```
 

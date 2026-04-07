@@ -24,7 +24,7 @@ from eigenspace_gradients import (
 
 
 def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
-                              stability_threshold: float = 1000,
+                              f_mean_mean_threshold: float = 100,
                               lambda_var_clamp: float = 1e-6):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
@@ -39,7 +39,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         r: Spike counts, shape (N,)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
-        stability_threshold: Max mean firing rate before step rejection
+        f_mean_mean_threshold: Max f_mean.mean() before step rejection
         lambda_var_clamp: Minimum posterior variance clamp
     """
     kernel = model.kernel
@@ -50,8 +50,8 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
     if n_mstep == 0:
         return
 
-    # Get kernel parameters
-    kernel_params = list(kernel.parameters())
+    # Get kernel parameters (exclude frozen params to avoid LBFGS Hessian corruption)
+    kernel_params = [p for p in kernel.parameters() if p.requires_grad]
 
     optimizer = torch.optim.LBFGS(
         kernel_params,
@@ -102,7 +102,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         lambda0 = likelihood.lambda0.squeeze()
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
-        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+        if f_mean.mean().item() > f_mean_mean_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
@@ -146,7 +146,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
 
 
 def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
-                                stability_threshold: float = 1000,
+                                f_mean_mean_threshold: float = 100,
                                 lambda_var_clamp: float = 1e-6):
     """M-step for eigenspace mode with analytical gradients (matching vargp_old).
 
@@ -160,7 +160,7 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
         r: Spike counts, shape (N,)
         n_mstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
-        stability_threshold: Max mean firing rate before step rejection
+        f_mean_mean_threshold: Max f_mean.mean() before step rejection
         lambda_var_clamp: Minimum posterior variance clamp
 
     Reference:
@@ -268,7 +268,7 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
         # ===== Guardrail 2: Firing rate check =====
-        if f_mean.mean().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
+        if f_mean.mean().item() > f_mean_mean_threshold or torch.any(torch.isnan(f_mean)):
             return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
 
         # ===== 5. Compute loss =====
@@ -316,9 +316,9 @@ def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
             warnings.warn(f"M-step: {nan_grad_count} gradients contain NaN/Inf")
 
         # ===== 7. Set parameter gradients =====
-        # Apply softplus transform correction for sigma_0 and Amp
-        # softplus'(x) = sigmoid(x)
-        kernel.raw_sigma_0.grad = dL['sigma_0'] * torch.sigmoid(kernel.raw_sigma_0)
+        # sigma_0: exp transform -> d(exp(raw))/d(raw) = exp(raw) = sigma_0
+        kernel.raw_sigma_0.grad = dL['sigma_0'] * kernel.sigma_0
+        # Amp: softplus transform -> d(softplus(raw))/d(raw) = sigmoid(raw)
         kernel.raw_Amp.grad = dL['Amp'] * torch.sigmoid(kernel.raw_Amp)
 
         # Direct gradients for other parameters

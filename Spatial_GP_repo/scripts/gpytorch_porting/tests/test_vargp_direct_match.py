@@ -105,9 +105,10 @@ def test_softplus_chain_rule(verbose=False):
     not the full ELBO. Uses finite differences as ground truth.
 
     d(K.sum())/d(raw_sigma_0) should equal:
-        d(K.sum())/d(sigma_0) * sigmoid(raw_sigma_0)
+        d(K.sum())/d(sigma_0) * exp(raw_sigma_0) = d(K.sum())/d(sigma_0) * sigma_0
+    For Amp (softplus): d(K.sum())/d(raw_Amp) = d(K.sum())/d(Amp) * sigmoid(raw_Amp)
     """
-    print("\n=== Test 1: Softplus Chain Rule Verification ===")
+    print("\n=== Test 1: Constraint Chain Rule Verification ===")
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     dtype = torch.float64
@@ -149,9 +150,14 @@ def test_softplus_chain_rule(verbose=False):
             print(f"    SKIP: {param_name} not in dK")
             continue
 
-        # Apply chain rule: dK/d(raw) = dK/d(param) * sigmoid(raw)
-        sigmoid_raw = torch.sigmoid(raw_val)
-        analytical_draw = analytical_dparam * sigmoid_raw
+        # Apply chain rule: depends on constraint type
+        # sigma_0 uses exp: d(exp(raw))/d(raw) = exp(raw) = sigma_0
+        # Amp uses softplus: d(softplus(raw))/d(raw) = sigmoid(raw)
+        if param_name == 'sigma_0':
+            chain_factor = transformed_val  # exp(raw) = sigma_0
+        else:  # Amp
+            chain_factor = torch.sigmoid(raw_val.squeeze())
+        analytical_draw = analytical_dparam * chain_factor
 
         # Compute finite difference gradient w.r.t. raw parameter
         with torch.no_grad():
@@ -231,15 +237,15 @@ def test_eigenspace_projection_gradients(verbose=False):
     all_passed = True
 
     params_to_test = [
-        ('sigma_0', 'raw_sigma_0', True),  # (name in dK, raw_name, uses_softplus)
-        ('Amp', 'raw_Amp', True),
-        ('eps_0x', 'eps_0x', False),
-        ('eps_0y', 'eps_0y', False),
-        ('raw_m2log2beta', 'raw_m2log2beta', False),
-        ('raw_mlog2rho2', 'raw_mlog2rho2', False),
+        ('sigma_0', 'raw_sigma_0', 'identity'),  # (name in dK, raw_name, transform)
+        ('Amp', 'raw_Amp', 'softplus'),
+        ('eps_0x', 'eps_0x', 'none'),
+        ('eps_0y', 'eps_0y', 'none'),
+        ('raw_m2log2beta', 'raw_m2log2beta', 'none'),
+        ('raw_mlog2rho2', 'raw_mlog2rho2', 'none'),
     ]
 
-    for param_name, raw_name, uses_softplus in params_to_test:
+    for param_name, raw_name, transform in params_to_test:
         print(f"\n  Testing {param_name}:")
 
         # Get raw parameter
@@ -264,10 +270,11 @@ def test_eigenspace_projection_gradients(verbose=False):
         # Analytical gradient of K_tilde_b.sum() w.r.t. param (not raw)
         analytical_dparam = dK_tilde_b[param_name].sum()
 
-        # If uses softplus, apply chain rule
-        if uses_softplus:
-            sigmoid_raw = torch.sigmoid(raw_val)
-            analytical_draw = analytical_dparam * sigmoid_raw
+        # Apply chain rule based on transform type
+        if transform == 'softplus':
+            analytical_draw = analytical_dparam * torch.sigmoid(raw_val)
+        elif transform == 'identity':
+            analytical_draw = analytical_dparam  # chain rule factor = 1.0
         else:
             analytical_draw = analytical_dparam
 
