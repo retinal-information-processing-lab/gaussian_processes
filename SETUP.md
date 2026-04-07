@@ -57,11 +57,11 @@ From the repo root (`gaussian_processes/`):
 
 ```bash
 pip install "gpytorch>=1.14,<1.16" "linear-operator>=0.5,<0.7"
-pip install -e ./torchlambertw
+pip install "torchlambertw @ git+https://github.com/gmgeorg/torchlambertw.git"
 pip install pytest  # optional, for running tests
 ```
 
-`torchlambertw` is a vendored copy of a small library (Lambert W function for PyTorch). The `-e` flag installs it in editable mode from the local directory. pip will automatically fetch its build dependency (`poetry-core`) during install.
+`torchlambertw` is a small library (Lambert W function for PyTorch) not published on PyPI. It's installed directly from the author's GitHub repo. It's only loaded by the `vargp_old` reference mode — the `vargp_direct` and `default_gpy` modes don't touch it — but it's cheap to install and keeps all modes working.
 
 ## 4. Transfer data files
 
@@ -127,10 +127,9 @@ python run_single_mode.py --mode default_gpy --seed 123
 
 ### Import errors for `torchlambertw`
 
-This is a vendored package in the repo root. It must be pip-installed in editable mode:
+Not on PyPI — install from GitHub:
 ```bash
-cd gaussian_processes   # repo root
-pip install -e ./torchlambertw
+pip install "torchlambertw @ git+https://github.com/gmgeorg/torchlambertw.git"
 ```
 
 ### `ModuleNotFoundError` for project modules (eigenspace_model, kernels, etc.)
@@ -153,7 +152,7 @@ python run_single_mode.py ...
 | scipy | (latest) | Used for image filtering (gaussian_filter) in investigations |
 | matplotlib | (latest) | Plotting results and diagnostics |
 | pyyaml | (latest) | YAML config parsing for experiment system |
-| torchlambertw | local (0.0.4) | Lambert W function, used by parent codebase (utils.py) |
+| torchlambertw | from GitHub | Lambert W function. Only loaded by `vargp_old` reference mode via parent `utils.py`. Not on PyPI. |
 | pytest | (latest) | Optional, for running test suite |
 
 ## Notes
