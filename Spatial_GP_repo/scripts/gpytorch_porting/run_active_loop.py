@@ -250,7 +250,8 @@ def run_active_loop(config, al_config, output_path):
         'early_stop': al_config['phase2_early_stop'],
         'print_every': al_config['phase2_print_every'],
         'verbose': al_config['phase2_verbose'],
-        'stability_threshold': config['stability_threshold'],
+        'f_mean_max_threshold': config['f_mean_max_threshold'],
+        'f_mean_mean_threshold': config['f_mean_mean_threshold'],
     }
 
     # --- Load data ---
