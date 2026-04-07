@@ -1,95 +1,132 @@
 # ES Sweeps: 64x64 — Early Stopping Investigation Results
 
-**Date**: 2026-04-05 / 2026-04-06 (and earlier 64x64 baselines from March 2026)
+**Date**: 2026-04-05 / 2026-04-06 / 2026-04-07
 **Mode**: vargp_direct
 **Image resolution**: 64x64 (center crop, no renorm)
 **Dataset**: `datasets/PNAS_64x64_center_crop_no_renorm.npz`
-**Origin**: Moved from `investigations/paper_gap/` after the paper gap
-investigation was declared RESOLVED. Preserved here as reference data.
 
 **Branch**: `pietro/investigate-paper-gap`
 
+## TL;DR
+
+After comparing four early stopping methods on 64x64 PNAS data:
+
+- **ELBO-based ES is the chosen default** (April 2026). It matches the
+  no-ES baseline within 0.0007 test_r while saving ~53% compute.
+- val_ll-based ES (and val_r/val_rho variants) underperform the no-ES
+  baseline by ~0.02 test_r because of A-transient noise on the held-out
+  validation set.
+- All ELBO ES runs use **the full 3160 training images** (n_val_split=0
+  — no validation carving needed) which contributes part of the
+  improvement vs val_ll ES.
+- Sweep script: `run_sweep_elbo_es_64x64.py` (in this folder).
+- Bug fix during the investigation: ES best-tracking was conflated with
+  the patience threshold in the original code; fixed to track the true
+  argmax of the ES metric. See SESSION_LOG.md and DECISION_LOG.md Q33.
+
 ---
 
-## Reference values for future ES comparisons
+## Reference values for ES method comparison
 
-**For the next Claude session**: these are the numbers to compare against
-when testing new early stopping methods (e.g., ELBO-based ES from
-`investigations/optimization/possible_optimizations.md` Investigation 2).
+All values computed over 3 seeds x 41 cells, M=250, vargp_direct,
+ground-truth RF init, n_estep=50, n_mstep=20, n_iterations=80 max.
+`cells>0.8` takes the max explained_var across the 3 seeds for each cell,
+then counts cells above 0.8.
 
-All values computed over 3 seeds x 41 cells. Best-seed cells>0.8 takes the
-max across 3 seeds per cell, then counts cells above 0.8.
+| Config | Interleave | Amp | A_init | ES | Patience | n_train | mean test_r | mean exp_var | cells>0.8 ev | mean iters | Notes |
+|--------|-----------|-----|--------|-----|----------|---------|-------------|--------------|--------------|-----------|-------|
+| A01_free_no_intl | no | free | 0.01 | off | -- | 2910 | 0.8272 | 0.8880 | 35/41 | 80 | baseline |
+| intl_fixAmp | yes | 1.0 | 1e-4 | off | -- | 2910 | **0.8382** | **0.8994** | **37/41** | 80 | best baseline |
+| intl_freeAmp | yes | free | 1e-4 | off | -- | 2910 | 0.8354 | 0.8965 | 37/41 | 80 | baseline |
+| A01_free_no_intl | no | free | 0.01 | val_ll | 15 | 2910 | 0.8100 | 0.8694 | 35/41 | 37.3 | val_ll p=15 |
+| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 15 | 2910 | 0.8143 | 0.8735 | 36/41 | 33.1 | val_ll p=15 |
+| intl_freeAmp | yes | free | 1e-4 | val_ll | 15 | 2910 | 0.8128 | 0.8719 | 35/41 | 30.6 | val_ll p=15 |
+| A01_free_no_intl | no | free | 0.01 | val_ll | 30 | 2910 | 0.8096 | 0.8690 | 35/41 | 52.9 | val_ll p=30 |
+| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 30 | 2910 | 0.8185 | 0.8780 | 36/41 | 50.7 | val_ll p=30 |
+| intl_freeAmp | yes | free | 1e-4 | val_ll | 30 | 2910 | 0.8154 | 0.8748 | 35/41 | 49.2 | val_ll p=30 |
+| no_intl_fixAmp | no | 1.0 | 1e-4 | val_ll | 30 | 2910 | 0.7542 | 0.8055 | 31/41 | 63.8 | A_init too small for LBFGS |
+| no_intl_freeAmp | no | free | 0.01 | elbo | 15 | **3160** | 0.8274 | 0.8883 | 35/41 | 58.6 | ELBO ES |
+| no_intl_fixAmp | no | 1.0 | 0.01 | elbo | 15 | **3160** | 0.8307 | 0.8913 | 34/41 | 74.7 | ELBO ES |
+| intl_freeAmp | yes | free | 1e-4 | elbo | 15 | **3160** | 0.8357 | 0.8968 | 37/41 | 35.2 | ELBO ES |
+| **intl_fixAmp** | **yes** | **1.0** | **1e-4** | **elbo** | **15** | **3160** | **0.8375** | **0.8987** | **37/41** | **37.5** | **best ES (chosen default)** |
 
-| Config | Interleave | Amp | A_init | ES | Patience | mean test_r | mean exp_var | cells>0.8 ev | mean iters | Notes |
-|--------|-----------|-----|--------|-----|----------|-------------|--------------|--------------|-----------|-------|
-| A01_free_no_intl | no | free | 0.01 | off | -- | 0.8272 | 0.8880 | 35/41 | 80 | baseline |
-| intl_fixAmp | yes | 1.0 | 1e-4 | off | -- | **0.8382** | **0.8994** | **37/41** | 80 | **best baseline** |
-| intl_freeAmp | yes | free | 1e-4 | off | -- | 0.8354 | 0.8965 | 37/41 | 80 | baseline |
-| A01_free_no_intl | no | free | 0.01 | val_ll | 15 | 0.8100 | 0.8694 | 35/41 | 37.3 | p=15 |
-| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 15 | 0.8143 | 0.8735 | 36/41 | 33.1 | p=15 |
-| intl_freeAmp | yes | free | 1e-4 | val_ll | 15 | 0.8128 | 0.8719 | 35/41 | 30.6 | p=15 |
-| A01_free_no_intl | no | free | 0.01 | val_ll | 30 | 0.8096 | 0.8690 | 35/41 | 52.9 | p=30 |
-| intl_fixAmp | yes | 1.0 | 1e-4 | val_ll | 30 | **0.8185** | **0.8780** | 36/41 | 50.7 | p=30, best ES |
-| intl_freeAmp | yes | free | 1e-4 | val_ll | 30 | 0.8154 | 0.8748 | 35/41 | 49.2 | p=30 |
-| no_intl_fixAmp | no | 1.0 | 1e-4 | val_ll | 30 | 0.7542 | 0.8055 | 31/41 | 63.8 | p=30, A_init too small for LBFGS |
+### Key findings
 
-**Key reference**: the best no-ES baseline is `intl_fixAmp` at **test_r=0.8382,
-exp_var=0.8994, 37/41 cells > 0.8**. Any new ES method should aim to match or
-beat this while saving compute.
-
-**Gap cost of current val_ll ES** (best-to-best): 0.02 test_r, 1-2 cells>0.8.
+1. **ELBO ES (intl_fixAmp) closes the gap to the no-ES baseline**:
+   ELBO ES = 0.8375 vs baseline 0.8382 -> only -0.0007 test_r. The val_ll
+   ES gap was -0.020 to -0.024.
+2. **ELBO ES preserves cells>0.8**: 37/41 same as the no-ES baseline.
+   val_ll ES dropped to 35-36/41.
+3. **Compute savings**: ~53% (37.5 iters vs 80).
+4. **The 4th grid cell (no_intl + fix_Amp)** is now testable. With
+   A_init=0.01 (instead of the failed 1e-4 used for val_ll p=30) ELBO ES
+   gives test_r=0.8307 — clearly better than 0.7542.
+5. **Why ELBO ES works where val_ll ES failed**: ELBO is averaged over
+   all 3160 training points so it absorbs the A-transient noise from the
+   interleaved damped Newton F-step. val_ll on 250 held-out images is
+   too noisy in early iterations. See
+   `investigations/optimization/possible_optimizations.md` Investigation 2
+   for the full reasoning + diagnostic data that led to this conclusion.
 
 ### File → Sweep mapping
 
-| JSONL file | Sweep | Runs |
-|-----------|-------|------|
-| `sweep_64x64_results_ntrain3160.jsonl` | Sweep 1 (baseline no-ES) | 369 |
-| `sweep_64x64_es_results.jsonl` | Sweep 2 (ES p=15, fixed) | 369 |
-| `sweep_64x64_es_results_STALE_n2660.jsonl` | Sweep 3 (STALE, n=2660 bug) | 369 |
-| `sweep_64x64_es_p30_results.jsonl` | Sweep 4 (ES p=30, 4 configs) | 492 |
-| `diagnostic_no_es_results.jsonl` | Diagnostic interleaved | 7 |
-| `diagnostic_no_es_no_interleaved_results.jsonl` | Diagnostic non-interleaved | 7 |
-| `sweep_64x64_results.jsonl` | Old stale (n=2910 bug), superseded | 246 |
+| JSONL file | Sweep | n_runs | n_train | ES |
+|-----------|-------|--------|---------|-----|
+| `sweep_64x64_results_ntrain3160.jsonl` | Baseline (no ES) | 369 | 2910 | off |
+| `sweep_64x64_es_results.jsonl` | val_ll ES p=15 (FIXED) | 369 | 2910 | val_ll |
+| `sweep_64x64_es_results_STALE_n2660.jsonl` | val_ll ES p=15 (n=2660 bug) | 369 | 2660 | val_ll |
+| `sweep_64x64_es_p30_results.jsonl` | val_ll ES p=30 (4 configs) | 492 | 2910 | val_ll |
+| `sweep_64x64_elbo_es_results.jsonl` | **ELBO ES p=15 (chosen default)** | **492** | **3160** | **elbo** |
+| `sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl` | ELBO ES with the conflated best-tracking bug (kept as evidence for the fix; do not use for analysis) | 32 | 3160 | elbo |
+| `diagnostic_no_es_results.jsonl` | Diagnostic interleaved | 7 | 2910 | off |
+| `diagnostic_no_es_no_interleaved_results.jsonl` | Diagnostic non-interleaved | 7 | 2910 | off |
+| `sweep_64x64_results.jsonl` | Old stale (n=2910 bug), superseded | 246 | 2910 | off |
+
+### Sweep scripts in this folder
+
+| Script | Sweep produced |
+|--------|----------------|
+| `run_sweep_64x64.py` | `sweep_64x64_results.jsonl` (stale baseline) |
+| `run_sweep_64x64_es.py` | `sweep_64x64_es_results.jsonl` (val_ll p=15) |
+| `run_sweep_64x64_es_p30.py` | `sweep_64x64_es_p30_results.jsonl` (val_ll p=30, 4 configs) |
+| `run_sweep_elbo_es_64x64.py` | `sweep_64x64_elbo_es_results.jsonl` (**ELBO ES**) |
 
 ---
 
-## How to use this data for new ES comparison
+## Curve availability per file
 
-1. Read `investigations/optimization/possible_optimizations.md` for context
-   on the proposed ELBO ES (Investigation 2).
+| File | has per-iter curves? | n_iters stored |
+|------|---------------------|----------------|
+| `sweep_64x64_results.jsonl` (old stale) | NO | — |
+| `sweep_64x64_results_ntrain3160.jsonl` (baseline no-ES) | **NO** | — |
+| `sweep_64x64_es_results.jsonl` (val_ll p=15 fixed) | yes | 33-37 (stopped) |
+| `sweep_64x64_es_results_STALE_n2660.jsonl` | yes | ~36 (stopped) |
+| `sweep_64x64_es_p30_results.jsonl` (val_ll p=30) | yes | 30-54 (stopped) |
+| `sweep_64x64_elbo_es_results.jsonl` (**ELBO ES**) | yes | 35-75 (stopped) |
+| `sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl` | yes | 32 (stopped, partial run) |
+| `diagnostic_no_es_results.jsonl` | yes | 79 (full) |
+| `diagnostic_no_es_no_interleaved_results.jsonl` | yes | 79 (full) |
 
-2. **Important: curve availability is uneven**:
+The baseline sweeps predate the curve logging feature. The ES sweeps embed
+`train_loss` (= -ELBO), `train_log_lik`, `train_kl`, `train_r`, and (when
+n_val_split > 0) `val_log_lik`, `val_r`, `val_rho` curves per record. The
+ELBO ES sweep was run with `n_val_split=0` so all val_* curves are None
+(but train_* curves are populated). The diagnostics have full 80-iteration
+curves but only cover 7 cells.
 
-   | File | has per-iter curves? | n_iters stored |
-   |------|---------------------|----------------|
-   | `sweep_64x64_results.jsonl` (old stale) | NO | — |
-   | `sweep_64x64_results_ntrain3160.jsonl` (baseline no-ES) | **NO** | — |
-   | `sweep_64x64_es_results.jsonl` (ES p=15 fixed) | yes | 33-37 (stopped) |
-   | `sweep_64x64_es_results_STALE_n2660.jsonl` | yes | ~36 (stopped) |
-   | `sweep_64x64_es_p30_results.jsonl` | yes | 30-54 (stopped) |
-   | `diagnostic_no_es_results.jsonl` | yes | 79 (full) |
-   | `diagnostic_no_es_no_interleaved_results.jsonl` | yes | 79 (full) |
+## What this comparison is for
 
-   The baseline sweeps predate the curve logging feature. The ES sweeps
-   embed `train_loss` (= -ELBO), `val_log_lik`, and (p=30 only) `train_r`,
-   `val_r` curves per record, but the runs were truncated by ES so the
-   curves only extend to the stopping iteration. The diagnostics have full
-   80-iteration curves but only cover 7 cells.
+This folder is the empirical reference for the **chosen early stopping
+mechanism** decision (ELBO ES). Future ES experiments should compare
+against `sweep_64x64_elbo_es_results.jsonl` (the new default) and the
+no-ES baseline `sweep_64x64_results_ntrain3160.jsonl`.
 
-3. **Post-hoc ELBO ES simulation has limits**: You can analyze ELBO
-   staleness on the existing ES curves, but only up to the iteration where
-   val_ll-based ES triggered. To compare ELBO ES against the full
-   80-iteration baseline, you need to re-run the baseline sweep with
-   curve logging enabled (now available in `eigenspace_training.py`).
-
-4. **For new runs**: use the sweep scripts here (`run_sweep_64x64.py` for
-   baselines, `run_sweep_64x64_es.py` or `run_sweep_64x64_es_p30.py` for
-   ES variants) as templates. Same configs, change the ES logic in
-   `eigenspace_training.py` to implement ELBO staleness.
-
-5. **For the results table**: use the `/present-results` skill with the
-   reference values table at the top of this README as the baseline. Add
-   new rows for each new ES variant.
+For background on why val_ll/val_r/val_rho ES was rejected, see:
+- `investigations/optimization/possible_optimizations.md` Investigation 2
+  (the diagnostic data showing val_ll noise from the A transient)
+- `.claude/DECISION_LOG.md` Q32 (the decision rationale)
+- The `diagnostic_no_es_*.jsonl` files in this folder (the original
+  diagnostic data showing val_ll instability for early-stopper cells)
 
 ---
 
