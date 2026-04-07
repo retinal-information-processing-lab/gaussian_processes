@@ -453,7 +453,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
         'restore_best': es['restore_best'],
-        'es_metric': es.get('es_metric', 'val_ll'),
+        'es_metric': es.get('es_metric', 'elbo'),
 
         # Optimizer details
         'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
@@ -479,7 +479,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Data
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
-        'n_val_split': dat.get('n_val_split', 250),
+        'n_val_split': dat.get('n_val_split', 0),
         'use_cache': dat['use_cache'],
 
         # Runtime options (not in YAML, defaults for experiment runs)
@@ -815,7 +815,7 @@ def run_single_config(config):
     min_delta_rel = config['min_delta_rel']
     min_iterations = config['min_iterations']
     restore_best = config['restore_best']
-    es_metric = config.get('es_metric', 'val_ll')
+    es_metric = config.get('es_metric', 'elbo')
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
     lambda_var_clamp = config['lambda_var_clamp']
@@ -1386,10 +1386,13 @@ def main():
     parser.add_argument('--no-restore-best', action='store_true',
                         help='Do not restore best-validation model on early stop')
     parser.add_argument('--es-metric', type=str, default=es_defaults['es_metric'],
-                        choices=['val_ll', 'val_r', 'val_rho', 'elbo'],
-                        help=f'Metric for early stopping: val_ll, val_r, val_rho (all use '
-                             f'validation data) or elbo (uses training loss, no val needed). '
-                             f'Default: {es_defaults["es_metric"]}')
+                        choices=['elbo', 'none'],
+                        help=f"Metric for early stopping: 'elbo' uses training "
+                             f"loss directly (no val data needed; the chosen "
+                             f"default since April 2026), or 'none' to disable "
+                             f"ES entirely. val_ll/val_r/val_rho were removed — "
+                             f"see investigations/optimization/possible_optimizations.md "
+                             f"Investigation 2. Default: {es_defaults['es_metric']}")
 
     # Inducing point selection
     ind_defaults = defaults['inducing']

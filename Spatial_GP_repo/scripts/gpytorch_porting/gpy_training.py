@@ -333,21 +333,21 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                 print(f"Iter {i+1}/{n_iterations}, Loss: {current_loss:.2f}{val_str}{val_r_str}{val_rho_str}, "
                       f"ELL: {ell_val:.2f}, KL: {kl_val:.2f}")
 
-            # Patience-based early stopping on selected metric
-            # Metrics: val_ll, val_r, val_rho need validation data.
-            #          elbo uses training loss directly (no val data needed).
+            # Patience-based early stopping on ELBO (only supported metric).
+            # See eigenspace_training.py for rationale and references.
             es_value = None
             if es_metric == 'elbo':
                 es_value = -current_loss  # ELBO = -train_loss (higher is better)
-            elif has_val:
-                if es_metric == 'val_ll':
-                    es_value = val_ll
-                elif es_metric == 'val_r':
-                    es_value = val_r
-                elif es_metric == 'val_rho':
-                    es_value = val_rho
-                else:
-                    raise ValueError(f"Unknown es_metric: {es_metric}")
+            elif es_metric == 'none':
+                es_value = None  # ES disabled
+            else:
+                raise ValueError(
+                    f"Unknown es_metric: {es_metric!r}. "
+                    f"Valid choices are 'elbo' (default) or 'none' (disabled). "
+                    f"val_ll/val_r/val_rho were removed in April 2026 — see "
+                    f"investigations/optimization/possible_optimizations.md "
+                    f"Investigation 2 for the rationale."
+                )
 
             if es_value is not None:
                 # See eigenspace_training.py for the full rationale.

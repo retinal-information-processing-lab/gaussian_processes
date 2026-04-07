@@ -451,21 +451,26 @@ def train_eigenspace(
                   f"A={A.item():.4f}, lambda0={lambda0.item():.4f}, "
                   f"n_b={len(model.state.eigvals_b)}")
 
-        # ===== Patience-based early stopping on selected metric =====
-        # Metrics: val_ll, val_r, val_rho need validation data.
-        #          elbo uses training loss directly (no val data needed).
+        # ===== Patience-based early stopping on ELBO =====
+        # As of April 2026, ELBO is the only supported ES metric.
+        # See investigations/optimization/possible_optimizations.md
+        # Investigation 2 for the rationale (val_ll/val_r/val_rho noise from
+        # the A transient under the interleaved F-step), and the reference
+        # values in experiments/2026-04-06_es_sweeps_64x64/README.md.
+        # Use es_metric='none' to disable early stopping entirely.
         es_value = None
         if es_metric == 'elbo':
             es_value = -loss  # ELBO = -train_loss (higher is better)
-        elif has_val:
-            if es_metric == 'val_ll':
-                es_value = val_ll
-            elif es_metric == 'val_r':
-                es_value = val_r
-            elif es_metric == 'val_rho':
-                es_value = val_rho
-            else:
-                raise ValueError(f"Unknown es_metric: {es_metric}")
+        elif es_metric == 'none':
+            es_value = None  # ES disabled
+        else:
+            raise ValueError(
+                f"Unknown es_metric: {es_metric!r}. "
+                f"Valid choices are 'elbo' (default) or 'none' (disabled). "
+                f"val_ll/val_r/val_rho were removed in April 2026 — see "
+                f"investigations/optimization/possible_optimizations.md "
+                f"Investigation 2 for the rationale."
+            )
 
         if es_value is not None:
             # Two separate concerns tracked independently (matches PyTorch

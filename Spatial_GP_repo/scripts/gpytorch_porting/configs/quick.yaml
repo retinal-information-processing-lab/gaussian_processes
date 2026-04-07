@@ -12,7 +12,7 @@ experiment:
   modes: [vargp_direct]
   inducing_points: [50]
   n_train: [500]
-  n_val_split: 250             # val carved from combined train+val pool
+  n_val_split: 0               # 0 = no val carving (default since April 2026; ELBO ES doesn't need val data). Set >0 to enable val_log_lik/val_r/val_rho diagnostic curves.
   seeds: [123]
   cells: [8]
   n_iterations: 50
@@ -67,13 +67,15 @@ optimizer:
   gpy_lbfgs_max_iter: 20           # WIRED via gpy_training.py lbfgs_max_iter param
 
 # ===== EARLY STOPPING =====
+# As of April 2026, ELBO is the only supported es_metric (or 'none' to disable).
+# See investigations/optimization/possible_optimizations.md Investigation 2.
 early_stopping:
   enabled: true
   patience: 15
   min_delta_rel: 0.001
   min_iterations: 10
   restore_best: true
-  es_metric: val_ll                  # val_ll, val_r (Pearson), or val_rho (Spearman)
+  es_metric: elbo                    # 'elbo' (default) or 'none' (disabled)
 
 # ===== NUMERICAL =====
 numerical:
