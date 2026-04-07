@@ -4,9 +4,6 @@
 #   conda env create -f environment.yml        # create from scratch
 #   conda env update -f environment.yml        # update existing env
 #
-# IMPORTANT: Run from the repo root (gaussian_processes/) so that the
-# relative path to torchlambertw/ resolves correctly.
-#
 # PyTorch CUDA: This file does NOT hardcode a CUDA index URL because the
 # correct URL depends on your hardware:
 #   - x86_64 + CUDA 12.1:  --extra-index-url https://download.pytorch.org/whl/cu121
@@ -33,7 +30,7 @@ dependencies:
     - torch>=2.5,<2.7
     - gpytorch>=1.14,<1.16
     - linear-operator>=0.5,<0.7
-    # --- Vendored dependency (local, not on PyPI) ---
-    - -e ./torchlambertw
-    # --- Investigation/optional deps ---
+    # --- Not on PyPI, install from GitHub ---
+    - torchlambertw @ git+https://github.com/gmgeorg/torchlambertw.git
+    # --- Optional ---
     - pytest
