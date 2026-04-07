@@ -98,9 +98,7 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 - **Default since April 2026: `n_val_split=0`** — no validation carving. All 3160 images are used for training. The chosen ELBO-based early stopping (see below) does not need validation data.
 - **Opt-in: `n_val_split=250`** — carves 250 validation images via seeded permutation, leaving 2910 for training. This populates the diagnostic `val_log_lik`/`val_r`/`val_rho` curves but is no longer the default. Useful only when you want those curves for post-hoc analysis.
 
-`n_train` is capped to the available training pool size after carving.
-
-Use `n_train=3160` in configs — it gets capped to 2910 after carving. The `n_val_split` parameter (default 250) controls the carve size.
+`n_train` is capped to the available training pool size after carving (or to 3160 when `n_val_split=0`).
 
 **Ground-truth RF centers**: `datasets/rf_centers_ground_truth.npz` contains RF centers for all 41 cells from white noise/checkerboard ellipse fits. Source: `ellipses` array in `datasets/samuele_data/lsta_ref.npz`. Coordinate mapping: 72x72 grid → 108x108 via scale factor 1.5. File contains pixel coords (72, 108, 64, 48) and normalized [-1,1] coords (108, 64, 48). Use `rf['norm_64'][cell_id]` for eps_0x/eps_0y initialization. See `datasets/README.md`.
 
@@ -161,7 +159,7 @@ Use `--gradient-mode MODE` in CLI:
 
 **Curve logging**: Every training run always logs per-iteration training curves in `result['curves']`: `train_loss` (= -ELBO), `train_log_lik`, `train_kl`, `train_r`, `A`, `lambda0`, `beta`, `rho`, `sigma_0`, `eps_0x`, `eps_0y`, `Amp`, `iter_time`. When `n_val_split > 0` (opt-in), also logs `val_log_lik`, `val_r`, `val_rho` for diagnostic purposes — these are NOT used for ES decisions. Curves are logged even with `early_stop=False`.
 
-**Tests**: `tests/test_early_stopping.py` (10 strict tests, ~22s on GPU).
+**Tests**: `tests/test_early_stopping.py` (13 strict tests, ~25s on GPU). Covers ELBO ES behavior, `es_metric='none'` disables ES, invalid `es_metric` raises, `default_gpy` mode ELBO ES.
 
 **Historical**: For the val_ll noise findings that led to switching to ELBO ES, see `investigations/optimization/possible_optimizations.md` Investigation 2 (full diagnostic data + comparison sweeps), `.claude/DECISION_LOG.md` Q32 (decision rationale), and `experiments/2026-04-06_es_sweeps_64x64/README.md` (reference values for all 4 ES methods compared).
 

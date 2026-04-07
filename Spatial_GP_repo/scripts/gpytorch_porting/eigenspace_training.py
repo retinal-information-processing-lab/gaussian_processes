@@ -87,7 +87,7 @@ def compute_elbo_eigenspace(
 
 
 def _compute_val_metrics(model, X_val, r_val):
-    """Compute validation log-likelihood and Pearson r in a single forward pass.
+    """Compute validation log-likelihood, Pearson r, and Spearman rho in one pass.
 
     Val log-lik formula (same as ELBO's log-lik term on held-out data):
       val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
@@ -182,7 +182,7 @@ def train_eigenspace(
     interleave_fstep: bool = False,
     X_val: torch.Tensor = None,
     r_val: torch.Tensor = None,
-    es_metric: str = 'val_ll',
+    es_metric: str = 'elbo',
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -219,7 +219,7 @@ def train_eigenspace(
             'time_mstep_total': Total M-step time
             'stopped_early': Whether training stopped early
             'final_iteration': Final iteration number
-            'best_iteration': Iteration with best validation log-lik
+            'best_iteration': Iteration with the highest ES metric value (ELBO by default)
             'curves': Dict of per-iteration curves (train_loss, val_log_lik, params, etc.)
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
     """
@@ -544,9 +544,11 @@ def train_eigenspace(
 
         time_mstep_total += time.time() - start_mstep
 
-    # If no early stop, best_iteration = iteration with max val_ll
-    if not stopped_early and has_val and best_iteration == 0:
-        # Edge case: no iteration beat the initial -inf (shouldn't happen)
+    # Fallback: if ES was disabled (es_metric='none') or never tracked a
+    # best iteration, report the final iteration as "best" so downstream
+    # code has a sensible value. Covers the es_metric='none' + n_val_split=0
+    # combo where best_iteration would otherwise stay at 0.
+    if not stopped_early and best_iteration == 0:
         best_iteration = final_iteration
 
     result = {

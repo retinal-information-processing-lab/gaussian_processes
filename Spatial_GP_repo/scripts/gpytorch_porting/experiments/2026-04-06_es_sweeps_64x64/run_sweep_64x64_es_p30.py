@@ -195,7 +195,7 @@ def main():
             tt = result.get('train_time', 0)
             se = result.get('stopped_early', False)
             ni = result.get('n_iterations_run', '?')
-            bi = result.get('best_iter', '?')
+            bi = result.get('best_iteration', '?')
             print(f"  [{done}/{len(jobs)}] {cfg['name']} cell={cell_id} seed={seed} "
                   f"test_r={tr:.4f} iters={ni} best={bi} es={se} time={tt:.1f}s", flush=True)
             append_result(result)

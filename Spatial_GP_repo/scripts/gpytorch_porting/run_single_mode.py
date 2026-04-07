@@ -1010,7 +1010,7 @@ def run_single_config(config):
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
         if best_iteration > 0:
-            print(f"  Best validation iteration: {best_iteration}")
+            print(f"  Best ES iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {model.likelihood.A.item():.4f}")
@@ -1108,7 +1108,7 @@ def run_single_config(config):
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
         if best_iteration > 0:
-            print(f"  Best validation iteration: {best_iteration}")
+            print(f"  Best ES iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {likelihood.A.item():.4f}")

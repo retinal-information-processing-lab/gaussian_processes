@@ -354,6 +354,92 @@ def test_10_reproducibility():
     print("PASS")
 
 
+def test_11_es_metric_none_disables_es():
+    """es_metric='none' disables ES and best_iteration falls back to final_iteration.
+
+    Covers the es_metric='none' + n_val_split=0 combination where
+    best_iteration would otherwise stay at 0 without the post-loop fallback.
+    """
+    print("Test 11: es_metric='none' disables ES...", end=' ', flush=True)
+
+    config = _make_config(
+        n_iterations=8,
+        early_stop=True,   # intentionally True — es_metric='none' should override
+        es_metric='none',
+        n_val_split=0,     # no val data
+    )
+    result = run_single_config(config)
+
+    assert not result['stopped_early'], (
+        f"stopped_early={result['stopped_early']} — should be False with es_metric='none'")
+    # Loop is for iteration in range(1, n_iterations), so final = n_iterations - 1
+    assert result['n_iterations_run'] == 7, (
+        f"n_iterations_run={result['n_iterations_run']} != 7 (n_iterations=8, es disabled)")
+    # best_iteration fallback should set it to final_iteration, not 0
+    assert result['best_iteration'] == 7, (
+        f"best_iteration={result['best_iteration']} != 7 — fallback not firing for es_metric='none'")
+
+    print(f"PASS (n_iters={result['n_iterations_run']}, best_iter={result['best_iteration']})")
+
+
+def test_12_invalid_es_metric_raises():
+    """An unknown es_metric value raises ValueError during training."""
+    print("Test 12: Invalid es_metric raises ValueError...", end=' ', flush=True)
+
+    config = _make_config(
+        n_iterations=5,
+        early_stop=True,
+        es_metric='val_ll',  # removed in April 2026, should error
+    )
+
+    try:
+        run_single_config(config)
+    except (ValueError, RuntimeError) as e:
+        # The ValueError propagates up through run_single_config
+        msg = str(e)
+        assert 'val_ll' in msg or 'Unknown es_metric' in msg or 'Valid choices' in msg, (
+            f"Error message doesn't mention val_ll or valid choices: {msg}")
+        print(f"PASS (raised: {type(e).__name__})")
+        return
+
+    raise AssertionError("Expected ValueError for es_metric='val_ll' but run_single_config succeeded")
+
+
+def test_13_default_gpy_elbo_es():
+    """default_gpy mode also supports ELBO ES.
+
+    Parallel code path in gpy_training.py — this catches regressions where
+    changes to eigenspace_training.py ES logic aren't mirrored in gpy_training.py.
+    """
+    print("Test 13: default_gpy ELBO ES...", end=' ', flush=True)
+
+    config = _make_config(
+        mode='default_gpy',
+        n_iterations=12,
+        early_stop=True,
+        patience=5,
+        min_delta_rel=0.001,
+        min_iterations=5,
+        es_metric='elbo',
+        n_val_split=0,
+    )
+    result = run_single_config(config)
+
+    assert result is not None, "run_single_config returned None"
+    assert 'curves' in result and result['curves'], "curves dict should exist"
+    curves = result['curves']
+    # train_loss (= -ELBO) must be populated
+    assert len(curves['train_loss']) > 0, "train_loss curve is empty"
+    # best_iteration should be the argmax of -train_loss
+    elbo = [-l for l in curves['train_loss']]
+    expected_best = max(range(len(elbo)), key=lambda i: elbo[i]) + 1
+    assert result['best_iteration'] == expected_best, (
+        f"best_iteration={result['best_iteration']} != argmax of ELBO={expected_best}")
+
+    print(f"PASS (best_iter={result['best_iteration']}, "
+          f"stopped={result['stopped_early']}, final={result['n_iterations_run']})")
+
+
 # ===== Main =====
 if __name__ == '__main__':
     tests = [
@@ -367,10 +453,13 @@ if __name__ == '__main__':
         test_8_curve_lengths,
         test_9_early_stop_false_still_logs,
         test_10_reproducibility,
+        test_11_es_metric_none_disables_es,
+        test_12_invalid_es_metric_raises,
+        test_13_default_gpy_elbo_es,
     ]
 
     print(f"\n{'='*60}")
-    print("Early Stopping Tests (10 tests, real PNAS data)")
+    print("Early Stopping Tests (13 tests, real PNAS data)")
     print(f"{'='*60}\n")
 
     start = time.time()

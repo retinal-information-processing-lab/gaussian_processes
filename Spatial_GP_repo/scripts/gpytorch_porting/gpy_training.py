@@ -23,16 +23,17 @@ from metrics import compute_pearson_correlation, compute_spearman_correlation
 def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
                               jitter=1e-4, cholesky_max_tries=3,
                               lambda_var_clamp=1e-6):
-    """Compute validation log-likelihood and Pearson r for default_gpy mode.
+    """Compute validation log-likelihood, Pearson r, and Spearman rho for default_gpy mode.
 
     Val log-lik formula (same as ELBO's log-lik term on held-out data):
       val_ll = sum(r_val * (A*mu + lambda0) - f_mean)
     where f_mean = exp(A*mu + 0.5*A^2*var + lambda0)
 
     Val Pearson r: corr(f_pred, r_val) — same metric as test_r.
+    Val Spearman rho: rank correlation between f_pred and r_val.
 
     Returns:
-        Tuple (val_ll, val_r)
+        Tuple (val_ll, val_r, val_rho)
     """
     model.eval()
     likelihood.eval()
@@ -84,7 +85,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                        f_mean_max_threshold=500, f_mean_mean_threshold=100,
                        lambda_var_clamp=1e-6,
                        X_val=None, r_val=None,
-                       es_metric='val_ll'):
+                       es_metric='elbo'):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
@@ -118,7 +119,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
             'losses': list of training losses
             'stopped_early': bool
             'final_iteration': int
-            'best_iteration': int (iteration with best validation log-lik)
+            'best_iteration': int (iteration with highest ES metric value, ELBO by default)
             'curves': dict of per-iteration curves
     """
     if device is None:
@@ -390,8 +391,11 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                               f"{', restored best' if restore_best else ''}")
                     break
 
-    # If no early stop, best_iteration = iteration with max val_ll
-    if not stopped_early and has_val and best_iteration == 0:
+    # Fallback: if ES was disabled (es_metric='none') or never tracked a
+    # best iteration, report the final iteration as "best". Covers the
+    # es_metric='none' + n_val_split=0 combo where best_iteration would
+    # otherwise stay at 0.
+    if not stopped_early and best_iteration == 0:
         best_iteration = final_iteration
 
     return {
