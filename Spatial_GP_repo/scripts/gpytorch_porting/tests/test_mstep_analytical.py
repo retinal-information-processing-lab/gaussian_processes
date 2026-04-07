@@ -213,8 +213,8 @@ def test_dK_gradients(verbose=False):
         # Get gradients
         if param_name == 'sigma_0':
             autograd_grad = kernel.raw_sigma_0.grad
-            # Correct for softplus
-            analytical_grad = dK_analytical['sigma_0'].sum() * torch.sigmoid(kernel.raw_sigma_0)
+            # Correct for exp: d(exp(raw))/d(raw) = exp(raw) = sigma_0
+            analytical_grad = dK_analytical['sigma_0'].sum() * kernel.sigma_0
         elif param_name == 'Amp':
             autograd_grad = kernel.raw_Amp.grad
             analytical_grad = dK_analytical['Amp'].sum() * torch.sigmoid(kernel.raw_Amp)
@@ -296,7 +296,7 @@ def test_dKvec_gradients(verbose=False):
         # Get gradients
         if param_name == 'sigma_0':
             autograd_grad = kernel.raw_sigma_0.grad
-            analytical_grad = dKvec_analytical['sigma_0'].sum() * torch.sigmoid(kernel.raw_sigma_0)
+            analytical_grad = dKvec_analytical['sigma_0'].sum() * kernel.sigma_0
         elif param_name == 'Amp':
             autograd_grad = kernel.raw_Amp.grad
             analytical_grad = dKvec_analytical['Amp'].sum() * torch.sigmoid(kernel.raw_Amp)

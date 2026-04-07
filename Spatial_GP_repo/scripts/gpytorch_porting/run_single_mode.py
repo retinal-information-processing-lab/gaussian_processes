@@ -76,7 +76,13 @@ def get_git_commit():
 
 
 def load_pnas_data(data_path, dtype=torch.float64):
-    """Load PNAS dataset."""
+    """Load PNAS dataset.
+
+    WARNING: The 'X_val'/'R_val' split in the .npz has a biased response
+    distribution (80% zeros vs 56% in training). Callers should NOT use it
+    directly for validation. run_single_config() combines train+val into a
+    single pool and carves a fresh validation set via seeded permutation.
+    """
     data = np.load(data_path)
     return {
         'X_train': torch.tensor(data['images_train'], dtype=dtype),
@@ -304,8 +310,9 @@ def build_config_from_defaults(**overrides):
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'eps_0x': None,                   # None = compute from STA
-        'eps_0y': None,                   # (default_params.json has 0.0 as placeholder)
+        'rf_init': ker['rf_init'],         # 'sta' | 'ground_truth' | 'center'
+        'eps_0x': None,                   # None = determined by rf_init
+        'eps_0y': None,                   # explicit value overrides rf_init
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
         'bound_rf_center': ker['bound_rf_center'],
@@ -325,9 +332,11 @@ def build_config_from_defaults(**overrides):
 
         # --- Early stopping (from early_stopping section) ---
         'early_stop': es['enabled'],
-        'stop_window': es['window'],
-        'stop_thresh': es['threshold'],
+        'patience': es['patience'],
+        'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
+        'restore_best': es['restore_best'],
+        'es_metric': es['es_metric'],
 
         # --- Numerical (from model section) ---
         'jitter': mod['jitter'],
@@ -335,11 +344,13 @@ def build_config_from_defaults(**overrides):
         'eigval_tol': mod['eigval_tol'],
         'gpy_lbfgs_max_iter': mod['gpy_lbfgs_max_iter'],
         'lambda_var_clamp': mod['lambda_var_clamp'],
-        'stability_threshold': mod['stability_threshold'],
+        'f_mean_max_threshold': mod['f_mean_max_threshold'],
+        'f_mean_mean_threshold': mod['f_mean_mean_threshold'],
 
         # --- Data (from data section) ---
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
+        'n_val_split': dat['n_val_split'],
         'use_cache': mod['use_cache'],
 
         # --- Inducing point selection (from inducing section) ---
@@ -416,7 +427,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'eps_0x': ker['eps_0x'],  # null in YAML = None = compute from STA
+        'rf_init': ker.get('rf_init', 'ground_truth'),
+        'eps_0x': ker['eps_0x'],  # null in YAML = None = determined by rf_init
         'eps_0y': ker['eps_0y'],
         'gradient_mode': ker['gradient_mode'],
         'use_mask': ker['use_mask'],
@@ -437,9 +449,11 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
 
         # Early stopping
         'early_stop': es['enabled'],
-        'stop_window': es['window'],
-        'stop_thresh': es['threshold'],
+        'patience': es['patience'],
+        'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
+        'restore_best': es['restore_best'],
+        'es_metric': es.get('es_metric', 'elbo'),
 
         # Optimizer details
         'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
@@ -449,7 +463,8 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'cholesky_max_tries': num['cholesky_max_tries'],
         'eigval_tol': num['eigval_tol'],
         'lambda_var_clamp': num['lambda_var_clamp'],
-        'stability_threshold': num['stability_threshold'],
+        'f_mean_max_threshold': num['f_mean_max_threshold'],
+        'f_mean_mean_threshold': num['f_mean_mean_threshold'],
 
         # Inducing point selection
         'ip_selection': ind['selection_method'],
@@ -464,6 +479,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Data
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
+        'n_val_split': dat.get('n_val_split', 0),
         'use_cache': dat['use_cache'],
 
         # Runtime options (not in YAML, defaults for experiment runs)
@@ -604,58 +620,118 @@ def run_single_config(config):
     config['n_px_side'] = n_px_side  # update config for downstream code
     print(f"Image dimensions: {n_px_side}x{n_px_side} ({n_px_side**2} pixels)")
 
-    # Combine train + val, flatten
-    X = torch.cat([data['X_train'], data['X_val']], dim=0)
-    R = torch.cat([data['R_train'], data['R_val']], dim=0)
-    X = X.reshape(X.shape[0], -1).to(device)  # (N, n_px_side^2)
-    R = R.to(device)
+    # Combine train + val into single pool, flatten.
+    # WARNING: The .npz 'images_val' split has a biased response distribution
+    # (80% zeros vs 56% in training). It is NOT used as-is for validation.
+    # Instead, we shuffle it into the training pool and (optionally) carve a
+    # fresh validation set via seeded random permutation below.
+    # NOTE: When n_val_split > 0, validation is ALWAYS carved (even when
+    # early_stop=False) to keep consistent splits across runs. Set
+    # n_val_split=0 to disable validation entirely and use all 3160 images
+    # for training (e.g., with es_metric='elbo' which doesn't need val data).
+    X_pool = torch.cat([data['X_train'], data['X_val']], dim=0)
+    R_pool = torch.cat([data['R_train'], data['R_val']], dim=0)
+    X_pool = X_pool.reshape(X_pool.shape[0], -1).to(device)  # (3160, n_px_side^2)
+    R_pool = R_pool.to(device)
+    n_pool = X_pool.shape[0]
+
+    n_val_split = config['n_val_split']
+    if n_val_split > 0:
+        # Carve validation from combined pool using isolated seeded generator
+        gen = torch.Generator(device=device)
+        gen.manual_seed(seed)
+        perm = torch.randperm(n_pool, generator=gen, device=device)
+        val_indices = perm[:n_val_split]
+        train_pool_indices = perm[n_val_split:]
+
+        X = X_pool[train_pool_indices]     # (n_pool - n_val_split, n_px^2)
+        R = R_pool[train_pool_indices]
+        X_val = X_pool[val_indices]        # (n_val_split, n_px^2)
+        R_val = R_pool[val_indices]
+
+        print(f"Data: {n_pool} total, {n_val_split} val (carved, seed={seed}), "
+              f"{X.shape[0]} training pool")
+    else:
+        # No validation carving: use the entire pool for training.
+        # Only safe when ES doesn't need validation data (e.g., es_metric='elbo').
+        X = X_pool
+        R = R_pool
+        X_val = None
+        R_val = None
+        print(f"Data: {n_pool} total, 0 val (no carving), "
+              f"{X.shape[0]} training pool")
 
     X_test = data['X_test'].reshape(data['X_test'].shape[0], -1).to(device)
     R_test = data['R_test'].to(device)
 
     # Select cell
     r = R[:, cell]
+    r_val = R_val[:, cell] if R_val is not None else None
     r_test = R_test[:, :, cell]  # (30 repeats, 30 images)
 
     # =========================================================================
-    # Step 1: Compute RF center from STA
+    # Step 1: Determine RF center
     # =========================================================================
-    # STA is computed BEFORE training set selection because pivoted Cholesky
-    # needs the kernel (which needs the RF center). n_samples_sta controls
-    # how many random images are used — mimics a real experiment with limited
-    # initial data. null = use all available data (idealized).
+    # RF center is determined by rf_init config key:
+    #   'sta'          - smoothed argmax of natural images STA
+    #   'ground_truth' - from white noise/checkerboard ellipse fits
+    #   'center'       - image center (0, 0)
+    # Explicit eps_0x/eps_0y values override rf_init.
     from utils import compute_rf_center_from_sta
 
     ip_selection = config['ip_selection']
     n_samples_sta = config['n_samples_sta']
+    rf_init = config.get('rf_init', 'ground_truth')
 
+    # Always compute STA for visualization (needed for plot_fit)
     if n_samples_sta is not None:
         n_sta = min(n_samples_sta, X.shape[0])
         indices_sta = torch.randperm(X.shape[0], device=device)[:n_sta]
         X_sta = X[indices_sta]
         r_sta = r[indices_sta]
-        print(f"\nSTA computed from {n_sta} random images (n_samples_sta={n_samples_sta})")
     else:
         X_sta = X
         r_sta = r
-        print(f"\nSTA computed from all {X.shape[0]} available images")
 
     eps_0x_sta, eps_0y_sta = compute_rf_center_from_sta(
         X_sta, r_sta, n_px_side, zscore=True
     )
-
-    # Compute STA image for visualization
     STA_init_2d = _compute_sta_2d(X_sta, r_sta, n_px_side)
 
-    # Use STA-computed center if config has None (null in YAML)
-    eps_0x = config['eps_0x'] if config['eps_0x'] is not None else eps_0x_sta
-    eps_0y = config['eps_0y'] if config['eps_0y'] is not None else eps_0y_sta
-
-    print(f"RF center: ({eps_0x:.4f}, {eps_0y:.4f})")
-    if eps_0x == eps_0x_sta and eps_0y == eps_0y_sta:
-        print(f"  (computed from STA)")
+    # Determine RF center
+    if config['eps_0x'] is not None and config['eps_0y'] is not None:
+        # Explicit override from config/CLI
+        eps_0x = config['eps_0x']
+        eps_0y = config['eps_0y']
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from config override, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+    elif rf_init == 'sta':
+        eps_0x = eps_0x_sta
+        eps_0y = eps_0y_sta
+        n_src = n_samples_sta if n_samples_sta is not None else X.shape[0]
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from STA, {n_src} images)")
+    elif rf_init == 'ground_truth':
+        rf_path = Path(__file__).parent / 'datasets' / 'rf_centers_ground_truth.npz'
+        rf_data = np.load(rf_path)
+        rf_key = f'norm_{n_px_side}'
+        if rf_key not in rf_data:
+            raise ValueError(
+                f"Ground-truth RF centers not available for {n_px_side}x{n_px_side}. "
+                f"Available: {[k for k in rf_data.keys() if k.startswith('norm_')]}. "
+                f"Use rf_init='sta' or rf_init='center' instead."
+            )
+        eps_0x = float(rf_data[rf_key][cell][0])
+        eps_0y = float(rf_data[rf_key][cell][1])
+        print(f"\nRF center: ({eps_0x:.4f}, {eps_0y:.4f})")
+        print(f"  (from ground-truth ellipses, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+    elif rf_init == 'center':
+        eps_0x = 0.0
+        eps_0y = 0.0
+        print(f"\nRF center: (0.0000, 0.0000)")
+        print(f"  (image center, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
     else:
-        print(f"  (from config, STA was: {eps_0x_sta:.4f}, {eps_0y_sta:.4f})")
+        raise ValueError(f"Unknown rf_init='{rf_init}'. Use 'sta', 'ground_truth', or 'center'.")
 
     # =========================================================================
     # Step 2: Select inducing points
@@ -725,6 +801,7 @@ def run_single_config(config):
     print(f"\nData shapes:")
     print(f"  X_train: {X_train.shape}")
     print(f"  r_train: {r_train.shape}")
+    print(f"  X_val: {X_val.shape if X_val is not None else 'None (no validation)'}")
     print(f"  inducing_points: {inducing_points.shape}")
     print(f"  X_test: {X_test.shape}")
 
@@ -734,13 +811,16 @@ def run_single_config(config):
     n_fstep = config['n_fstep']
     n_mstep = config['n_mstep']
     early_stop = config['early_stop']
-    stop_window = config['stop_window']
-    stop_thresh = config['stop_thresh']
+    patience = config['patience']
+    min_delta_rel = config['min_delta_rel']
     min_iterations = config['min_iterations']
+    restore_best = config['restore_best']
+    es_metric = config.get('es_metric', 'elbo')
     jitter = config['jitter']
     eigval_tol = config['eigval_tol']
     lambda_var_clamp = config['lambda_var_clamp']
-    stability_threshold = config['stability_threshold']
+    f_mean_max_threshold = config['f_mean_max_threshold']
+    f_mean_mean_threshold = config['f_mean_mean_threshold']
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
 
@@ -840,6 +920,8 @@ def run_single_config(config):
         losses = [final_loss]
         stopped_early = False
         final_iteration = n_iterations
+        best_iteration = 0
+        curves = {}
 
         # Extract final hyperparameters
         theta_final = fit_model['hyperparams_tuple'][0]
@@ -899,10 +981,17 @@ def run_single_config(config):
                 print_every=print_every,
                 use_analytical_mstep=config['mstep_analytical'],
                 early_stop=early_stop,
-                stop_window=stop_window,
-                stop_thresh=stop_thresh,
+                patience=patience,
+                min_delta_rel=min_delta_rel,
                 min_iterations=min_iterations,
-                stability_threshold=stability_threshold,
+                restore_best=restore_best,
+                f_mean_max_threshold=f_mean_max_threshold,
+                f_mean_mean_threshold=f_mean_mean_threshold,
+                fix_Amp=config.get('fix_Amp', False),
+                interleave_fstep=config.get('interleave_fstep', False),
+                X_val=X_val,
+                r_val=r_val,
+                es_metric=es_metric,
             )
 
         train_time = time.time() - start_time
@@ -911,6 +1000,8 @@ def run_single_config(config):
         time_mstep_total = result['time_mstep_total']
         stopped_early = result.get('stopped_early', False)
         final_iteration = result.get('final_iteration', len(losses))
+        best_iteration = result.get('best_iteration', final_iteration)
+        curves = result.get('curves', {})
 
         print(f"\nTraining time: {train_time:.1f}s")
         print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
@@ -918,6 +1009,8 @@ def run_single_config(config):
         print(f"  Eigenspace dim:    {len(model.state.eigvals_b)}")
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
+        if best_iteration > 0:
+            print(f"  Best validation iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {model.likelihood.A.item():.4f}")
@@ -990,23 +1083,32 @@ def run_single_config(config):
                 print_every=print_every,
                 device=device,
                 early_stop=early_stop,
-                stop_window=stop_window,
-                stop_thresh=stop_thresh,
+                patience=patience,
+                min_delta_rel=min_delta_rel,
                 min_iterations=min_iterations,
+                restore_best=restore_best,
                 lbfgs_max_iter=config['gpy_lbfgs_max_iter'],
                 jitter=jitter,
                 cholesky_max_tries=config['cholesky_max_tries'],
-                stability_threshold=stability_threshold,
+                f_mean_max_threshold=f_mean_max_threshold,
+                f_mean_mean_threshold=f_mean_mean_threshold,
                 lambda_var_clamp=lambda_var_clamp,
+                X_val=X_val,
+                r_val=r_val,
+                es_metric=es_metric,
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)
             final_iteration = result.get('final_iteration', len(losses))
+            best_iteration = result.get('best_iteration', final_iteration)
+            curves = result.get('curves', {})
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
         if stopped_early:
             print(f"  Stopped early at iteration {final_iteration}")
+        if best_iteration > 0:
+            print(f"  Best validation iteration: {best_iteration}")
 
         print(f"\nFinal parameters:")
         print(f"  A: {likelihood.A.item():.4f}")
@@ -1094,6 +1196,7 @@ def run_single_config(config):
         'mode': mode,
         'M': M,
         'n_train': n_train,
+        'n_val': X_val.shape[0] if X_val is not None else 0,
         'seed': seed,
         'cell': cell,
         'status': 'success',
@@ -1107,6 +1210,7 @@ def run_single_config(config):
         'pred_std': pred_std,
         'time_estep_s': time_estep,
         'time_mstep_s': time_mstep,
+        'gpu': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
         'final_A': final_A,
         'final_lambda0': final_lambda0,
         'final_Amp': final_Amp,
@@ -1119,12 +1223,14 @@ def run_single_config(config):
         'n_px_side': n_px_side,
         'n_iterations_run': final_iteration,
         'stopped_early': stopped_early,
+        'best_iteration': best_iteration if mode != 'vargp_old' else None,
+        'curves': curves if mode != 'vargp_old' else None,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
         # Keep references for plotting (not serialized to JSON)
         '_predictions': predictions,
         '_r_test_mean': r_test_mean,
-        '_model': model,
-        '_likelihood': likelihood,
+        '_model': model if mode != 'vargp_old' else None,
+        '_likelihood': likelihood if mode != 'vargp_old' else None,
         '_indices_train': indices_train,
         '_STA_init_2d': STA_init_2d,
         '_STA_train_2d': _compute_sta_2d(X[indices_train], r[indices_train], n_px_side),
@@ -1162,6 +1268,10 @@ def main():
         def _sanitize(v):
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 return None
+            if isinstance(v, list):
+                return [_sanitize(x) for x in v]
+            if isinstance(v, dict):
+                return {k2: _sanitize(v2) for k2, v2 in v.items()}
             return v
         serializable = {k: _sanitize(v) for k, v in result.items()
                         if not k.startswith('_')}
@@ -1179,6 +1289,7 @@ def main():
     parser.add_argument('--cell', type=int, default=defaults['data']['cellid'], help=f'Cell ID (default: {defaults["data"]["cellid"]})')
     parser.add_argument('--ntilde', type=int, default=defaults['data']['ntilde'], help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
     parser.add_argument('--n-train', type=int, default=defaults['data']['n_train'], help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
+    parser.add_argument('--n-val-split', type=int, default=defaults['data']['n_val_split'], help=f'Validation images carved from combined pool (default: {defaults["data"]["n_val_split"]})')
     parser.add_argument('--n-iterations', type=int, default=defaults['training']['n_iterations'], help=f'Number of EM iterations (default: {defaults["training"]["n_iterations"]})')
     parser.add_argument('--n-estep', type=int, default=defaults['training']['n_estep'], help=f'E-steps per iteration (default: {defaults["training"]["n_estep"]})')
     parser.add_argument('--n-fstep', type=int, default=defaults['training']['n_fstep'], help=f'F-steps per iteration (default: {defaults["training"]["n_fstep"]})')
@@ -1239,8 +1350,10 @@ def main():
                         help=f'Max Cholesky retry attempts (default: {defaults["model"]["cholesky_max_tries"]})')
     parser.add_argument('--lambda-var-clamp', type=float, default=defaults['model']['lambda_var_clamp'],
                         help=f'Min posterior variance clamp (default: {defaults["model"]["lambda_var_clamp"]})')
-    parser.add_argument('--stability-threshold', type=float, default=defaults['model']['stability_threshold'],
-                        help=f'Max mean firing rate before step rejection (default: {defaults["model"]["stability_threshold"]})')
+    parser.add_argument('--f-mean-max-threshold', type=float, default=defaults['model']['f_mean_max_threshold'],
+                        help=f'Max f_mean.max() before step rejection (default: {defaults["model"]["f_mean_max_threshold"]})')
+    parser.add_argument('--f-mean-mean-threshold', type=float, default=defaults['model']['f_mean_mean_threshold'],
+                        help=f'Max f_mean.mean() before step rejection (default: {defaults["model"]["f_mean_mean_threshold"]})')
 
     parser.add_argument('--unwhitened-variational-dist', action='store_true',
                         help='Use UnwhitenedVariationalStrategy (stores natural params directly, no L_K dependency)')
@@ -1264,12 +1377,22 @@ def main():
     es_defaults = defaults['early_stopping']
     parser.add_argument('--no-early-stop', action='store_true',
                         help='Disable early stopping (early stopping is ON by default)')
-    parser.add_argument('--stop-window', type=int, default=es_defaults['window'],
-                        help=f'Number of iterations to look back for improvement (default: {es_defaults["window"]})')
-    parser.add_argument('--stop-thresh', type=float, default=es_defaults['threshold'],
-                        help=f'Minimum relative improvement over window to continue (default: {es_defaults["threshold"]})')
+    parser.add_argument('--patience', type=int, default=es_defaults['patience'],
+                        help=f'Iterations without val improvement before stopping (default: {es_defaults["patience"]})')
+    parser.add_argument('--min-delta-rel', type=float, default=es_defaults['min_delta_rel'],
+                        help=f'Minimum relative improvement to reset patience (default: {es_defaults["min_delta_rel"]})')
     parser.add_argument('--min-iterations', type=int, default=es_defaults['min_iterations'],
                         help=f'Minimum iterations before early stopping can trigger (default: {es_defaults["min_iterations"]})')
+    parser.add_argument('--no-restore-best', action='store_true',
+                        help='Do not restore best-validation model on early stop')
+    parser.add_argument('--es-metric', type=str, default=es_defaults['es_metric'],
+                        choices=['elbo', 'none'],
+                        help=f"Metric for early stopping: 'elbo' uses training "
+                             f"loss directly (no val data needed; the chosen "
+                             f"default since April 2026), or 'none' to disable "
+                             f"ES entirely. val_ll/val_r/val_rho were removed — "
+                             f"see investigations/optimization/possible_optimizations.md "
+                             f"Investigation 2. Default: {es_defaults['es_metric']}")
 
     # Inducing point selection
     ind_defaults = defaults['inducing']
@@ -1297,6 +1420,7 @@ def main():
         kernel_type=args.kernel_type,
         M=args.ntilde,
         n_train=args.n_train,
+        n_val_split=args.n_val_split,
         seed=args.seed,
         cell=args.cell,
         n_iterations=args.n_iterations,
@@ -1321,13 +1445,16 @@ def main():
         lr=args.lr,
         optimizer=args.optimizer,
         early_stop=not args.no_early_stop,
-        stop_window=args.stop_window,
-        stop_thresh=args.stop_thresh,
+        patience=args.patience,
+        min_delta_rel=args.min_delta_rel,
         min_iterations=args.min_iterations,
+        restore_best=not args.no_restore_best,
+        es_metric=args.es_metric,
         jitter=args.jitter,
         cholesky_max_tries=args.cholesky_max_tries,
         lambda_var_clamp=args.lambda_var_clamp,
-        stability_threshold=args.stability_threshold,
+        f_mean_max_threshold=args.f_mean_max_threshold,
+        f_mean_mean_threshold=args.f_mean_mean_threshold,
         use_cache=args.use_cache,
         mstep_analytical=args.mstep_analytical,
         unwhitened_variational_dist=args.unwhitened_variational_dist,

@@ -1,6 +1,118 @@
 # Session Log
 
-<<<<<<< HEAD
+## 2026-04-07: ELBO ES sweep complete + design stabilization
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Completed the 4-config ELBO ES sweep (492 runs, ~7h). Best config
+  `intl_fixAmp` + ELBO ES p=15: test_r=0.8375, exp_var=0.8987, 37/41
+  cells > 0.8, 37.5 mean iters. Matches no-ES baseline within 0.0007
+  test_r while saving ~53% compute.
+- Closed Investigation 2 in `possible_optimizations.md`. Marked DONE
+  with full empirical results.
+- **Stabilized the ES design choice across the codebase**:
+  - `es_metric` is now restricted to `'elbo'` or `'none'` (val_ll/val_r/val_rho
+    branches removed from training code).
+  - `default_params.json`: `es_metric='elbo'`, `n_val_split=0`.
+  - `configs/canonical.yaml` and `configs/quick.yaml`: same.
+  - `flatten_yaml_config()` fallback: `es.get('es_metric', 'elbo')`,
+    `dat.get('n_val_split', 0)`.
+  - `--es-metric` CLI choices restricted to `['elbo', 'none']`.
+- Smoke-tested ELBO ES on `default_gpy` mode (the previously untested
+  parallel code path). Works correctly.
+- Updated CLAUDE.md "Early Stopping" and "Data loading" sections to
+  reflect the new defaults and link to the rationale.
+- Added `.claude/DECISION_LOG.md` Q32 (ELBO ES decision) and Q33
+  (best-tracking semantics fix).
+- Updated `tests/test_early_stopping.py`:
+  - test_1 now exercises both `n_val_split=0` (default) and `n_val_split=250`
+    (opt-in val carving) paths.
+  - test_4 rewritten to verify the new best-tracking semantics
+    (`best_iter` is the true argmax of ELBO, independent from
+    patience_reference).
+  - test_9 checks `best_iter` against argmax of ELBO instead of val_ll.
+  - All 10 tests pass.
+- Moved ELBO ES sweep results + script + buggy reference to
+  `experiments/2026-04-06_es_sweeps_64x64/`. Updated that folder's README
+  with ELBO ES rows in the reference values table and a TL;DR section.
+
+**Decision summary:**
+- ELBO is the chosen ES metric. val_ll/val_r/val_rho were tested and
+  underperformed by ~0.02 mean test_r due to A-transient noise on the
+  small validation set.
+- `n_val_split=0` is the default — no validation carving, all 3160
+  training images are used.
+- `n_val_split>0` remains an opt-in for diagnostic val_log_lik/val_r/val_rho
+  curves but they are NOT used for ES decisions.
+
+**Investigation 2 (ELBO ES) is closed**. Other open optimization
+investigations: Amp removal (#1, high priority), E-step convergence
+check (#3), F-step method comparison (#4), redundant kernel computation
+(#5), M-step iteration count (#6), why-does-ELBO-decrease sub-investigation
+(#7), sigma_0 parameterization (#8). See `investigations/optimization/possible_optimizations.md`.
+
+## 2026-04-05/06: Early stopping investigation + paper gap branch close-out
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Fixed data loading regression (val_from_train bug: 2660 -> 2910 training images)
+- Ran ES sweeps with patience=15 and patience=30, 4 configs x 41 cells x 3 seeds
+- Added train_r/val_r (Pearson correlation) curves to training loop + plotting
+- Added es_metric parameter (val_ll or val_r) for ES metric selection
+- Redesigned plot_training.py Row 1: negated NLL + Pearson r on twin axes
+- Diagnostic runs proving val_ll instability is caused by interleaved F-step A transient
+- Deep analysis of Amp redundancy (mu(x) is independent of Amp in large-Amp limit)
+- Created investigations/optimization/possible_optimizations.md for next phase
+- Paper gap investigation declared RESOLVED, documentation updated
+
+**ES findings:** Doubling patience helped interleaved configs (+0.004) but gap to
+baseline remains ~0.02. The gap is fundamental: 8% data holdout + ES stopping before
+full convergence. ELBO convergence-based stopping proposed as alternative.
+
+**Amp finding:** Amp is near-unidentifiable. mu(x) cancels Amp exactly. Only affects
+variance correction (A^2 * Amp coupling) and KL (M/2 * log(Amp)). Fixing Amp=1
+improves results. Removal planned.
+
+**Hanging threads from 2026-03-30 — resolved:**
+- INVESTIGATION markers: already cleaned up (not found in current code)
+- sigma_0 parameterization: kept as direct, controlled test planned in optimization phase
+- Metric mismatch: unresolvable (GP eval code in private package), documented as probable
+- CLAUDE.md updates: done in this session
+
+## 2026-04-02: Paper Gap -- 64x64 Sweep + Amp/Interleaving Grid
+**Handoff**: `investigations/paper_gap/HANDOFF_SWEEP_SESSION.md`
+**Status**: Complete (folded into 2026-04-05/06 session)
+
+Ran 64x64 parameter sweeps (3 configs, 369 runs) to complete the Amp x Interleaving grid. Discovered n_train=2910 confound in prior 64x64 runs (negligible impact). Best config: 64_intl_fixAmp (test_r=0.838, 36/41 > 0.8). Free vs fixed Amp negligible. Interleaving is dominant factor. 108x108 free Amp grid still empty (run_sweep.py hardcodes fix_Amp=True).
+
+## 2026-03-30: Paper gap investigation -- Gap A closed, metric mismatch discovered
+
+**Branch**: `pietro/investigate-paper-gap`
+
+**Accomplished:**
+- Proved vargp_direct matches vargp_old within 0.002 (Gap A closed, Finding 19).
+  Original 0.042 gap was from: IP selection confound (0.028), Amp frozen/free (0.010),
+  sigma_0 parameterization (0.004).
+- Fetched and analyzed paper's actual GitHub code. Found it differs from BOTH our
+  implementations: no Amp, F-step interleaving, no eigenspace, float64, scipy L-BFGS-B.
+- Implemented: interleave_fstep (damped Newton), fix_Amp, LBFGS frozen-param filter,
+  f_mean thresholds, sigma_0 direct parameterization, vargp_old bug fix.
+- Ran full 738-run sweep (6 configs x 41 cells x 3 seeds). Best: broad+interleave
+  (avg adj_r2=0.730, 15/41>0.8, 36/41>0.8 on explained_var).
+- Discovered probable metric mismatch (Finding 21): paper likely reports unsquared
+  explained_var despite calling it "adjusted R^2". Our 36/41>0.8 matches exactly.
+
+**Documentation updated:** INVESTIGATION_LOG.md (Findings 1-21), METRICS_COMPARISON.md
+(new), memory files, SESSION_LOG.md
+
+**Hanging threads:**
+- INVESTIGATION markers in kernels.py:200 and eigenspace_mstep.py:319 (cosmetic)
+- sigma_0 direct vs exp parameterization -- deferred re-evaluation
+- Metric mismatch not confirmed (GP eval code in private package)
+- CLAUDE.md updates for this branch deferred
+
 ## 2026-03-24: All-cells fitting, STA edge artifact investigation, stability fixes
 
 **Experiments run**: 1476 fits across 108x108, 64x64, 48x48 (41 cells x 3 seeds x 2 modes x 2 M values per dataset). Plus 123-run LSTA-init experiment on 64x64.
@@ -249,3 +361,4 @@ Explored 2D playground import chain (5+ levels deep), identified duplicated func
 **Status**: Handed off for implementation
 
 User implemented the 2D import cleanup plan. Fixed test_acquisition.py (updated imports from old utility.py/utility_2d_rbf_base to gpytorch_porting/utils.py via importlib.util pattern). All 6 tests pass. Deep audit confirmed 2D playground imports are clean. Found r_max hardcoded defaults in compute_H, nd_utility_new, standard_utility, distribution_aware_utility, compute_mc_diagnostics_2d. Planned enforcement: remove all silent defaults, require explicit r_max or adaptive_r_max=True.
+

@@ -12,6 +12,11 @@ experiment:
   modes: [vargp_direct]
   inducing_points: [50]
   n_train: [500]
+  n_val_split: 0               # No validation carving. ELBO ES (see
+                               # early_stopping) does not need val data.
+                               # Set >0 to enable diagnostic val_log_lik /
+                               # val_r / val_rho curves — these are NOT used
+                               # for ES, which remains ELBO-based.
   seeds: [123]
   cells: [8]
   n_iterations: 50
@@ -66,11 +71,15 @@ optimizer:
   gpy_lbfgs_max_iter: 20           # WIRED via gpy_training.py lbfgs_max_iter param
 
 # ===== EARLY STOPPING =====
+# As of April 2026, ELBO is the only supported es_metric (or 'none' to disable).
+# See investigations/optimization/possible_optimizations.md Investigation 2.
 early_stopping:
   enabled: true
-  window: 20
-  threshold: 5.0e-3
+  patience: 15
+  min_delta_rel: 0.001
   min_iterations: 10
+  restore_best: true
+  es_metric: elbo                    # 'elbo' (default) or 'none' (disabled)
 
 # ===== NUMERICAL =====
 numerical:
@@ -78,7 +87,8 @@ numerical:
   cholesky_max_tries: 3            # WIRED via gpy_training context manager
   eigval_tol: 1.0e-4               # WIRED via DirectVGPModel constructor
   lambda_var_clamp: 1.0e-6         # WIRED via model.lambda_var_clamp + function params
-  stability_threshold: 1000        # WIRED via config → training functions
+  f_mean_max_threshold: 500
+  f_mean_mean_threshold: 100
   dtype: float32
   device: cuda
 

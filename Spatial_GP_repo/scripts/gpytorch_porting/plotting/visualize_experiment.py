@@ -325,7 +325,7 @@ def main():
 
     args = parser.parse_args()
 
-    script_dir = Path(__file__).parent
+    script_dir = Path(__file__).parent.parent  # up from plotting/ to gpytorch_porting/
     experiments_dir = script_dir / 'experiments'
 
     # Dataset paths keyed by experiment name substring

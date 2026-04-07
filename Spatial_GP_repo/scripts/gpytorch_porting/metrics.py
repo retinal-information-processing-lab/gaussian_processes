@@ -71,6 +71,31 @@ def compute_pearson_correlation(y_true, y_pred):
     return corr.item()
 
 
+def compute_spearman_correlation(y_true, y_pred):
+    """Compute Spearman rank correlation coefficient.
+
+    Pearson correlation applied to the ranks of the values.
+    Invariant to monotonic transformations of predictions.
+
+    Args:
+        y_true: True values, shape (n,) or (n_repeats, n)
+        y_pred: Predicted values, shape (n,)
+
+    Returns:
+        Spearman correlation (scalar)
+    """
+    from scipy.stats import spearmanr
+
+    if y_true.ndim == 2:
+        y_true = y_true.mean(dim=0)
+
+    result = spearmanr(
+        y_true.detach().cpu().float().numpy(),
+        y_pred.detach().cpu().float().numpy()
+    )
+    return float(result.correlation)
+
+
 def compute_explained_variance(r_test, f_pred):
     """Compute explained variance normalized by cell reliability.
 
