@@ -137,6 +137,8 @@ Use `--gradient-mode MODE` in CLI:
 
 **Why ELBO and not validation metrics**: We tested val_log_lik (val_ll), val Pearson r, and val Spearman rho as ES metrics against the training ELBO. All three validation-based metrics underperformed the no-ES baseline by ~0.02 mean test_r because the interleaved damped Newton F-step causes A transients in the first ~20 iterations, which produce noisy predictions on the small (250-image) validation set. The ELBO is computed over all 3160 training points so the per-image noise averages out. ELBO ES matches the no-ES baseline within 0.0007 test_r while saving ~53% compute. **Best documented config**: `intl_fixAmp` + ELBO ES p=15 → test_r=0.8375, exp_var=0.8987, 37/41 cells > 0.8.
 
+**Reproducibility**: The documented numbers above are reproduced by running `experiments/2026-04-06_es_sweeps_64x64/run_sweep_elbo_es_64x64.py` (4 configs x 41 cells x 3 seeds = 492 runs, ~7h sequential GPU). The script's output is `sweep_64x64_elbo_es_results.jsonl` in the same folder. Per-config statistics can be derived directly from that JSONL — no separate analysis script is needed.
+
 **Mechanism**: Patience-based stopping with separated best-tracking and patience-threshold logic (matches PyTorch Lightning's design, NOT Keras's conflated single callback — see DECISION_LOG Q33):
 
 1. At each outer EM iteration, compute `es_value = -train_loss` (= ELBO).

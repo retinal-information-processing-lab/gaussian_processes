@@ -9,7 +9,14 @@ future datasets — not at matching the paper.
 
 ---
 
-## 1. Remove Amp Parameter (High Priority)
+## 1. Remove Amp Parameter (Low Priority — partially de-risked)
+
+**Status**: Not the next step. The ELBO ES sweep (Investigation 2) already
+used `fix_Amp=True` as the best config, so the "Amp frozen at 1.0" behavior
+is already the default in practice. Removing Amp from the kernel code
+entirely (reducing kernel params from 6 to 5) is a cleanup task, not a
+performance lever. Deferred until after the more impactful investigations
+below are addressed.
 
 **Problem**: Amp multiplies the C matrix inside the arc-cosine kernel. In the
 large-Amp limit (Amp * q_x >> sigma_0^2), the posterior mean mu(x) is
@@ -20,7 +27,7 @@ Amp only affects predictions through a second-order variance correction
 This makes Amp a near-unidentifiable parameter: the M-step spends LBFGS
 iterations adjusting it with negligible effect on predictions. Different seeds
 find different Amp values, introducing variance without improving the model.
-The sweep data confirms that fixing Amp=1 **improves** performance.
+The sweep data confirms that fixing Amp=1 **improves** performance vs free Amp.
 
 The paper (Goldin et al. 2023) does not use Amp.
 
@@ -49,8 +56,10 @@ variation across seeds than A alone. This confirms the variance-correction
 coupling. Also verify that test_r is stable across seeds even when Amp varies
 widely.
 
-**Action**: Remove Amp from ArcCosineKernel (fix at 1.0, remove from M-step
-optimization, reduce kernel params from 6 to 5). Run 41-cell comparison sweep.
+**Action (when prioritized)**: Remove Amp from ArcCosineKernel (fix at 1.0,
+remove from M-step optimization, reduce kernel params from 6 to 5). Run
+41-cell comparison sweep. Not expected to change test_r since fix_Amp=True
+is already the default — this is a code simplification, not a performance fix.
 
 ---
 
@@ -271,15 +280,30 @@ Compare test_r, convergence speed, and sigma_0 trajectory stability.
 
 ---
 
-## Priority Order
+## Priority Order (updated April 2026)
 
-1. Remove Amp (simplifies everything downstream)
-2. ~~ELBO convergence ES~~ — **DONE (April 2026)**: chosen as the default
-3. E-step convergence check (easy compute savings)
-4. F-step comparison (informs default config choice)
-5. Redundant kernel computation (moderate compute savings)
-6. M-step iteration count (minor tuning)
-7. Adaptive damping / "why does ELBO sometimes decrease?" sub-investigation
-   (was originally a fallback for ELBO ES; now a separate question about
-   optimizer correctness — see Investigation 2 notes)
-8. sigma_0 parameterization (controlled comparison, low priority)
+After ELBO ES was chosen as the default, the priority list was revised.
+Investigation 2 is DONE. Amp removal was de-prioritized because
+`fix_Amp=True` is already the default in practice (it was the best config
+in the ELBO ES sweep), so removing Amp from the kernel code entirely is
+now a cleanup task, not a performance lever.
+
+**Next steps** (in order of expected impact):
+
+1. ~~**ELBO convergence ES**~~ — **DONE (April 2026)**: chosen as the default
+2. **E-step convergence check** (Investigation 3) — easy compute savings;
+   E-step currently runs a fixed number of Newton iterations without
+   convergence checking
+3. **F-step method comparison** (Investigation 4) — informs the default
+   choice between interleaved damped Newton and non-interleaved LBFGS
+4. **Redundant kernel computation** (Investigation 5) — moderate compute
+   savings from caching the M-step's final kernel matrices
+5. **"Why does ELBO sometimes decrease?"** sub-investigation
+   (Investigation 6 / 7) — small follow-up from Investigation 2; optimizer
+   correctness question rather than a performance lever
+6. **M-step iteration count** (Investigation 7) — minor tuning
+7. **sigma_0 parameterization** (Investigation 8) — low-priority controlled
+   comparison (direct vs exp vs optimize-squared)
+8. **Remove Amp from the kernel code** (Investigation 1) — code cleanup,
+   not a performance fix. `fix_Amp=True` already handles the behavior;
+   removing the parameter from `ArcCosineKernel` is purely a simplification.
