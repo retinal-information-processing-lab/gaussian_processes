@@ -11,6 +11,13 @@ Layout: 3 rows x N_seeds columns per cell figure.
 
 Best iteration marked with vertical dashed line in all subplots.
 
+NOTE on validation curves: Since April 2026 the project default is
+`n_val_split=0` (no validation carving — see configs/canonical.yaml and
+the early-stopping section of CLAUDE.md). When that default is used,
+the val_log_lik / val_r / val_rho curves are all None and the val
+panels in Row 1 will be empty (the train curves still render). To see
+val curves, set `n_val_split > 0` in the run that produced the JSONL.
+
 Usage:
     python plot_training.py --curves path/to/curves.jsonl --output-dir path/to/plots/
     python plot_training.py --curves path/to/curves.jsonl --cell 8 --output-dir path/to/plots/

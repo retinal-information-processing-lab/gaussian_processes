@@ -41,6 +41,7 @@
   },
 
   "early_stopping": {
+    "_comment_es_metric": "Only 'elbo' or 'none' are valid since April 2026. val_ll/val_r/val_rho were removed — see investigations/optimization/possible_optimizations.md Investigation 2 and DECISION_LOG Q32 for the rationale.",
     "enabled": true,
     "patience": 15,
     "min_delta_rel": 0.001,
@@ -61,6 +62,7 @@
   },
 
   "data": {
+    "_comment_n_val_split": "0 = no validation carving (default since April 2026; ELBO ES does not need val data). Set >0 to enable diagnostic val_log_lik / val_r / val_rho curves. Those curves are NOT used for ES, which remains ELBO-based.",
     "path": "datasets/PNAS_108x108_original.npz",
     "n_train": 500,
     "n_val_split": 0,

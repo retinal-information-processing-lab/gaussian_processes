@@ -456,7 +456,7 @@ For project status and quick reference, see `CLAUDE.md`.
 > Verified on cell 8 seed 1: test_r 0.8625 -> 0.8740 (+0.011) with the
 > fix. All 10 ES tests pass.
 >
-> Reference: `eigenspace_training.py` lines ~470-510. The historically
-> conflated behavior is preserved in
-> `experiments/2026-04-06_es_sweeps_64x64/sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl`
-> (32-run partial sweep, kept as evidence for the bug fix).
+> Reference: `eigenspace_training.py` lines ~470-510. The full
+> (pre-fix vs post-fix) comparison lives in git history on the branch
+> `pietro/investigate-paper-gap`, commits 82436c6 (fix) and 099df21
+> (tests + docs).

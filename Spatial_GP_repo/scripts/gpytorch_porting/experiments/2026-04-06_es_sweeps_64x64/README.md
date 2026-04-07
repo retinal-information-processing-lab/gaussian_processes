@@ -77,7 +77,6 @@ then counts cells above 0.8.
 | `sweep_64x64_es_results_STALE_n2660.jsonl` | val_ll ES p=15 (n=2660 bug) | 369 | 2660 | val_ll |
 | `sweep_64x64_es_p30_results.jsonl` | val_ll ES p=30 (4 configs) | 492 | 2910 | val_ll |
 | `sweep_64x64_elbo_es_results.jsonl` | **ELBO ES p=15 (chosen default)** | **492** | **3160** | **elbo** |
-| `sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl` | ELBO ES with the conflated best-tracking bug (kept as evidence for the fix; do not use for analysis) | 32 | 3160 | elbo |
 | `diagnostic_no_es_results.jsonl` | Diagnostic interleaved | 7 | 2910 | off |
 | `diagnostic_no_es_no_interleaved_results.jsonl` | Diagnostic non-interleaved | 7 | 2910 | off |
 | `sweep_64x64_results.jsonl` | Old stale (n=2910 bug), superseded | 246 | 2910 | off |
@@ -103,7 +102,6 @@ then counts cells above 0.8.
 | `sweep_64x64_es_results_STALE_n2660.jsonl` | yes | ~36 (stopped) |
 | `sweep_64x64_es_p30_results.jsonl` (val_ll p=30) | yes | 30-54 (stopped) |
 | `sweep_64x64_elbo_es_results.jsonl` (**ELBO ES**) | yes | 35-75 (stopped) |
-| `sweep_64x64_elbo_es_results_BUGGY_best_tracking.jsonl` | yes | 32 (stopped, partial run) |
 | `diagnostic_no_es_results.jsonl` | yes | 79 (full) |
 | `diagnostic_no_es_no_interleaved_results.jsonl` | yes | 79 (full) |
 

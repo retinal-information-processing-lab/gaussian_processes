@@ -12,7 +12,13 @@ experiment:
   modes: [vargp_direct, default_gpy]
   inducing_points: [50, 100, 200]
   n_train: [500]
-  n_val_split: 0               # 0 = no validation carving (default since April 2026; ELBO ES doesn't need val data). Set >0 to enable val_log_lik/val_r/val_rho diagnostic curves.
+  n_val_split: 0               # No validation carving. ELBO-based early
+                               # stopping (see early_stopping section) does
+                               # not need val data. Set >0 if you want to
+                               # populate the diagnostic val_log_lik /
+                               # val_r / val_rho curves for post-hoc
+                               # analysis — but those curves are NOT used
+                               # for the ES decision, which remains ELBO-based.
   seeds: [123]
   cells: [8]
   n_iterations: 50          # shared across all matrix entries

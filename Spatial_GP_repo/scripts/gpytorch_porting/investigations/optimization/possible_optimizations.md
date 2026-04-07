@@ -127,11 +127,12 @@ but it might be improvable. Post-hoc analysis of existing curves shows
 (e.g., 0.0001) might let training run longer in the tail. Revisit if
 future ELBO ES experiments underperform.
 
-**Sub-investigation: why does ELBO sometimes decrease?** In 3/32 runs
-of the buggy partial sweep, ELBO actually decreased after its peak,
-violating the coordinate ascent guarantee. The current best-tracking
-fix (Q33) handles this correctly via restoration, but the root cause
-deserves a separate investigation. Likely culprits:
+**Sub-investigation: why does ELBO sometimes decrease?** In ~3/32 runs
+of an early (pre-best-tracking-fix) partial sweep, ELBO actually
+decreased after its peak, violating the coordinate ascent guarantee.
+The current best-tracking fix (Q33) handles this correctly via
+restoration, but the root cause deserves a separate investigation.
+Likely culprits:
 - Interleaved damped Newton's fixed alpha=0.25 not guaranteeing ELBO
   increase at every step
 - LBFGS M-step line search accepting numerically bad steps
