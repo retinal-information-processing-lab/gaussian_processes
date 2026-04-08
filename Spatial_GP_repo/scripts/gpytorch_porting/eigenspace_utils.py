@@ -10,16 +10,10 @@ of variational parameters. In eigenspace:
 Reference: utils.py:varGP() lines 5435-5444, 5619-5627
 """
 
-import json
-import pathlib
 import torch
 from typing import Tuple, Optional
 
-
-# Read from default_params.json — never hardcode model parameters
-EIGVAL_TOL = json.loads(
-    (pathlib.Path(__file__).parent / 'default_params.json').read_text()
-)['model']['eigval_tol']
+from _constants import EIGVAL_TOL
 
 
 def eigendecompose_K_tilde(

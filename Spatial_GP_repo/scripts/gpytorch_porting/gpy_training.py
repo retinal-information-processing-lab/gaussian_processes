@@ -18,11 +18,12 @@ import torch
 from linear_operator import settings as lo_settings
 
 from metrics import compute_pearson_correlation, compute_spearman_correlation
+from _constants import LAMBDA_VAR_CLAMP
 
 
 def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
                               jitter=1e-4, cholesky_max_tries=3,
-                              lambda_var_clamp=1e-6):
+                              lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Compute validation log-likelihood, Pearson r, and Spearman rho for default_gpy mode.
 
     Val log-lik formula (same as ELBO's log-lik term on held-out data):
@@ -56,7 +57,7 @@ def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
 
 def _compute_train_metrics_gpy(model, likelihood, train_x, train_y,
                                 jitter=1e-4, cholesky_max_tries=3,
-                                lambda_var_clamp=1e-6):
+                                lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Compute training Pearson r and Spearman rho for default_gpy mode."""
     model.eval()
     likelihood.eval()
@@ -83,7 +84,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                        lbfgs_max_iter=20,
                        jitter=1e-4, cholesky_max_tries=3,
                        f_mean_max_threshold=500, f_mean_mean_threshold=100,
-                       lambda_var_clamp=1e-6,
+                       lambda_var_clamp=LAMBDA_VAR_CLAMP,
                        X_val=None, r_val=None,
                        es_metric='elbo'):
     """Train using GPyTorch's standard variational inference (no custom E-step).
@@ -420,7 +421,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
 
 
 def predict(model, likelihood, test_x, device=None,
-            jitter=1e-4, cholesky_max_tries=3, lambda_var_clamp=1e-6):
+            jitter=1e-4, cholesky_max_tries=3, lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Make predictions on test data.
 
     Args:

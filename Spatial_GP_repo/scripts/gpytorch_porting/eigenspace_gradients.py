@@ -30,6 +30,8 @@ Reference: utils.py:varGP() M-step closure
 import torch
 from typing import Dict
 
+from _constants import LAMBDA_VAR_CLAMP
+
 
 # ==============================================================================
 # Analytical Gradient Functions for M-step Optimization
@@ -250,7 +252,7 @@ def compute_lambda_moments_and_gradients(
     K_b, K_tilde_b, Kvec, m_b, V_b,
     dK_b, dK_tilde_b, dKvec,
     K_tilde_inv_b,
-    lambda_var_clamp: float = 1e-6
+    lambda_var_clamp: float = LAMBDA_VAR_CLAMP
 ):
     """Compute posterior moments and their gradients w.r.t. hyperparameters.
 

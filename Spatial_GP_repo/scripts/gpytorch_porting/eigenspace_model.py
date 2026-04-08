@@ -31,8 +31,8 @@ from typing import Tuple, Optional
 
 import torch
 
+from _constants import EIGVAL_TOL, LAMBDA_VAR_CLAMP
 from eigenspace_utils import (
-    EIGVAL_TOL,
     eigendecompose_K_tilde,
     reproject_variational_params,
 )
@@ -246,7 +246,7 @@ def _recompute_eigenspace(
 # Posterior Moment Computation
 # ==============================================================================
 
-def _lambda_moments_eigenspace(state: DirectVariationalState, lambda_var_clamp: float = 1e-6) -> Tuple[torch.Tensor, torch.Tensor]:
+def _lambda_moments_eigenspace(state: DirectVariationalState, lambda_var_clamp: float = LAMBDA_VAR_CLAMP) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute GP posterior moments using eigenspace quantities (internal).
 
     Used internally by EigenspacePosterior._compute_moments() for training data.
@@ -304,7 +304,7 @@ class EigenspacePosterior:
         X_query: torch.Tensor,
         X_tilde: torch.Tensor,
         is_training_data: bool = False,
-        lambda_var_clamp: float = 1e-6
+        lambda_var_clamp: float = LAMBDA_VAR_CLAMP
     ):
         """
         Args:
@@ -448,7 +448,7 @@ class DirectVGPModel:
         X_train: torch.Tensor,
         X_tilde: torch.Tensor,
         eigval_tol: float = EIGVAL_TOL,
-        lambda_var_clamp: float = 1e-6
+        lambda_var_clamp: float = LAMBDA_VAR_CLAMP
     ):
         """
         Args:

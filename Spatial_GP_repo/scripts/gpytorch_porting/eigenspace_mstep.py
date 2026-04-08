@@ -14,6 +14,8 @@ Extracted from mstep.py during codebase reorganization (2025-02).
 import warnings
 import torch
 
+from _constants import LAMBDA_VAR_CLAMP
+
 # Analytical gradient functions for M-step
 from eigenspace_gradients import (
     compute_C_and_gradients,
@@ -25,7 +27,7 @@ from eigenspace_gradients import (
 
 def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
                               f_mean_mean_threshold: float = 100,
-                              lambda_var_clamp: float = 1e-6):
+                              lambda_var_clamp: float = LAMBDA_VAR_CLAMP):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
     Uses LBFGS with PyTorch autograd for gradients (not analytical gradients).
@@ -147,7 +149,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
 
 def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,
                                 f_mean_mean_threshold: float = 100,
-                                lambda_var_clamp: float = 1e-6):
+                                lambda_var_clamp: float = LAMBDA_VAR_CLAMP):
     """M-step for eigenspace mode with analytical gradients (matching vargp_old).
 
     Computes dK/dtheta matrices ONCE and caches them for LBFGS closure.
