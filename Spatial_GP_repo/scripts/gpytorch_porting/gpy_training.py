@@ -18,7 +18,12 @@ import torch
 from linear_operator import settings as lo_settings
 
 from metrics import compute_pearson_correlation, compute_spearman_correlation
-from _constants import LAMBDA_VAR_CLAMP, JITTER, CHOLESKY_MAX_TRIES
+from _constants import (
+    LAMBDA_VAR_CLAMP, JITTER, CHOLESKY_MAX_TRIES,
+    GPY_LBFGS_MAX_ITER, F_MEAN_MAX_THRESHOLD, F_MEAN_MEAN_THRESHOLD,
+    ES_ENABLED, ES_PATIENCE, ES_MIN_DELTA_REL, ES_MIN_ITERATIONS,
+    ES_RESTORE_BEST, ES_METRIC,
+)
 
 
 def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
@@ -79,14 +84,16 @@ def _compute_train_metrics_gpy(model, likelihood, train_x, train_y,
 
 def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n_iterations,
                        print_every=100, device=None,
-                       early_stop=True, patience=15, min_delta_rel=0.001, min_iterations=10,
-                       restore_best=True,
-                       lbfgs_max_iter=20,
+                       early_stop=ES_ENABLED, patience=ES_PATIENCE,
+                       min_delta_rel=ES_MIN_DELTA_REL, min_iterations=ES_MIN_ITERATIONS,
+                       restore_best=ES_RESTORE_BEST,
+                       lbfgs_max_iter=GPY_LBFGS_MAX_ITER,
                        jitter=JITTER, cholesky_max_tries=CHOLESKY_MAX_TRIES,
-                       f_mean_max_threshold=500, f_mean_mean_threshold=100,
+                       f_mean_max_threshold=F_MEAN_MAX_THRESHOLD,
+                       f_mean_mean_threshold=F_MEAN_MEAN_THRESHOLD,
                        lambda_var_clamp=LAMBDA_VAR_CLAMP,
                        X_val=None, r_val=None,
-                       es_metric='elbo'):
+                       es_metric=ES_METRIC):
     """Train using GPyTorch's standard variational inference (no custom E-step).
 
     Maximizes the ELBO = E_q[log p(y|f)] - KL(q(u) || p(u))
