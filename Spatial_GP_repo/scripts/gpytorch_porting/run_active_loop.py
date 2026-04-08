@@ -38,6 +38,7 @@ import copy
 import time
 import json
 import argparse
+import warnings
 from pathlib import Path
 from datetime import datetime
 
@@ -218,14 +219,19 @@ def compute_utility_and_select(model, likelihood, X_candidates, r_max, adaptive_
     Returns:
         best_local_idx: int, index into X_candidates (0-based)
         utility_at_best: float, utility value at selected point
+        max_pred_firing_rate: float, max(exp(mu_g)) over all candidates; used
+            by the caller to trip an f_max saturation warning when the Laplace
+            truncation at r_max becomes unreliable.
     """
     result = standard_utility(model, likelihood, X_candidates, r_max=r_max,
                               adaptive_r_max=adaptive_r_max)
     utility = result['utility']
+    mu_g = result['mu_g']  # log firing rate posterior mean over candidates
     best_local_idx = utility.argmax().item()
     utility_at_best = utility[best_local_idx].item()
+    max_pred_firing_rate = float(torch.exp(mu_g).max().item())
 
-    return best_local_idx, utility_at_best
+    return best_local_idx, utility_at_best, max_pred_firing_rate
 
 
 # =============================================================================
@@ -350,6 +356,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
     eigval_tol = config['eigval_tol']
     r_max = config['r_max']
     adaptive_r_max = config['adaptive_r_max']
+    f_max = config['f_max']
     n_active = al_config['n_active_iterations']
     strategy = al_config['strategy']
 
@@ -501,8 +508,20 @@ def run_active_loop(config, al_config, cli_args, output_dir):
             utility_at_best = None
         elif strategy == 'argmax':
             with torch.no_grad():
-                best_local_idx, utility_at_best = compute_utility_and_select(
+                best_local_idx, utility_at_best, max_pfr = compute_utility_and_select(
                     model, model.likelihood, X_candidates, r_max, adaptive_r_max
+                )
+            # f_max saturation guard: if any candidate's predicted firing rate
+            # exceeds f_max, the Laplace utility approximation truncated at
+            # r_max may be unreliable and argmax could pick a bad candidate.
+            # We only WARN (not exclude) — the user must decide how to react.
+            if max_pfr > f_max:
+                warnings.warn(
+                    f"Iter {iteration}: max predicted firing rate {max_pfr:.1f} "
+                    f"exceeds f_max={f_max}. Laplace utility truncation at "
+                    f"r_max={r_max} may be unreliable. It is important to "
+                    f"review this and consult the user before trusting this "
+                    f"iteration's selection."
                 )
         else:
             raise ValueError(f"Unknown strategy: {strategy}")
