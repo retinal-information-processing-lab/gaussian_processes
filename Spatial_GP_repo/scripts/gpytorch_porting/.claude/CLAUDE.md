@@ -344,6 +344,7 @@ Spatial_GP_repo/
 | `plotting/plot_training.py` | Per-cell training curve visualization (3 rows: log-lik, likelihood params, kernel params). Supports `--ylim-json` for fixed y-axis limits across cells. |
 | `plotting/visualize_experiment.py` | Summary visualizations for all-cells experiments (STA galleries, RF overlays, performance plots). |
 | `plotting/compute_param_ranges.py` | Compute y-axis ranges from sweep JSONL for consistent cross-cell plotting. Outputs `param_ranges_*.json`. |
+| `plotting/plot_active_loop.py` | Active learning comparison: argmax vs random, per cell. 3-panel figure (test_r, train_log_lik, utility) vs training set size. Accepts `--argmax <dir>+ --random <dir>+` (one dir per seed, paired by position). Default output: `<common ancestor of inputs>/plots/comparison.png`. Multiple seeds shown as faded individual lines + bold mean. |
 
 ### Archived data
 | Path | Purpose |

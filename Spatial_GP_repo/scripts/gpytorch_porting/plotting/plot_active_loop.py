@@ -1,30 +1,53 @@
 #!/usr/bin/env python3
 """
-Plot active learning comparison curves: argmax vs random.
+Plot active learning comparison curves: argmax vs random, for a single cell.
 
-Produces a 3-panel figure per cell:
-  Row 0: test_r vs n_training
-  Row 1: train_log_lik vs n_training
-  Row 2: utility vs n_training (argmax only)
+Reads results.jsonl files produced by run_active_loop.py and produces a
+3-panel figure comparing the two selection strategies as the training set grows:
 
-Multiple seeds are shown as individual faded lines plus a bold mean.
+  Row 0: test_r       — Pearson r on the 30-image held-out test set (primary metric)
+  Row 1: train_log_lik — log-likelihood on the growing training set
+  Row 2: utility       — acquisition utility score (argmax only; null for random)
 
-Usage:
-    # Single seed
+X-axis is n_training (number of images seen so far), starting at phase1_M (default 50)
+and growing to phase1_M + n_active_iterations (default 300).
+
+Multiple seeds are shown as faded individual lines (alpha=0.25) plus a bold mean line.
+Single seed: one line at full opacity.
+
+Input directory structure
+-------------------------
+Each --argmax / --random argument is a run directory produced by run_active_loop.py,
+i.e. a folder containing results.jsonl (plus config.json, curves.jsonl, checkpoints/).
+
+Single seed (flat layout, e.g. the 2026-04-08 cell 8 run):
+    results/active_loop/2026-04-08_cell8_seed42_M50_n250/
+        argmax/results.jsonl
+        random/results.jsonl
+
     python plotting/plot_active_loop.py \\
-        --argmax results/active_loop/.../argmax \\
-        --random  results/active_loop/.../random \\
-        --output  plots/cell8_active_loop.png
+        --argmax results/active_loop/2026-04-08_cell8_seed42_M50_n250/argmax \\
+        --random  results/active_loop/2026-04-08_cell8_seed42_M50_n250/random
 
-    # Multi-seed (paired by position: seed_0, seed_1, seed_2)
+Multi-seed (batch layout from run_active_loop_batch.py):
+    results/active_loop/2026-04-08_paper_gap_5cells/
+        cell_09/seed_0/argmax/results.jsonl
+        cell_09/seed_0/random/results.jsonl
+        cell_09/seed_1/argmax/results.jsonl
+        ...
+
     python plotting/plot_active_loop.py \\
         --argmax results/.../cell_09/seed_0/argmax \\
                  results/.../cell_09/seed_1/argmax \\
                  results/.../cell_09/seed_2/argmax \\
         --random  results/.../cell_09/seed_0/random \\
                  results/.../cell_09/seed_1/random \\
-                 results/.../cell_09/seed_2/random \\
-        --output  plots/cell9_active_loop.png
+                 results/.../cell_09/seed_2/random
+
+Output
+------
+Default: <common ancestor of all input dirs>/plots/comparison.png
+Override with --output <path>.
 """
 
 import os
