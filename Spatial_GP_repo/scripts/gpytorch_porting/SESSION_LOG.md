@@ -1,5 +1,36 @@
 # Session Log
 
+## 2026-04-08: Active loop infrastructure + first runs + batch script
+
+**Branch**: `pietro/utility_optimization`
+
+**Accomplished (previous session, commits 1bbdab7, 660d5f7, a417370, fc27eb8):**
+- Wired curves logging + per-iteration checkpoint saves into `run_active_loop.py`.
+  New output layout: `<output-dir>/{results,curves}.jsonl + config.json + checkpoints/iter_NNN.pt`.
+  New `eigenspace_checkpoint.py` module for `DirectVGPModel` save/load.
+- Added `f_max` saturation warning for argmax selection.
+- Anti-slop pass: 6 medium/low findings fixed.
+- Bumped `n_active_iterations` default to 250; added defensive M==n_train assertion.
+
+**Accomplished (this session):**
+- Committed the two pending changes from handoff (fc27eb8).
+- Improved config summary printout in `run_active_loop.py`: now shows eigval_tol,
+  phase1 ES params, phase2 n_estep/n_fstep/n_mstep/lr, f_max, AL-mode.
+- Ran first full argmax + random comparison (cell 8, seed 42, 250 iters).
+  Results in `results/active_loop/2026-04-08_cell8_seed42_M50_n250/`.
+  Argmax final test_r=0.624, random final test_r=0.669 — analysis deferred.
+- Added `run_active_loop_batch.py`: batch runner over cells x seeds x strategies.
+  CLI: `--cells`, `--n-seeds`, `--strategies`, `--output-dir`, pass-through `--n-active`/`--phase1-M`.
+  Loop order: cell -> seed -> strategy. Resume support (skips complete runs).
+  Subprocess-per-run with per-run `run.log`.
+- Anti-slop pass on batch script: narrowed except blocks, `['key']` over `.get()`, ASCII arrows.
+- Deleted stale handoff folder `investigations/active_loop_initial_runs/`.
+
+**Status**: Ready to launch paper-gap 5-cell batch (cells 9 14 18 28 39, 3 seeds).
+Command: `python run_active_loop_batch.py --cells 9 14 18 28 39 --n-seeds 3 --output-dir results/active_loop/2026-04-08_paper_gap_5cells`
+
+---
+
 ## 2026-04-07: ELBO ES sweep complete + design stabilization
 
 **Branch**: `pietro/investigate-paper-gap`

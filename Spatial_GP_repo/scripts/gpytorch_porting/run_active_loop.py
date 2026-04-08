@@ -669,7 +669,7 @@ def main():
 
     # Print config summary
     print("Active Learning Loop Configuration:")
-    print(f"  Cell: {args.cell}, Seed: {args.seed}, Mode: {al_config['mode']}")
+    print(f"  Cell: {args.cell}, Seed: {args.seed}, AL-mode: {al_config['mode']}")
     print(f"  Phase 1: M={args.phase1_M} (ip_selection={config['ip_selection']}), eigval_tol={config['eigval_tol']}")
     print(f"  Phase 1 ES: enabled={config['early_stop']}, patience={config['patience']}, "
           f"min_delta_rel={config['min_delta_rel']}, metric={config['es_metric']}")
