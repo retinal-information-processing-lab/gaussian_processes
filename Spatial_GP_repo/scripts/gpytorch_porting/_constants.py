@@ -13,3 +13,5 @@ _model = _defaults['model']
 
 EIGVAL_TOL = _model['eigval_tol']
 LAMBDA_VAR_CLAMP = _model['lambda_var_clamp']
+JITTER = _model['jitter']
+CHOLESKY_MAX_TRIES = _model['cholesky_max_tries']

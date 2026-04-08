@@ -20,6 +20,11 @@
 ## Float32
 - All training and evaluation uses `--float32`. Float64 is 10x slower and the reference code used float32.
 
+## Numerical Constants: Use `_constants.py`
+- `EIGVAL_TOL` and `LAMBDA_VAR_CLAMP` (and any future numerical defaults) live in `_constants.py`, which reads from `default_params.json['model']` at import time.
+- **Never write `= 1e-4` or `= 1e-6`** (or any numeric literal) as a default argument in a library function. Import the constant from `_constants.py` instead.
+- A pre-commit hook enforces this for module-level `UPPERCASE = <scientific notation>` in root-level `.py` files.
+
 ## Config API: Use the Right Builder
 - **Standalone scripts** (investigations, one-offs): use `build_config_from_defaults(mode, **overrides)` from `run_single_mode.py`. It reads `default_params.json` and returns a complete config.
 - **Experiment matrix iteration**: use `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell)`. This is for `run_experiment.py`'s `itertools.product()` loop — not for standalone scripts.

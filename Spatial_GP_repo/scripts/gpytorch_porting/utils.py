@@ -15,6 +15,7 @@ Functions:
 """
 
 import torch
+from _constants import JITTER
 
 
 def compute_rf_center_from_sta(X, r, n_px_side, zscore, blur_sigma=3.0):
@@ -210,7 +211,7 @@ def compute_f_mean(
     return torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
 
-def select_inducing_points_pivoted(X, kernel, n_inducing, n_candidates=None, seed=None, jitter=1e-4):
+def select_inducing_points_pivoted(X, kernel, n_inducing, n_candidates=None, seed=None, jitter=JITTER):
     """Select inducing points via pivoted Cholesky decomposition.
 
     Greedily selects points that maximize kernel diversity, avoiding

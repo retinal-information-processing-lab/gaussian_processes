@@ -67,7 +67,7 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 6. **Conda environment hook** - If a Bash command fails with `CONDA_ENV_WRONG`, immediately run `conda activate pytorch_gpytorch` and retry the command.
 
-7. **No hidden hardcoded parameters** - Scripts (including investigations) must read defaults from `default_params.json`, not hardcode literals like `seed=123, M=50`. Use `build_config_from_defaults()` helper in `run_single_mode.py`. Explicit overrides are fine but must be visible and justified.
+7. **No hidden hardcoded parameters** - Scripts (including investigations) must read defaults from `default_params.json`, not hardcode literals like `seed=123, M=50`. Use `build_config_from_defaults()` helper in `run_single_mode.py`. Explicit overrides are fine but must be visible and justified. For library-level numerical constants used as function default arguments (e.g. `EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`), import from `_constants.py` — never write `= 1e-4` or `= 1e-6` in a function signature.
 
 8. **No silent pixel clipping in plots** - When plotting images (especially optimized or synthetic ones), every subplot must check if pixel values exceed the dataset global range [min, max] and flag OOB with a red title. Use fixed vmin/vmax = dataset global range, never adaptive scaling. See `.claude/rules/critical_short_rules.md` "Image Pixel Range and Plotting" for full rule.
 
@@ -233,7 +233,7 @@ Config: `default_params.json` -> `kernel.type`, `kernel.lengthscale` (RBF only).
 ### vargp_direct Mode
 
 **Key characteristics**:
-- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
+- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL from `default_params.json['model']['eigval_tol']`)
 - K_tilde_b is DIAGONAL (trivial inverse)
 - Matches vargp_old E-step formulas exactly
 - **IMPORTANT**: Use `--float32` for performance
@@ -287,6 +287,7 @@ Spatial_GP_repo/
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
+| `_constants.py` | Numerical constants loaded from `default_params.json` at import time (`EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`). All library files import from here — never hardcode these values in function signatures. |
 | `acquisition.py` | Acquisition functions: `standard_utility()`, `distribution_aware_utility()`. Zero playground imports — all Laplace/entropy code local in `utils.py`. Both functions return `mu_g_marg` (log-firing rate) for f_max guard. Currently default_gpy only. |
 
 ### Eigenspace Implementation (vargp_direct mode)
@@ -391,7 +392,7 @@ The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Sinc
 27 .py files in `gpytorch_porting/` root. Library code (kernels, eigenspace_*, gpy_*, metrics, etc.) should move into a `gp/` package with `eigenspace/` and `gpytorch/` sub-packages, leaving only entry-point scripts at root. Deferred because it touches every import in every file and would complicate merging with other branches.
 
 ### YAML Experiment System - Open Items
-- **Remaining hardcoded params**: kernel_bounds, lbfgs_tolerance/history_size, lambda_var_clamp, stability_threshold are documented in YAML with `HARDCODED` tags and file:line refs but NOT yet wired through code. Changing their YAML values has no effect.
+- **Remaining hardcoded params**: kernel_bounds, lbfgs_tolerance/history_size, stability_threshold are documented in YAML with `HARDCODED` tags and file:line refs but NOT yet wired through code. Changing their YAML values has no effect. (`lambda_var_clamp` has been fixed — now in `_constants.py`.)
 - **Canonical/quick YAML sync hook**: Non-experiment sections of `canonical.yaml` and `quick.yaml` should stay in sync. A Claude Code hook is planned but not yet implemented.
 - **`run_single_mode.py` early stopping defaults**: Now read from `default_params.json`.
 
@@ -400,7 +401,7 @@ The default LBFGS `strong_wolfe` line search uses internal tolerance ~1e-9. Sinc
 ## vargp_direct Mode
 
 **Key characteristics**:
-- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL=1e-4)
+- Stores m_b, V_b in reduced eigenspace (EIGVAL_TOL from `default_params.json['model']['eigval_tol']`)
 - K_tilde_b is DIAGONAL (trivial inverse)
 - Matches vargp_old E-step formulas exactly
 - **IMPORTANT**: Use `--float32` for performance

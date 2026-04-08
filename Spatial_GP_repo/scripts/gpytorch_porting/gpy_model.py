@@ -7,6 +7,7 @@ ApproximateGP framework with the arc-cosine kernel.
 
 import numpy as np
 import torch
+from _constants import JITTER
 import gpytorch
 from gpytorch.models import ApproximateGP
 from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy, UnwhitenedVariationalStrategy
@@ -145,7 +146,7 @@ def test_model():
     kernel = ArcCosineKernel(n_px_side=n_px_side, sigma_0=1.0,
                              beta=0.1, rho=0.1, eps_0x=0.0, eps_0y=0.0)
     model = VariationalGPModel(inducing_points, kernel,
-                               jitter=1e-4, standard_variational_distribution=True)
+                               jitter=JITTER, standard_variational_distribution=True)
 
     # Test forward pass
     model.eval()

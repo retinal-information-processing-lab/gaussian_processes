@@ -18,11 +18,11 @@ import torch
 from linear_operator import settings as lo_settings
 
 from metrics import compute_pearson_correlation, compute_spearman_correlation
-from _constants import LAMBDA_VAR_CLAMP
+from _constants import LAMBDA_VAR_CLAMP, JITTER, CHOLESKY_MAX_TRIES
 
 
 def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
-                              jitter=1e-4, cholesky_max_tries=3,
+                              jitter=JITTER, cholesky_max_tries=CHOLESKY_MAX_TRIES,
                               lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Compute validation log-likelihood, Pearson r, and Spearman rho for default_gpy mode.
 
@@ -56,7 +56,7 @@ def _compute_val_metrics_gpy(model, likelihood, X_val, r_val,
 
 
 def _compute_train_metrics_gpy(model, likelihood, train_x, train_y,
-                                jitter=1e-4, cholesky_max_tries=3,
+                                jitter=JITTER, cholesky_max_tries=CHOLESKY_MAX_TRIES,
                                 lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Compute training Pearson r and Spearman rho for default_gpy mode."""
     model.eval()
@@ -82,7 +82,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
                        early_stop=True, patience=15, min_delta_rel=0.001, min_iterations=10,
                        restore_best=True,
                        lbfgs_max_iter=20,
-                       jitter=1e-4, cholesky_max_tries=3,
+                       jitter=JITTER, cholesky_max_tries=CHOLESKY_MAX_TRIES,
                        f_mean_max_threshold=500, f_mean_mean_threshold=100,
                        lambda_var_clamp=LAMBDA_VAR_CLAMP,
                        X_val=None, r_val=None,
@@ -421,7 +421,7 @@ def train_gpy_default(model, likelihood, train_x, train_y, optimizer_name, lr, n
 
 
 def predict(model, likelihood, test_x, device=None,
-            jitter=1e-4, cholesky_max_tries=3, lambda_var_clamp=LAMBDA_VAR_CLAMP):
+            jitter=JITTER, cholesky_max_tries=CHOLESKY_MAX_TRIES, lambda_var_clamp=LAMBDA_VAR_CLAMP):
     """Make predictions on test data.
 
     Args:
