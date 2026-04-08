@@ -67,7 +67,7 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 6. **Conda environment hook** - If a Bash command fails with `CONDA_ENV_WRONG`, immediately run `conda activate pytorch_gpytorch` and retry the command.
 
-7. **No hidden hardcoded parameters** - Scripts (including investigations) must read defaults from `default_params.json`, not hardcode literals like `seed=123, M=50`. Use `build_config_from_defaults()` helper in `run_single_mode.py`. Explicit overrides are fine but must be visible and justified. For library-level numerical constants used as function default arguments (e.g. `EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`), import from `_constants.py` — never write `= 1e-4` or `= 1e-6` in a function signature.
+7. **No hidden hardcoded parameters** - Scripts (including investigations) must read defaults from `default_params.json`, not hardcode literals like `seed=123, M=50`. Use `build_config_from_defaults()` helper in `run_single_mode.py`. Explicit overrides are fine but must be visible and justified. **For library-level numerical constants** (`EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`, `JITTER`, `CHOLESKY_MAX_TRIES`, `GPY_LBFGS_MAX_ITER`, `F_MEAN_MAX_THRESHOLD`, `F_MEAN_MEAN_THRESHOLD`, `ES_ENABLED`, `ES_PATIENCE`, `ES_MIN_DELTA_REL`, `ES_MIN_ITERATIONS`, `ES_RESTORE_BEST`, `ES_METRIC`): always import from `_constants.py`, never write the literal value directly. `_constants.py` loads all of these from `default_params.json` at import time — it is the single bridge between the JSON config and library code.
 
 8. **No silent pixel clipping in plots** - When plotting images (especially optimized or synthetic ones), every subplot must check if pixel values exceed the dataset global range [min, max] and flag OOB with a red title. Use fixed vmin/vmax = dataset global range, never adaptive scaling. See `.claude/rules/critical_short_rules.md` "Image Pixel Range and Plotting" for full rule.
 
@@ -287,7 +287,7 @@ Spatial_GP_repo/
 | `analytical_gradients.py` | Jacobian-based gradients (slow, reference) |
 | `analytical_gradients_vjp.py` | VJP-based gradients (fast) |
 | `default_params.json` | Centralized defaults for all modes |
-| `_constants.py` | Numerical constants loaded from `default_params.json` at import time (`EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`). All library files import from here — never hardcode these values in function signatures. |
+| `_constants.py` | Numerical constants loaded from `default_params.json` at import time. Current exports: `EIGVAL_TOL`, `LAMBDA_VAR_CLAMP`, `JITTER`, `CHOLESKY_MAX_TRIES`, `GPY_LBFGS_MAX_ITER`, `F_MEAN_MAX_THRESHOLD`, `F_MEAN_MEAN_THRESHOLD`, `ES_ENABLED`, `ES_PATIENCE`, `ES_MIN_DELTA_REL`, `ES_MIN_ITERATIONS`, `ES_RESTORE_BEST`, `ES_METRIC`. Library files import from here — never write these as literals. See CRITICAL RULE 7. |
 | `acquisition.py` | Acquisition functions: `standard_utility()`, `distribution_aware_utility()`. Zero playground imports — all Laplace/entropy code local in `utils.py`. Both functions return `mu_g_marg` (log-firing rate) for f_max guard. Currently default_gpy only. |
 
 ### Eigenspace Implementation (vargp_direct mode)
