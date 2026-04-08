@@ -90,7 +90,7 @@
 
   "active_learning": {
     "_comment": "Parameters for run_active_loop.py. Phase 2 values from config/config.py:191-198 (production).",
-    "n_active_iterations": 50,
+    "n_active_iterations": 250,
     "phase2_n_iterations": 5,
     "phase2_n_estep": 10,
     "phase2_n_fstep": 10,

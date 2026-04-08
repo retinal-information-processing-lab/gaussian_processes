@@ -541,6 +541,17 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         train_result = train_eigenspace(new_model, spike_counts, **phase2_kwargs)
         model = train_result['model']
 
+        # Defensive: M == n_train must hold at every active step.
+        # extend_model_with_new_point preserves this by construction, and
+        # train_eigenspace doesn't touch X_train / X_tilde, but we assert
+        # explicitly so any future regression in those modules fails loudly
+        # here instead of silently producing wrong eigenspace projections.
+        assert model.X_train.shape[0] == model.X_tilde.shape[0] == in_use_idx.shape[0], (
+            f"M != n_train invariant violated at iteration {iteration}: "
+            f"X_train={model.X_train.shape[0]}, X_tilde={model.X_tilde.shape[0]}, "
+            f"in_use_idx={in_use_idx.shape[0]}"
+        )
+
         train_loss = train_result['losses'][-1] if train_result['losses'] else None
         phase2_curves = train_result['curves']
         phase2_final_values = _extract_final_curve_values(phase2_curves)
