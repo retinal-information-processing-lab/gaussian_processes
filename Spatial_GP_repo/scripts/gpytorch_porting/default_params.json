@@ -73,7 +73,7 @@
   },
 
   "inducing": {
-    "selection_method": "pivoted",
+    "selection_method": "random",
     "n_candidates": null,
     "n_samples_sta": null
   },

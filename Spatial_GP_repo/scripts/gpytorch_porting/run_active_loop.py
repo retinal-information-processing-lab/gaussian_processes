@@ -669,11 +669,16 @@ def main():
 
     # Print config summary
     print("Active Learning Loop Configuration:")
-    print(f"  Cell: {args.cell}, Seed: {args.seed}")
-    print(f"  Phase 1: M={args.phase1_M} (pivoted Cholesky)")
-    print(f"  Phase 2: {args.n_active} iterations, "
-          f"{al_config['phase2_n_iterations']} EM iters/step")
-    print(f"  r_max: {config['r_max']}, Strategy: {args.strategy}")
+    print(f"  Cell: {args.cell}, Seed: {args.seed}, Mode: {al_config['mode']}")
+    print(f"  Phase 1: M={args.phase1_M} (ip_selection={config['ip_selection']}), eigval_tol={config['eigval_tol']}")
+    print(f"  Phase 1 ES: enabled={config['early_stop']}, patience={config['patience']}, "
+          f"min_delta_rel={config['min_delta_rel']}, metric={config['es_metric']}")
+    print(f"  Phase 2: {args.n_active} iterations, strategy={args.strategy}")
+    print(f"  Phase 2 per step: {al_config['phase2_n_iterations']} EM iters, "
+          f"n_estep={al_config['phase2_n_estep']}, n_fstep={al_config['phase2_n_fstep']}, "
+          f"n_mstep={al_config['phase2_n_mstep']}, lr={al_config['phase2_lr']}, "
+          f"early_stop={al_config['phase2_early_stop']}")
+    print(f"  r_max: {config['r_max']}, f_max: {config['f_max']}")
     print(f"  Output: {output_dir}")
 
     run_active_loop(config, al_config, args, output_dir)
