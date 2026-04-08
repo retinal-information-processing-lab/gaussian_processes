@@ -223,8 +223,11 @@ def compute_utility_and_select(model, likelihood, X_candidates, r_max, adaptive_
             by the caller to trip an f_max saturation warning when the Laplace
             truncation at r_max becomes unreliable.
     """
-    result = standard_utility(model, likelihood, X_candidates, r_max=r_max,
-                              adaptive_r_max=adaptive_r_max)
+    # no_grad: argmax selection over a fixed pool needs no gradient graph.
+    # REMOVE this if switching to gradient-based utility optimization (x* ascent).
+    with torch.no_grad():
+        result = standard_utility(model, likelihood, X_candidates, r_max=r_max,
+                                  adaptive_r_max=adaptive_r_max)
     utility = result['utility']
     mu_g = result['mu_g']  # log firing rate posterior mean over candidates
     best_local_idx = utility.argmax().item()
