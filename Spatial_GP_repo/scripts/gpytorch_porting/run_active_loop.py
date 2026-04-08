@@ -252,10 +252,10 @@ def evaluate_model(model, X_test, r_test):
     pred = predict_eigenspace(model, X_test)
     f_pred = pred['f_pred']
 
-    # r_test shape is (30, 30) = (n_repeats, n_images) from PNAS loading
-    # metrics expect (n_repeats, n_images) — no transpose needed
-    r_test_mean = r_test.mean(dim=0)  # (30,) average over repeats
-    test_r = compute_pearson_correlation(r_test_mean, f_pred)
+    # r_test shape is (30, 30) = (n_repeats, n_images) from PNAS loading.
+    # All three metric functions expect (n_repeats, n_images) and average over
+    # repeats internally — pass r_test directly with no manual reduction.
+    test_r = compute_pearson_correlation(r_test, f_pred)
     adjusted_r2 = compute_adjusted_r_squared(r_test, f_pred)
     explained_var, reliability = compute_explained_variance(r_test, f_pred)
 
@@ -271,68 +271,41 @@ def evaluate_model(model, X_test, r_test):
 # JSONL logging
 # =============================================================================
 
-def write_iteration_record(results_path, iteration, n_training, n_b,
-                           selected_idx, spike_count, utility_value,
-                           train_loss, curve_finals, eval_metrics, wall_time):
-    """Append one iteration record to results.jsonl.
+# Required-key schemas. write_jsonl_row asserts every entry in the schema is
+# present in the record before writing — missing keys crash loudly instead of
+# producing JSONL with silent holes.
+RESULTS_REQUIRED_KEYS = frozenset({
+    'iteration', 'n_training', 'n_b',
+    'selected_idx', 'spike_count', 'utility',
+    'train_loss', 'train_log_lik', 'train_kl', 'train_r',
+    'final_A', 'final_lambda0', 'final_beta', 'final_rho',
+    'final_sigma_0', 'final_eps_0x', 'final_eps_0y', 'final_Amp',
+    'test_r', 'adjusted_r2', 'explained_var', 'reliability',
+    'wall_time_s', 'timestamp',
+})
+
+CURVES_REQUIRED_KEYS = frozenset({
+    'iteration', 'n_training', 'final_iteration', 'best_iteration',
+    'stopped_early', 'curves',
+})
+
+
+def write_jsonl_row(path, record, required_keys):
+    """Append one record to a JSONL file after schema validation.
 
     Args:
-        results_path: Path to results.jsonl
-        iteration: int, active iteration number (0 for Phase 1 baseline)
-        n_training: int, number of training points after this iteration
-        n_b: int, eigenspace dimension (kept eigenvalues)
-        selected_idx: int or None, pool index selected this iteration
-        spike_count: float or None, ground-truth spike count for selected image
-        utility_value: float or None, utility at selected image (None for random)
-        train_loss: float, -ELBO at end of training (or None if losses empty)
-        curve_finals: dict from _extract_final_curve_values(); contains
-                      train_log_lik, train_kl, train_r and final_* hypers
-        eval_metrics: dict from evaluate_model(); contains test_r, adjusted_r2,
-                      explained_var, reliability
-        wall_time: float, iteration wall time in seconds
+        path: Path to the JSONL file (parent dirs must already exist).
+        record: dict to serialize.
+        required_keys: iterable of keys that MUST be present in record.
+                       Missing keys raise ValueError before any write.
     """
-    record = {
-        'iteration': iteration,
-        'n_training': n_training,
-        'n_b': n_b,
-        'selected_idx': selected_idx,
-        'spike_count': spike_count,
-        'utility': utility_value,
-        'train_loss': train_loss,
-        'wall_time_s': round(wall_time, 2) if wall_time is not None else None,
-        'timestamp': datetime.now().isoformat(timespec='seconds'),
-    }
-    record.update(curve_finals)
-    record.update(eval_metrics)
-
-    with open(results_path, 'a') as f:
-        f.write(json.dumps(record) + '\n')
-
-
-def write_phase1_curves(curves_path, iteration, n_training, curves,
-                        final_iteration, best_iteration, stopped_early):
-    """Append one record to curves.jsonl.
-
-    Currently called only for iteration 0 (Phase 1). Phase 2 retrains are
-    too short (only phase2_n_iterations EM steps) to produce meaningful
-    trajectories; their final values end up in results.jsonl instead.
-
-    Args:
-        curves_path: Path to curves.jsonl
-        iteration: int, the active iteration this curve belongs to (0 = Phase 1)
-        n_training: int, number of training points during this training run
-        curves: full dict from result['curves']
-        final_iteration, best_iteration, stopped_early: ES metadata from result
-    """
-    record = {
-        'iteration': iteration,
-        'n_training': n_training,
-        'final_iteration': final_iteration,
-        'best_iteration': best_iteration,
-        'stopped_early': stopped_early,
-        'curves': curves,
-    }
-    with open(curves_path, 'a') as f:
+    missing = set(required_keys) - set(record.keys())
+    if missing:
+        raise ValueError(
+            f"write_jsonl_row: record missing required keys {sorted(missing)} "
+            f"for path {path}"
+        )
+    with open(path, 'a') as f:
         f.write(json.dumps(record) + '\n')
 
 
@@ -440,7 +413,14 @@ def run_active_loop(config, al_config, cli_args, output_dir):
           f"time={phase1_time:.1f}s")
 
     # --- Index management ---
-    all_pool_idx = torch.arange(X_pool.shape[0], device=device)
+    # remaining_mask: bool[N_pool], True = available for selection.
+    # We track BOTH a mask (for O(1) updates and O(N) remaining lookup) and
+    # in_use_idx (a growing tensor that records the ORDER of additions —
+    # critical because spike_counts and model.X_train are appended in the
+    # same order, and the checkpoint stores in_use_idx as pool_indices).
+    n_pool = X_pool.shape[0]
+    remaining_mask = torch.ones(n_pool, dtype=torch.bool, device=device)
+    remaining_mask[indices_train] = False
     in_use_idx = indices_train.clone()
 
     # --- Write Phase 1 baseline (iteration 0): results row, curves row, checkpoint ---
@@ -448,27 +428,33 @@ def run_active_loop(config, al_config, cli_args, output_dir):
     phase1_final_values = _extract_final_curve_values(phase1_curves)
     n_b_phase1 = len(model.state.eigvals_b)
 
-    write_iteration_record(
-        results_path,
-        iteration=0, n_training=in_use_idx.shape[0], n_b=n_b_phase1,
-        selected_idx=None, spike_count=None, utility_value=None,
-        train_loss=phase1_final_loss,
-        curve_finals=phase1_final_values,
-        eval_metrics=eval_metrics,
-        wall_time=phase1_time,
-    )
+    phase1_record = {
+        'iteration': 0,
+        'n_training': in_use_idx.shape[0],
+        'n_b': n_b_phase1,
+        'selected_idx': None,
+        'spike_count': None,
+        'utility': None,
+        'train_loss': phase1_final_loss,
+        'wall_time_s': round(phase1_time, 2),
+        'timestamp': datetime.now().isoformat(timespec='seconds'),
+        **phase1_final_values,
+        **eval_metrics,
+    }
+    write_jsonl_row(results_path, phase1_record, RESULTS_REQUIRED_KEYS)
 
     # Phase 1 curves are the only ones saved to curves.jsonl (50-iter training).
     # Phase 2 retrains are too short (phase2_n_iterations EM steps) to be useful.
     if phase1_curves:
-        write_phase1_curves(
-            curves_path,
-            iteration=0, n_training=in_use_idx.shape[0],
-            curves=phase1_curves,
-            final_iteration=phase1_result['n_iterations_run'],
-            best_iteration=phase1_result['best_iteration'],
-            stopped_early=phase1_result['stopped_early'],
-        )
+        curves_record = {
+            'iteration': 0,
+            'n_training': in_use_idx.shape[0],
+            'final_iteration': phase1_result['n_iterations_run'],
+            'best_iteration': phase1_result['best_iteration'],
+            'stopped_early': phase1_result['stopped_early'],
+            'curves': phase1_curves,
+        }
+        write_jsonl_row(curves_path, curves_record, CURVES_REQUIRED_KEYS)
 
     save_eigenspace_checkpoint(
         model=model,
@@ -476,8 +462,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         metrics={**eval_metrics, **phase1_final_values,
                  'train_loss': phase1_final_loss},
         pool_indices=in_use_idx,
-        pool_shape=pool_shape,
-        pool_sum=pool_sum,
+        X_pool=X_pool,
         checkpoint_path=checkpoint_dir / 'iter_000.pt',
     )
 
@@ -492,8 +477,10 @@ def run_active_loop(config, al_config, cli_args, output_dir):
     for iteration in range(1, n_active + 1):
         t_start = time.time()
 
-        # 1. Remaining candidates
-        remaining_idx = all_pool_idx[~torch.isin(all_pool_idx, in_use_idx)]
+        # 1. Remaining candidates: extract pool indices where mask is True.
+        # nonzero returns sorted ascending — same order as the old
+        # arange[~isin(...)] approach, so behavior is bit-identical.
+        remaining_idx = torch.nonzero(remaining_mask, as_tuple=True)[0]
         X_candidates = X_pool[remaining_idx]
 
         if X_candidates.shape[0] == 0:
@@ -533,6 +520,9 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         r_new = R_pool[selected_pool_idx]
 
         # 4. Update tracking
+        # Mark the selected index as no-longer-available (O(1)) and append it
+        # to the order-preserving in_use_idx tensor.
+        remaining_mask[selected_pool_idx] = False
         in_use_idx = torch.cat([
             in_use_idx,
             torch.tensor([selected_pool_idx], device=device),
@@ -562,16 +552,20 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         wall_time = time.time() - t_start
 
         # 8. Log results row
-        write_iteration_record(
-            results_path,
-            iteration=iteration, n_training=in_use_idx.shape[0], n_b=n_b_current,
-            selected_idx=selected_pool_idx, spike_count=r_new.item(),
-            utility_value=utility_at_best,
-            train_loss=train_loss,
-            curve_finals=phase2_final_values,
-            eval_metrics=eval_metrics,
-            wall_time=wall_time,
-        )
+        iter_record = {
+            'iteration': iteration,
+            'n_training': in_use_idx.shape[0],
+            'n_b': n_b_current,
+            'selected_idx': selected_pool_idx,
+            'spike_count': r_new.item(),
+            'utility': utility_at_best,
+            'train_loss': train_loss,
+            'wall_time_s': round(wall_time, 2),
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            **phase2_final_values,
+            **eval_metrics,
+        }
+        write_jsonl_row(results_path, iter_record, RESULTS_REQUIRED_KEYS)
 
         # 9. Save checkpoint
         save_eigenspace_checkpoint(
@@ -580,8 +574,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
             metrics={**eval_metrics, **phase2_final_values,
                      'train_loss': train_loss},
             pool_indices=in_use_idx,
-            pool_shape=pool_shape,
-            pool_sum=pool_sum,
+            X_pool=X_pool,
             checkpoint_path=checkpoint_dir / f'iter_{iteration:03d}.pt',
         )
 

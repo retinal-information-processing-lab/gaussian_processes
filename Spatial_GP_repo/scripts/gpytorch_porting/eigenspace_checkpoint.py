@@ -35,23 +35,34 @@ def save_eigenspace_checkpoint(
     config,
     metrics,
     pool_indices,
-    pool_shape,
-    pool_sum,
+    X_pool,
     checkpoint_path,
 ):
     """Save DirectVGPModel state to a .pt file.
+
+    Integrity tags (pool_shape, pool_sum, pool_dtype) are derived from X_pool
+    inside this function so the caller cannot accidentally pass mismatched
+    values. The cost of recomputing X_pool.sum() per save is negligible
+    compared to training (~5 ms on GPU for a 37M-element float32 pool).
 
     Args:
         model: Trained DirectVGPModel.
         config: Flat config dict used for training (needed for reconstruction).
         metrics: Dict of final metrics to embed in the checkpoint.
         pool_indices: LongTensor (n_training,), indices into the PNAS pool.
-        pool_shape: list of ints, e.g. [3160, 11664]. Integrity tag.
-        pool_sum: float, X_pool.sum().item(). Integrity tag.
+        X_pool: (N_pool, n_pixels) full image pool tensor. Used to derive
+                pool_shape, pool_sum, pool_dtype integrity tags.
         checkpoint_path: Path to the output .pt file. Parent dirs are created.
     """
     checkpoint_path = Path(checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Derive integrity tags from X_pool. Single source of truth: any mismatch
+    # at load time means the caller is using a different pool than was
+    # originally trained on.
+    pool_shape = list(X_pool.shape)
+    pool_sum = float(X_pool.sum().item())
+    pool_dtype = str(X_pool.dtype)
 
     kernel = model.kernel
     likelihood = model.likelihood
@@ -92,8 +103,9 @@ def save_eigenspace_checkpoint(
         'm_b': model.state.m_b.cpu(),
         'V_b': model.state.V_b.cpu(),
         'pool_indices': pool_indices.cpu(),
-        'pool_shape': list(pool_shape),
-        'pool_sum': float(pool_sum),
+        'pool_shape': pool_shape,
+        'pool_sum': pool_sum,
+        'pool_dtype': pool_dtype,
         'rf_center_bounds': rf_center_bounds,
         'config': config,
         'metrics': metrics,
@@ -111,6 +123,59 @@ def save_eigenspace_checkpoint(
     }
 
     torch.save(checkpoint, checkpoint_path)
+
+
+def _verify_pool_integrity(checkpoint, X_pool, pool_sum_tolerance):
+    """Verify a checkpoint's saved integrity tags against the loader's X_pool.
+
+    Three independent checks, in increasing strictness:
+      - **Shape** must match exactly. Wrong dataset/resolution -> AssertionError.
+      - **Dtype** check is a WARNING, not an error. The pool_sum_tolerance was
+        tuned for float32 reduction noise; loading on a different dtype means
+        the tolerance may be either too loose (float16/bfloat16) or absurdly
+        too tight (float64). Loading still proceeds.
+      - **Sum** must agree to within pool_sum_tolerance. Same shape but
+        different content (a swapped/regenerated .npz with identical
+        dimensions) -> AssertionError.
+
+    Args:
+        checkpoint: dict from torch.load().
+        X_pool: tensor the caller plans to use for X_train reconstruction.
+        pool_sum_tolerance: float, max allowed |saved_sum - current_sum|.
+
+    Raises:
+        AssertionError on shape or sum mismatch.
+    """
+    saved_shape = checkpoint['pool_shape']
+    saved_sum = checkpoint['pool_sum']
+    saved_dtype = checkpoint.get('pool_dtype')  # may be absent in older checkpoints
+
+    current_shape = list(X_pool.shape)
+    if current_shape != saved_shape:
+        raise AssertionError(
+            f"Pool shape mismatch: checkpoint has {saved_shape}, "
+            f"X_pool has {current_shape}. Likely wrong dataset."
+        )
+
+    if saved_dtype is not None and str(X_pool.dtype) != saved_dtype:
+        warnings.warn(
+            f"Pool dtype mismatch: checkpoint was saved with {saved_dtype} "
+            f"but X_pool is {X_pool.dtype}. The pool_sum_tolerance "
+            f"({pool_sum_tolerance}) is calibrated for the saved dtype's "
+            f"reduction noise floor — loading will proceed but the "
+            f"integrity check may be unreliable. If your dtype is wider, "
+            f"the tolerance is probably absurdly too loose; if narrower, "
+            f"it may be too tight."
+        )
+
+    current_sum = float(X_pool.sum().item())
+    if abs(current_sum - saved_sum) > pool_sum_tolerance:
+        raise AssertionError(
+            f"Pool sum mismatch: checkpoint has {saved_sum:.6f}, "
+            f"X_pool has {current_sum:.6f} "
+            f"(tolerance {pool_sum_tolerance}). "
+            f"Likely content differs from save time."
+        )
 
 
 def load_eigenspace_checkpoint(checkpoint_path, X_pool, pool_sum_tolerance,
@@ -152,25 +217,13 @@ def load_eigenspace_checkpoint(checkpoint_path, X_pool, pool_sum_tolerance,
     config = checkpoint['config']
     metadata = checkpoint['metadata']
 
-    # ----- Integrity checks (before any reconstruction) -----
-    saved_shape = checkpoint['pool_shape']
-    saved_sum = checkpoint['pool_sum']
-    current_shape = list(X_pool.shape)
-    current_sum = X_pool.sum().item()
+    # Pool shape + dtype + sum integrity checks (raises on shape/sum mismatch,
+    # warns on dtype mismatch). All three are about the loader's X_pool.
+    _verify_pool_integrity(checkpoint, X_pool, pool_sum_tolerance)
 
-    if current_shape != saved_shape:
-        raise AssertionError(
-            f"Pool shape mismatch: checkpoint has {saved_shape}, "
-            f"X_pool has {current_shape}. Likely wrong dataset."
-        )
-    if abs(current_sum - saved_sum) > pool_sum_tolerance:
-        raise AssertionError(
-            f"Pool sum mismatch: checkpoint has {saved_sum:.6f}, "
-            f"X_pool has {current_sum:.6f} "
-            f"(tolerance {pool_sum_tolerance}). "
-            f"Likely content differs from save time."
-        )
-
+    # data_path is a separate concern: the saved string vs the current config
+    # string. This is purely a UX warning — files can legitimately move and
+    # the integrity checks already covered the actual content.
     saved_data_path = metadata.get('data_path')
     current_data_path = config.get('data_path')
     if (saved_data_path and current_data_path
