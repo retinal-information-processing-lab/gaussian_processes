@@ -102,6 +102,8 @@
     "strategy": "argmax",
     "mode": "vargp_direct",
     "phase1_M": 50,
-    "phase1_n_train": 50
+    "output_dir_default": "results/active_loop",
+    "_comment_checkpoint_pool_sum_tolerance": "Integrity-check tolerance used by eigenspace_checkpoint.load_eigenspace_checkpoint. Compares X_pool.sum() against the value saved in the checkpoint to catch wrong-dataset bugs. 1e-3 sits above float32 GPU reduction noise (~6e-4 for a 3160x11664 pool) but is tight enough to catch any visible pixel change. DO NOT CHANGE unless you switch dtypes or pool resolution.",
+    "checkpoint_pool_sum_tolerance": 0.001
   }
 }
