@@ -7,7 +7,6 @@ Reads results.jsonl files produced by run_active_loop.py and produces a
 
   Row 0: test_r       — Pearson r on the 30-image held-out test set (primary metric)
   Row 1: train_log_lik — log-likelihood on the growing training set
-  Row 2: utility       — acquisition utility score (argmax only; null for random)
 
 X-axis is n_training (number of images seen so far), starting at phase1_M (default 50)
 and growing to phase1_M + n_active_iterations (default 300).
@@ -203,7 +202,7 @@ def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None):
     argmax_runs = [load_results_jsonl(d) for d in argmax_dirs]
     random_runs = [load_results_jsonl(d) for d in random_dirs]
 
-    fig, axes = plt.subplots(3, 1, figsize=(7, 9),
+    fig, axes = plt.subplots(2, 1, figsize=(7, 6),
                              sharex=True,
                              gridspec_kw={'hspace': 0.08})
 
@@ -218,17 +217,8 @@ def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None):
                      key='train_log_lik', ylabel='train log-lik',
                      plot_random=True)
 
-    # Row 2: utility (argmax only — random has null values)
-    _plot_metric_row(axes[2], argmax_runs, random_runs,
-                     key='utility', ylabel='utility (argmax)',
-                     plot_random=False)
-    axes[2].text(0.97, 0.90, 'n/a for random',
-                 transform=axes[2].transAxes,
-                 ha='right', va='top', fontsize=9,
-                 color='#888888', style='italic')
-
     # Shared x-axis label on bottom panel only
-    axes[2].set_xlabel('Training set size (n)', fontsize=11)
+    axes[1].set_xlabel('Training set size (n)', fontsize=11)
 
     if title:
         fig.suptitle(title, fontsize=12, y=1.01)
