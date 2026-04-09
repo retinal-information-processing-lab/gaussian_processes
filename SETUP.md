@@ -161,3 +161,24 @@ python run_single_mode.py ...
 - **Float32 is the default**. All training runs in float32 (float64 is 10x slower).
 - The `package/` subdirectory in `Spatial_GP_repo/scripts/gpytorch_porting/` has a separate, minimal `environment.yml` for inference-only use (no torchlambertw, no pytest, no experiment system).
 - Pre-trained checkpoints (`.pt` files) are also not git-tracked and need separate transfer if you want to skip retraining.
+
+---
+
+## Installation log: spark-09ab (2026-04-07)
+
+Machine: DGX Spark `spark-09ab`, aarch64, NVIDIA GB10, driver 580.126.09, CUDA 13.0.
+
+**Departed from the standard steps above in two ways:**
+
+**1. Reused an existing conda env instead of creating fresh.**
+A `dl` env already had a working nightly torch build (`2.12.0.dev20260325+cu130`) with CUDA. Rather than duplicate a ~5 GB torch+CUDA install, that env was renamed and the missing packages added:
+```bash
+conda rename -n dl gp_neural
+conda activate gp_neural
+pip install "gpytorch>=1.14,<1.16" "linear-operator>=0.5,<0.7" scipy matplotlib pyyaml pytest
+pip install --ignore-requires-python "torchlambertw @ git+https://github.com/gmgeorg/torchlambertw.git"
+```
+Result: Python 3.11.15 (not 3.12), torch 2.12.0.dev nightly (not stable 2.5–2.6).
+
+**2. `torchlambertw` requires `python>=3.12` but we're on 3.11.**
+The library is pure Python with no C extensions; the version gate in its metadata is conservative. `--ignore-requires-python` bypasses it and the package works fine on 3.11. If it ever causes issues, the fix is to recreate `gp_neural` with Python 3.12 and reinstall everything (torch nightly will need to be re-downloaded).
