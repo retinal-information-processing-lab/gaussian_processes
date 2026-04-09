@@ -287,6 +287,7 @@ def build_config_from_defaults(**overrides):
     dat = defaults['data']
     ind = defaults['inducing']
     utl = defaults['utility']
+    al = defaults['active_learning']  # only one key read: checkpoint_pool_sum_tolerance
 
     # ------------------------------------------------------------------
     # Build flat config — every value traces back to default_params.json
@@ -353,6 +354,14 @@ def build_config_from_defaults(**overrides):
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
         'n_val_split': dat['n_val_split'],
         'use_cache': mod['use_cache'],
+
+        # --- Training index injection (from active_learning section) ---
+        # When train_indices_from is a path, the referenced .pt file is the
+        # sole source of truth for n_train AND M (active loop invariant:
+        # M == n_train == len(pool_indices)). CLI --n-train and --ntilde are
+        # rejected when this is set. See eigenspace_checkpoint.load_pool_indices.
+        'train_indices_from': None,
+        'pool_sum_tolerance': al['checkpoint_pool_sum_tolerance'],
 
         # --- Inducing point selection (from inducing section) ---
         'ip_selection': ind['selection_method'],
@@ -689,7 +698,13 @@ def run_single_config(config):
     # Always compute STA for visualization (needed for plot_fit)
     if n_samples_sta is not None:
         n_sta = min(n_samples_sta, X.shape[0])
-        indices_sta = torch.randperm(X.shape[0], device=device)[:n_sta]
+        # Isolated Generator (was: global CUDA RNG). Immune to upstream code
+        # changes that advance the shared torch/cuda RNG state. Same seed as
+        # the rest of the seeded-selection machinery; populations differ from
+        # IP / extras generators, so no collision is possible.
+        gen_sta = torch.Generator(device=device)
+        gen_sta.manual_seed(seed)
+        indices_sta = torch.randperm(X.shape[0], generator=gen_sta, device=device)[:n_sta]
         X_sta = X[indices_sta]
         r_sta = r[indices_sta]
     else:
@@ -737,8 +752,19 @@ def run_single_config(config):
         raise ValueError(f"Unknown rf_init='{rf_init}'. Use 'sta', 'ground_truth', or 'center'.")
 
     # =========================================================================
-    # Step 2: Select inducing points
+    # Step 2: Select inducing points + build training set
     # =========================================================================
+    # Two branches:
+    #   (a) Injection path: config['train_indices_from'] is a path to a .pt
+    #       file whose pool_indices tensor specifies the EXACT training subset
+    #       AND the inducing count (active loop invariant: M == n_train ==
+    #       len(pool_indices)). The file is the sole source of truth; CLI
+    #       --ntilde and --n-train are rejected at the argparse layer.
+    #   (b) Seed-based path (the historical default): seeded torch.Generator
+    #       instances produce reproducible index selections. Refactored
+    #       2026-04-09 from the shared global CUDA RNG to isolated
+    #       Generators so upstream code changes can no longer silently drift
+    #       the selection.
     jitter = config['jitter']
     if dtype == torch.float64 and jitter >= 1e-4:
         import warnings
@@ -746,57 +772,149 @@ def run_single_config(config):
             f"jitter={jitter} is high for float64 (GPyTorch default for float64 is 1e-6). "
             f"Consider reducing jitter when using --dtype float64."
         )
-    n_train = min(n_train_requested, X.shape[0])
 
-    if ip_selection == 'pivoted' and mode != 'vargp_old':
-        from utils import select_inducing_points_pivoted
+    train_indices_from = config.get('train_indices_from')
 
-        # Create temporary kernel for pivoted selection (will be re-created
-        # by the training code with the same params)
-        temp_kernel = create_kernel(config, n_px_side, eps_0x, eps_0y
-        ).to(device=device, dtype=dtype)
+    if train_indices_from is not None:
+        # --- (a) Injection path: file determines training set AND M --------
+        from eigenspace_checkpoint import load_pool_indices
 
-        ntilde = min(M, X.shape[0])
-        n_candidates = config['n_candidates']
-        inducing_points, indices_inducing = select_inducing_points_pivoted(
-            X, temp_kernel, ntilde,
-            n_candidates=n_candidates,
-            seed=seed,
-            jitter=jitter,
+        # The saved indices reference the untouched 3160-image pool. A
+        # validation carve would reshuffle X and invalidate the mapping, so
+        # n_val_split must be 0 when injecting. CLI enforces this; the assert
+        # is a defensive guard for programmatic callers that construct the
+        # config dict directly.
+        assert config['n_val_split'] == 0, (
+            "train_indices_from requires n_val_split == 0 (the saved indices "
+            "point into the raw pool; a val carve would reshuffle X and "
+            "invalidate them)."
         )
-        del temp_kernel  # Free GPU memory
 
-        print(f"\nInducing points: {ntilde} selected via pivoted Cholesky"
-              f" (n_candidates={'all' if n_candidates is None else n_candidates})")
-    else:
-        # Random selection: shuffle and take first M (original behavior)
-        all_indices = torch.randperm(X.shape[0], device=device)
-        ntilde = min(M, n_train)
-        indices_inducing = all_indices[:ntilde]
+        tolerance = config['pool_sum_tolerance']
+        print(f"\nLoading training indices from: {train_indices_from}")
+        pool_indices = load_pool_indices(
+            Path(train_indices_from), X_pool, tolerance
+        )
+        pool_indices = pool_indices.to(device=device)
+
+        # Defensive validation — load_pool_indices already checks 1-D and
+        # pool integrity, but not bounds / uniqueness / non-emptiness.
+        if pool_indices.numel() == 0:
+            raise ValueError(
+                f"Loaded pool_indices from {train_indices_from} is empty."
+            )
+        min_idx = int(pool_indices.min().item())
+        max_idx = int(pool_indices.max().item())
+        if min_idx < 0 or max_idx >= X.shape[0]:
+            raise ValueError(
+                f"Loaded pool_indices has out-of-range entries "
+                f"[min={min_idx}, max={max_idx}] for X of size {X.shape[0]}. "
+                f"Source: {train_indices_from}."
+            )
+        n_unique = int(torch.unique(pool_indices).numel())
+        if n_unique != pool_indices.numel():
+            n_dup = pool_indices.numel() - n_unique
+            raise ValueError(
+                f"Loaded pool_indices from {train_indices_from} contains "
+                f"{n_dup} duplicate entries out of {pool_indices.numel()}. "
+                f"Reproducibility requires a unique set."
+            )
+
+        # Active loop invariant: M == n_train == len(pool_indices), and the
+        # inducing set IS the training set (phase 1's random IPs become part
+        # of the training data; phase 2 grows both in lockstep via rank-1
+        # extension). Mirror that invariant here so a single-run fit on the
+        # loaded indices reproduces the same IP == training-set structure.
+        ntilde = pool_indices.numel()
+        n_train = ntilde
+        indices_train = pool_indices
+        indices_inducing = pool_indices
         inducing_points = X[indices_inducing].clone()
-        print(f"\nInducing points: {ntilde} selected randomly")
 
-    # =========================================================================
-    # Step 3: Build training set
-    # =========================================================================
-    # Inducing points are always included in training. If n_train > M,
-    # add extra random points from the remaining pool.
-    inducing_set = set(indices_inducing.cpu().numpy().tolist())
+        # Keep M, config['M'], config['n_train'] in sync with the loaded
+        # tensor length. The function-level local `M` feeds the RESULTS banner
+        # and the output JSON record; config['M'] and config['n_train'] are
+        # read by downstream code (e.g. plotting, checkpoint save). Without
+        # these overrides, a user who happened to pass --ntilde 100 (or left
+        # it at the default) would see a misleading "M=100" in the banner
+        # while the actual fit trained on len(pool_indices) points.
+        M = ntilde
+        config['M'] = ntilde
+        config['n_train'] = ntilde
 
-    if n_train > ntilde:
-        # Get indices not already selected as inducing
-        remaining = [i for i in range(X.shape[0]) if i not in inducing_set]
-        remaining_t = torch.tensor(remaining, device=device)
+        print(f"  N indices loaded: {ntilde}")
+        print(f"  Pool integrity: OK (tolerance {tolerance})")
+        print(f"  M (inducing): {ntilde} (from file; --ntilde is rejected when injecting)")
+        print(f"  n_train: {ntilde} (from file; --n-train is rejected when injecting)")
 
-        # Shuffle remaining and take (n_train - ntilde) extras
-        n_extra = n_train - ntilde
-        perm = torch.randperm(remaining_t.shape[0], device=device)[:n_extra]
-        extra_indices = remaining_t[perm]
-
-        indices_train = torch.cat([indices_inducing, extra_indices])
     else:
-        indices_train = indices_inducing
-        n_train = ntilde  # Can't have fewer training points than inducing
+        # --- (b) Seed-based selection path (isolated Generators) -----------
+        n_train = min(n_train_requested, X.shape[0])
+
+        if ip_selection == 'pivoted' and mode != 'vargp_old':
+            from utils import select_inducing_points_pivoted
+
+            # Create temporary kernel for pivoted selection (will be re-created
+            # by the training code with the same params)
+            temp_kernel = create_kernel(config, n_px_side, eps_0x, eps_0y
+            ).to(device=device, dtype=dtype)
+
+            ntilde = min(M, X.shape[0])
+            n_candidates = config['n_candidates']
+            # select_inducing_points_pivoted already takes an explicit seed;
+            # no Generator refactor needed for this path.
+            inducing_points, indices_inducing = select_inducing_points_pivoted(
+                X, temp_kernel, ntilde,
+                n_candidates=n_candidates,
+                seed=seed,
+                jitter=jitter,
+            )
+            del temp_kernel  # Free GPU memory
+
+            print(f"\nInducing points: {ntilde} selected via pivoted Cholesky"
+                  f" (n_candidates={'all' if n_candidates is None else n_candidates})")
+        else:
+            # Random IP selection: isolated Generator (was: global CUDA RNG).
+            # Same seed as the rest of the seeded-selection machinery; the
+            # permutation is on the full training pool (size X.shape[0]) and
+            # is independent of any upstream random ops that advance the
+            # global state.
+            gen_ip = torch.Generator(device=device)
+            gen_ip.manual_seed(seed)
+            all_indices = torch.randperm(
+                X.shape[0], generator=gen_ip, device=device
+            )
+            ntilde = min(M, n_train)
+            indices_inducing = all_indices[:ntilde]
+            inducing_points = X[indices_inducing].clone()
+            print(f"\nInducing points: {ntilde} selected randomly "
+                  f"(isolated Generator, seed={seed})")
+
+        # Build training set: inducing points are always included; if
+        # n_train > ntilde, add extra random points from the remaining pool.
+        inducing_set = set(indices_inducing.cpu().numpy().tolist())
+
+        if n_train > ntilde:
+            # Get indices not already selected as inducing.
+            remaining = [i for i in range(X.shape[0]) if i not in inducing_set]
+            remaining_t = torch.tensor(remaining, device=device)
+
+            # Extras selection: isolated Generator with a derived seed so it
+            # cannot collide with the IP generator. (With different population
+            # sizes they'd differ anyway, but the derived seed is insurance
+            # against a future change that makes them the same size.)
+            n_extra = n_train - ntilde
+            gen_extra = torch.Generator(device=device)
+            gen_extra.manual_seed(seed + 1)
+            perm = torch.randperm(
+                remaining_t.shape[0], generator=gen_extra, device=device
+            )[:n_extra]
+            extra_indices = remaining_t[perm]
+
+            indices_train = torch.cat([indices_inducing, extra_indices])
+        else:
+            indices_train = indices_inducing
+            n_train = ntilde  # Can't have fewer training points than inducing
 
     X_train = X[indices_train]
     r_train = r[indices_train]
@@ -1229,6 +1347,11 @@ def run_single_config(config):
         'best_iteration': best_iteration if mode != 'vargp_old' else None,
         'curves': curves if mode != 'vargp_old' else None,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
+        # Provenance: path to the .pt file whose pool_indices were used as
+        # the training set (None if the seed-based selection path was taken).
+        'train_indices_from': (
+            str(train_indices_from) if train_indices_from else None
+        ),
         # Keep references for plotting (not serialized to JSON)
         '_predictions': predictions,
         '_r_test_mean': r_test_mean,
@@ -1316,8 +1439,30 @@ def main():
                         help=f'RBF lengthscale, only used with --kernel-type rbf (default: {defaults["kernel"]["lengthscale"]})')
     parser.add_argument('--beta', type=float, default=defaults['kernel']['beta'], help=f'RF size (default: {defaults["kernel"]["beta"]})')
     parser.add_argument('--rho', type=float, default=defaults['kernel']['rho'], help=f'Smoothness (default: {defaults["kernel"]["rho"]})')
-    parser.add_argument('--eps-0x', type=float, default=None, help='RF center x (default: compute from STA)')
-    parser.add_argument('--eps-0y', type=float, default=None, help='RF center y (default: compute from STA)')
+    parser.add_argument('--rf-init', type=str, default=defaults['kernel']['rf_init'],
+                        choices=['sta', 'ground_truth', 'center'],
+                        help=f"RF center initialization: 'sta' (smoothed STA argmax), "
+                             f"'ground_truth' (from datasets/rf_centers_ground_truth.npz, "
+                             f"using norm_{{108,64,48}} based on image size), or 'center' "
+                             f"(0, 0). Ignored if both --eps-0x and --eps-0y are passed. "
+                             f"Default: {defaults['kernel']['rf_init']}")
+    parser.add_argument('--eps-0x', type=float, default=None,
+                        help='RF center x, explicit override. If set together with --eps-0y, '
+                             'takes precedence over --rf-init. Default: None (use --rf-init)')
+    parser.add_argument('--eps-0y', type=float, default=None,
+                        help='RF center y, explicit override. If set together with --eps-0x, '
+                             'takes precedence over --rf-init. Default: None (use --rf-init)')
+    parser.add_argument('--train-indices-from', type=str, default=None,
+                        help="Path to a .pt file whose 'pool_indices' tensor specifies the "
+                             "exact training set for this run. The tensor length defines "
+                             "BOTH n_train AND M (inducing count); CLI --n-train and "
+                             "--ntilde are REJECTED when this flag is used. The file must "
+                             "also carry pool_shape and pool_sum for integrity verification "
+                             "against the loaded X_pool (tolerance read from "
+                             "active_learning.checkpoint_pool_sum_tolerance in "
+                             "default_params.json). Intended for like-for-like reproduction "
+                             "of an active-loop training subset. Not compatible with "
+                             "n_val_split > 0. Default: None (use seed-based selection).")
 
     # Link function parameters
     parser.add_argument('--A-init', type=float, default=defaults['link_function']['A_init'], help=f'Initial gain A (default: {defaults["link_function"]["A_init"]})')
@@ -1414,6 +1559,37 @@ def main():
     eps_0x = args.eps_0x  # None if not passed, float if passed
     eps_0y = args.eps_0y
 
+    # --train-indices-from mutual-exclusion validation.
+    # When injecting indices, the file is the single source of truth for BOTH
+    # n_train and M (active loop invariant: M == n_train == len(pool_indices)).
+    # --n-train and --ntilde are forbidden. --n-val-split must be 0 because
+    # the saved indices reference the untouched 3160-pool; a val carve would
+    # reshuffle X and invalidate them.
+    #
+    # Implementation note: argparse doesn't distinguish "user passed the
+    # default value explicitly" from "user did not pass the flag at all", so
+    # we compare against the JSON default. If a user explicitly passes a
+    # value that happens to equal the default, we can't detect it — but the
+    # file wins anyway in that case, so it's a harmless no-op.
+    if args.train_indices_from is not None:
+        if args.n_train != defaults['data']['n_train']:
+            parser.error(
+                "--n-train is not allowed together with --train-indices-from. "
+                "The loaded file determines n_train via pool_indices.shape[0]."
+            )
+        if args.ntilde != defaults['data']['ntilde']:
+            parser.error(
+                "--ntilde is not allowed together with --train-indices-from. "
+                "The loaded file determines M via pool_indices.shape[0] "
+                "(active loop invariant: M == n_train)."
+            )
+        if args.n_val_split != 0:
+            parser.error(
+                "--train-indices-from requires --n-val-split 0. The saved "
+                "indices point into the untouched 3160-image pool; any "
+                "validation carve would reshuffle X and invalidate them."
+            )
+
     # Build config from default_params.json, then overlay CLI args.
     # All argparse defaults already come from the same JSON, so only
     # user-provided CLI flags actually change anything.
@@ -1434,6 +1610,7 @@ def main():
         beta=args.beta,
         rho=args.rho,
         lengthscale=args.lengthscale,
+        rf_init=args.rf_init,
         eps_0x=eps_0x,
         eps_0y=eps_0y,
         gradient_mode=args.gradient_mode,
@@ -1466,6 +1643,7 @@ def main():
         ip_selection=args.ip_selection,
         n_candidates=args.n_candidates,
         n_samples_sta=args.n_samples_sta,
+        train_indices_from=args.train_indices_from,
     )
 
     # Run
@@ -1508,8 +1686,13 @@ def main():
             'commit': get_git_commit(),
             'seed': args.seed,
             'mode': args.mode,
-            'M': args.ntilde,
+            # M and ntrain come from result (authoritative), not from args:
+            # when --train-indices-from is used, the loaded file overrides the
+            # CLI --ntilde / --n-train, and result['M'] / result['n_train']
+            # reflect the actual trained values.
+            'M': result['M'],
             'ntrain': result['n_train'],
+            'train_indices_from': result.get('train_indices_from'),
             'niter': args.n_iterations,
             'nestep': args.n_estep,
             'nmstep': args.n_mstep,

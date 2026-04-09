@@ -582,6 +582,21 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         write_jsonl_row(results_path, iter_record, RESULTS_REQUIRED_KEYS)
 
         # 9. Save checkpoint
+        # Keep config in sync with the grown model before serializing. Fixes
+        # the staleness bug flagged 2026-04-09: phase-1 config has M = 50 and
+        # n_train = 50 but the active loop grows the model to M = 300+. Without
+        # this update, every iter_NNN.pt would have stale metadata['M'],
+        # checkpoint['config']['M'], AND checkpoint['config']['n_train']
+        # frozen at the phase-1 values. pool_indices.shape[0] remains the
+        # authoritative source at load time (load_pool_indices uses it), but
+        # keeping config coherent prevents silent wrong-M reads by any
+        # downstream analysis code that touches checkpoint['config'] /
+        # checkpoint['metadata']['M']. The phase-1 config snapshot in
+        # config.json is unaffected because _to_json_safe() at line 382
+        # produces an independent deep copy via dict comprehension.
+        config['M'] = in_use_idx.shape[0]
+        config['n_train'] = in_use_idx.shape[0]
+
         save_eigenspace_checkpoint(
             model=model,
             config=config,
@@ -594,9 +609,11 @@ def run_active_loop(config, al_config, cli_args, output_dir):
 
         # 10. Print progress
         u_str = f"{utility_at_best:.4f}" if utility_at_best is not None else "n/a"
+        n_b_now = len(model.state.eigvals_b)
         print(f"  Iter {iteration}/{n_active}: "
               f"idx={selected_pool_idx}, r={r_new.item():.1f}, "
               f"U={u_str}, test_r={eval_metrics['test_r']:.4f}, "
+              f"M={in_use_idx.shape[0]} n_b={n_b_now}, "
               f"time={wall_time:.1f}s")
 
     print(f"\nDone. Results written to {output_dir}")

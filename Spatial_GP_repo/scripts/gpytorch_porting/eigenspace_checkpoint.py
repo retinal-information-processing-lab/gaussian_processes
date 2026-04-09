@@ -113,6 +113,14 @@ def save_eigenspace_checkpoint(
         'metadata': {
             'cell_id': config['cell'],
             'n_px_side': config['n_px_side'],
+            # config['M'] / config['n_train'] are maintained by the caller
+            # (run_active_loop.py updates them before each phase-2 save;
+            # single-run scripts pass an already-correct config). The staleness
+            # bug that affected pre-2026-04-09 active-loop checkpoints is
+            # fixed. pool_indices.shape[0] remains the authoritative source
+            # at load time (use load_pool_indices()); metadata['M'] is
+            # provided for convenience only, and is unreliable for any
+            # iter_NNN.pt written by the old active-loop code path.
             'M': config['M'],
             'kernel_type': config['kernel_type'],
             'eigval_tol': config['eigval_tol'],
@@ -176,6 +184,84 @@ def _verify_pool_integrity(checkpoint, X_pool, pool_sum_tolerance):
             f"(tolerance {pool_sum_tolerance}). "
             f"Likely content differs from save time."
         )
+
+
+def load_pool_indices(checkpoint_path, X_pool, pool_sum_tolerance):
+    """Load pool_indices from an eigenspace checkpoint and verify pool integrity.
+
+    Lightweight counterpart to load_eigenspace_checkpoint(): reads only the
+    index tensor and the integrity tags, NOT the model state. Intended for
+    like-for-like reproduction where a fresh fit should train on the exact
+    same pool subset a previous run used (e.g. reproducing an active-loop
+    training set in run_single_mode.py for a single-run comparison).
+
+    Contract:
+        - The returned tensor's length is authoritative for BOTH n_train and
+          M. Active loop invariant: M == n_train == len(pool_indices).
+        - metadata['M'] in the checkpoint is NOT trusted. The staleness bug
+          that affected pre-2026-04-09 active-loop checkpoints is fixed going
+          forward, but any iter_NNN.pt written before then still has a
+          frozen phase-1 value in metadata['M']. pool_indices.shape[0] is
+          the single source of truth for both old and new checkpoints.
+
+    Args:
+        checkpoint_path: Path to a .pt file. Must be readable by torch.load
+            with weights_only=False, and must contain at minimum the keys
+            {'pool_indices', 'pool_shape', 'pool_sum'}. Any checkpoint
+            produced by save_eigenspace_checkpoint() satisfies this.
+        X_pool: (N_pool, n_pixels) tensor the caller will index into. Must
+            match the pool used at save time — verified via pool_shape and
+            pool_sum by the same integrity check used by
+            load_eigenspace_checkpoint().
+        pool_sum_tolerance: float. Max allowed |saved_sum - X_pool.sum()|.
+            Must be passed explicitly — read it from
+            default_params.json -> active_learning.checkpoint_pool_sum_tolerance.
+            No hidden default here; single source of truth is the config.
+
+    Returns:
+        pool_indices: torch.LongTensor of shape (n,), on CPU. Caller is
+            responsible for moving to the desired device.
+
+    Raises:
+        AssertionError on pool shape or sum mismatch (wrong dataset).
+        KeyError if required checkpoint keys are missing.
+        ValueError if pool_indices has the wrong dimensionality.
+
+    Example:
+        >>> X_pool = ...  # loaded from the PNAS .npz
+        >>> tol = defaults['active_learning']['checkpoint_pool_sum_tolerance']
+        >>> idx = load_pool_indices(
+        ...     'results/active_loop/.../checkpoints/iter_250.pt',
+        ...     X_pool, tol,
+        ... )
+        >>> X_train = X_pool[idx.to(X_pool.device)]
+    """
+    checkpoint = torch.load(
+        checkpoint_path, map_location='cpu', weights_only=False
+    )
+
+    required = {'pool_indices', 'pool_shape', 'pool_sum'}
+    missing = required - set(checkpoint.keys())
+    if missing:
+        raise KeyError(
+            f"Checkpoint at {checkpoint_path} missing required keys: "
+            f"{sorted(missing)}. Expected an eigenspace checkpoint (from "
+            f"save_eigenspace_checkpoint) or a compatible index bundle."
+        )
+
+    _verify_pool_integrity(checkpoint, X_pool, pool_sum_tolerance)
+
+    pool_indices = checkpoint['pool_indices']
+    if not isinstance(pool_indices, torch.Tensor):
+        pool_indices = torch.as_tensor(pool_indices, dtype=torch.long)
+    pool_indices = pool_indices.to(dtype=torch.long).cpu()
+
+    if pool_indices.dim() != 1:
+        raise ValueError(
+            f"pool_indices must be 1-D; got shape "
+            f"{tuple(pool_indices.shape)} from {checkpoint_path}."
+        )
+    return pool_indices
 
 
 def load_eigenspace_checkpoint(checkpoint_path, X_pool, pool_sum_tolerance,
