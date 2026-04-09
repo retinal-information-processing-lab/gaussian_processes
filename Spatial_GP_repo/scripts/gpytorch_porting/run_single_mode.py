@@ -695,16 +695,36 @@ def run_single_config(config):
     n_samples_sta = config['n_samples_sta']
     rf_init = config.get('rf_init', 'ground_truth')
 
+    # ONE Generator shared by all seed-based index-selection picks in this
+    # function (STA subset, random IP selection, extras pick). Seeded once
+    # from config['seed']; its internal state advances naturally between
+    # calls so consecutive picks draw from different portions of the PRNG
+    # stream (i.e. "independent draws" in the same sense the pre-refactor
+    # global-CUDA-RNG code produced them). Isolated from the global RNG so
+    # upstream code changes cannot drift the selection.
+    #
+    # IMPORTANT — do NOT create a second Generator with the same seed and
+    # same population size for any of these picks. Two fresh Generators
+    # seeded with identical integers produce bit-identical permutations
+    # (we hit this bug in the first refactor: STA and IP ended up with
+    # 100% overlap when both used X.shape[0] as the population). Reusing
+    # one generator and letting its state advance is the correct pattern.
+    #
+    # Note on cross-run determinism: when n_samples_sta is None, the STA
+    # branch below does NOT advance gen_selection, so the IP pick's first
+    # randperm draw uses state 0. When n_samples_sta is set, STA consumes
+    # some state first and the IP pick uses whatever comes after. This
+    # matches the pre-refactor global-RNG behavior (where the STA call
+    # also advanced the global state before the IP call).
+    gen_selection = torch.Generator(device=device)
+    gen_selection.manual_seed(seed)
+
     # Always compute STA for visualization (needed for plot_fit)
     if n_samples_sta is not None:
         n_sta = min(n_samples_sta, X.shape[0])
-        # Isolated Generator (was: global CUDA RNG). Immune to upstream code
-        # changes that advance the shared torch/cuda RNG state. Same seed as
-        # the rest of the seeded-selection machinery; populations differ from
-        # IP / extras generators, so no collision is possible.
-        gen_sta = torch.Generator(device=device)
-        gen_sta.manual_seed(seed)
-        indices_sta = torch.randperm(X.shape[0], generator=gen_sta, device=device)[:n_sta]
+        indices_sta = torch.randperm(
+            X.shape[0], generator=gen_selection, device=device
+        )[:n_sta]
         X_sta = X[indices_sta]
         r_sta = r[indices_sta]
     else:
@@ -874,21 +894,18 @@ def run_single_config(config):
             print(f"\nInducing points: {ntilde} selected via pivoted Cholesky"
                   f" (n_candidates={'all' if n_candidates is None else n_candidates})")
         else:
-            # Random IP selection: isolated Generator (was: global CUDA RNG).
-            # Same seed as the rest of the seeded-selection machinery; the
-            # permutation is on the full training pool (size X.shape[0]) and
-            # is independent of any upstream random ops that advance the
-            # global state.
-            gen_ip = torch.Generator(device=device)
-            gen_ip.manual_seed(seed)
+            # Random IP selection: reuses `gen_selection` (created at the
+            # top of Step 1). State has already advanced past the STA pick
+            # if n_samples_sta was set, so this draws an independent
+            # sequence from the same deterministic PRNG stream.
             all_indices = torch.randperm(
-                X.shape[0], generator=gen_ip, device=device
+                X.shape[0], generator=gen_selection, device=device
             )
             ntilde = min(M, n_train)
             indices_inducing = all_indices[:ntilde]
             inducing_points = X[indices_inducing].clone()
             print(f"\nInducing points: {ntilde} selected randomly "
-                  f"(isolated Generator, seed={seed})")
+                  f"(shared gen_selection, seed={seed})")
 
         # Build training set: inducing points are always included; if
         # n_train > ntilde, add extra random points from the remaining pool.
@@ -899,15 +916,12 @@ def run_single_config(config):
             remaining = [i for i in range(X.shape[0]) if i not in inducing_set]
             remaining_t = torch.tensor(remaining, device=device)
 
-            # Extras selection: isolated Generator with a derived seed so it
-            # cannot collide with the IP generator. (With different population
-            # sizes they'd differ anyway, but the derived seed is insurance
-            # against a future change that makes them the same size.)
+            # Extras selection: reuses `gen_selection`. State has advanced
+            # past STA and IP picks, so this draws yet another independent
+            # permutation (over a smaller population: remaining_t.shape[0]).
             n_extra = n_train - ntilde
-            gen_extra = torch.Generator(device=device)
-            gen_extra.manual_seed(seed + 1)
             perm = torch.randperm(
-                remaining_t.shape[0], generator=gen_extra, device=device
+                remaining_t.shape[0], generator=gen_selection, device=device
             )[:n_extra]
             extra_indices = remaining_t[perm]
 
