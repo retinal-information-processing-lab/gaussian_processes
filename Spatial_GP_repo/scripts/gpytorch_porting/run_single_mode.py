@@ -438,7 +438,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'Amp': ker['Amp'],
         'beta': ker['beta'],
         'rho': ker['rho'],
-        'rf_init': ker.get('rf_init', 'ground_truth'),
+        'rf_init': ker['rf_init'],
         'eps_0x': ker['eps_0x'],  # null in YAML = None = determined by rf_init
         'eps_0y': ker['eps_0y'],
         'gradient_mode': ker['gradient_mode'],
@@ -464,7 +464,7 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         'min_delta_rel': es['min_delta_rel'],
         'min_iterations': es['min_iterations'],
         'restore_best': es['restore_best'],
-        'es_metric': es.get('es_metric', 'elbo'),
+        'es_metric': es['es_metric'],
 
         # Optimizer details
         'gpy_lbfgs_max_iter': opt['gpy_lbfgs_max_iter'],
@@ -491,8 +491,13 @@ def flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell):
         # Data
         'data_path': dat['path'],
         'n_px_side': dat['n_px_side'],    # null = auto-detect from loaded data
-        'n_val_split': dat.get('n_val_split', 0),
+        'n_val_split': dat['n_val_split'],
         'use_cache': dat['use_cache'],
+
+        # Training index injection (not used by YAML experiments, but required
+        # by run_single_config's direct-access contract on config keys)
+        'train_indices_from': None,
+        'pool_sum_tolerance': None,  # only read when train_indices_from is set
 
         # Runtime options (not in YAML, defaults for experiment runs)
         'mstep_analytical': False,
@@ -693,7 +698,7 @@ def run_single_config(config):
 
     ip_selection = config['ip_selection']
     n_samples_sta = config['n_samples_sta']
-    rf_init = config.get('rf_init', 'ground_truth')
+    rf_init = config['rf_init']
 
     # ONE Generator shared by all seed-based index-selection picks in this
     # function (STA subset, random IP selection, extras pick). Seeded once
@@ -793,7 +798,7 @@ def run_single_config(config):
             f"Consider reducing jitter when using --dtype float64."
         )
 
-    train_indices_from = config.get('train_indices_from')
+    train_indices_from = config['train_indices_from']
 
     if train_indices_from is not None:
         # --- (a) Injection path: file determines training set AND M --------
@@ -804,11 +809,12 @@ def run_single_config(config):
         # n_val_split must be 0 when injecting. CLI enforces this; the assert
         # is a defensive guard for programmatic callers that construct the
         # config dict directly.
-        assert config['n_val_split'] == 0, (
-            "train_indices_from requires n_val_split == 0 (the saved indices "
-            "point into the raw pool; a val carve would reshuffle X and "
-            "invalidate them)."
-        )
+        if config['n_val_split'] != 0:
+            raise ValueError(
+                "train_indices_from requires n_val_split == 0 (the saved "
+                "indices point into the raw pool; a val carve would reshuffle "
+                "X and invalidate them)."
+            )
 
         tolerance = config['pool_sum_tolerance']
         print(f"\nLoading training indices from: {train_indices_from}")
@@ -1427,8 +1433,10 @@ def main():
     parser.add_argument('--data-path', type=str, default=defaults['data']['path'],
                         help=f'Path to NPZ dataset, relative to gpytorch_porting/ or absolute (default: {defaults["data"]["path"]})')
     parser.add_argument('--cell', type=int, default=defaults['data']['cellid'], help=f'Cell ID (default: {defaults["data"]["cellid"]})')
-    parser.add_argument('--ntilde', type=int, default=defaults['data']['ntilde'], help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
-    parser.add_argument('--n-train', type=int, default=defaults['data']['n_train'], help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
+    parser.add_argument('--ntilde', type=int, default=None,
+                        help=f'Number of inducing points M (default: {defaults["data"]["ntilde"]})')
+    parser.add_argument('--n-train', type=int, default=None,
+                        help=f'Number of training samples (default: {defaults["data"]["n_train"]})')
     parser.add_argument('--n-val-split', type=int, default=defaults['data']['n_val_split'], help=f'Validation images carved from combined pool (default: {defaults["data"]["n_val_split"]})')
     parser.add_argument('--n-iterations', type=int, default=defaults['training']['n_iterations'], help=f'Number of EM iterations (default: {defaults["training"]["n_iterations"]})')
     parser.add_argument('--n-estep', type=int, default=defaults['training']['n_estep'], help=f'E-steps per iteration (default: {defaults["training"]["n_estep"]})')
@@ -1580,18 +1588,16 @@ def main():
     # the saved indices reference the untouched 3160-pool; a val carve would
     # reshuffle X and invalidate them.
     #
-    # Implementation note: argparse doesn't distinguish "user passed the
-    # default value explicitly" from "user did not pass the flag at all", so
-    # we compare against the JSON default. If a user explicitly passes a
-    # value that happens to equal the default, we can't detect it — but the
-    # file wins anyway in that case, so it's a harmless no-op.
+    # --ntilde and --n-train default to None so we can distinguish "not
+    # passed" from "explicitly passed the JSON default value." The None →
+    # JSON-default resolution happens after this validation block.
     if args.train_indices_from is not None:
-        if args.n_train != defaults['data']['n_train']:
+        if args.n_train is not None:
             parser.error(
                 "--n-train is not allowed together with --train-indices-from. "
                 "The loaded file determines n_train via pool_indices.shape[0]."
             )
-        if args.ntilde != defaults['data']['ntilde']:
+        if args.ntilde is not None:
             parser.error(
                 "--ntilde is not allowed together with --train-indices-from. "
                 "The loaded file determines M via pool_indices.shape[0] "
@@ -1603,6 +1609,12 @@ def main():
                 "indices point into the untouched 3160-image pool; any "
                 "validation carve would reshuffle X and invalidate them."
             )
+
+    # Resolve None → JSON default for flags that use None as "not passed."
+    if args.ntilde is None:
+        args.ntilde = defaults['data']['ntilde']
+    if args.n_train is None:
+        args.n_train = defaults['data']['n_train']
 
     # Build config from default_params.json, then overlay CLI args.
     # All argparse defaults already come from the same JSON, so only
@@ -1706,7 +1718,7 @@ def main():
             # reflect the actual trained values.
             'M': result['M'],
             'ntrain': result['n_train'],
-            'train_indices_from': result.get('train_indices_from'),
+            'train_indices_from': result['train_indices_from'],
             'niter': args.n_iterations,
             'nestep': args.n_estep,
             'nmstep': args.n_mstep,
