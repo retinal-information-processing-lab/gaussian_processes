@@ -635,6 +635,11 @@ def main():
     parser = argparse.ArgumentParser(
         description='Simulated active learning loop on PNAS data (vargp_direct mode)')
 
+    # Data
+    parser.add_argument('--data-path', type=str, default=dat['path'],
+                        help=f'Path to PNAS .npz dataset, relative to script dir or '
+                             f'absolute (default: {dat["path"]})')
+
     # Phase 1
     parser.add_argument('--phase1-M', type=int, default=al['phase1_M'],
                         help=f'Initial inducing/training points (default: {al["phase1_M"]})')
@@ -670,6 +675,7 @@ def main():
     # Build Phase 1 config — M == n_train enforced
     config = build_config_from_defaults(
         mode=mode,
+        data_path=args.data_path,
         M=args.phase1_M,
         n_train=args.phase1_M,  # M == n_train enforced
         seed=args.seed,
