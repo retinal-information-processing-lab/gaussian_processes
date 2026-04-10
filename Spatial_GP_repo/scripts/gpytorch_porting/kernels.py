@@ -169,10 +169,15 @@ class ArcCosineKernel(Kernel):
     AMP_MAX = 1000.0
 
     # Bounds for beta (RF size parameter)
-    # beta ∈ [0.01, 1.0] → raw ∈ [-1.39, 7.82]
+    # beta ∈ [0.01, 0.3] → raw ∈ [1.02, 7.82]
+    # Upper bound tightened from 1.0 to 0.3 based on active loop investigation
+    # (2026-04-10): cell 0 seed 0 random on 108x108 had beta drift 0.12→0.45,
+    # causing the C matrix to cover all 11664 pixels (519 MB) and OOM.
+    # At beta=0.3, RF sigma = 0.3*sqrt(2) ≈ 0.42 normalized = ~23 pixel sigma
+    # on 108x108 (RF diameter ~46 px). Still very generous for any realistic RF.
     BETA_MIN = 0.01
-    BETA_MAX = 1.0
-    RAW_BETA_MIN = -2 * np.log(2 * BETA_MAX)   # ≈ -1.39
+    BETA_MAX = 0.3
+    RAW_BETA_MIN = -2 * np.log(2 * BETA_MAX)   # ≈ 0.18
     RAW_BETA_MAX = -2 * np.log(2 * BETA_MIN)   # ≈ 7.82
 
     # Bounds for rho (smoothness parameter)
@@ -518,6 +523,18 @@ class ArcCosineKernel(Kernel):
         mask = None
         if apply_mask:
             mask = self.compute_mask()
+            n_total = mask.numel()
+            n_masked = mask.sum().item()
+            if n_masked > 0.5 * n_total:
+                beta_nat = self.beta.item()
+                warnings.warn(
+                    f"Mask covers {n_masked}/{n_total} pixels ({100*n_masked/n_total:.0f}%). "
+                    f"beta={beta_nat:.4f} is driving a very wide RF. "
+                    f"C matrix will be {n_masked}x{n_masked} "
+                    f"({n_masked**2 * 4 / 1024**2:.0f} MB float32). "
+                    f"Consider whether beta is drifting pathologically.",
+                    stacklevel=3,
+                )
             xcord = xcord[mask]
             ycord = ycord[mask]
 
@@ -1151,12 +1168,13 @@ def test_params_in_bounds():
     kernel.Amp = 1.0
     assert kernel.params_in_bounds(), "Reset kernel should be in bounds"
 
-    # Push raw_m2log2beta out of bounds
+    # Push raw_m2log2beta out of bounds (above RAW_BETA_MAX)
     with torch.no_grad():
-        kernel.raw_m2log2beta.fill_(25.0)  # > RAW_BETA_MAX=20
+        kernel.raw_m2log2beta.fill_(25.0)  # > RAW_BETA_MAX ≈ 7.82
     assert not kernel.params_in_bounds(), "raw_m2log2beta=25 should be out of bounds"
 
-    kernel.raw_m2log2beta.data.fill_(0.0)
+    # Reset to a valid value (beta=0.1 → raw ≈ 3.22, within [RAW_BETA_MIN, RAW_BETA_MAX])
+    kernel.raw_m2log2beta.data.fill_(-2 * np.log(2 * 0.1))
     assert kernel.params_in_bounds(), "Reset kernel should be in bounds"
 
     print("PASS: params_in_bounds test passed!")
