@@ -57,6 +57,9 @@ class DirectVariationalState:
         K_b: Cross-kernel in eigenspace, shape (N, n_b)
         KKtilde_inv_b: K @ K_tilde_inv in eigenspace, shape (N, n_b)
         Kvec: Diagonal k(x_i, x_i), shape (N,)
+        K_tilde: Full inducing kernel matrix, shape (M, M). Stored for efficient
+            rank-1 column append during active learning (avoids O(M^2) kernel
+            recomputation when extending model with one new inducing point).
         mask: Pixel mask from kernel (if use_mask=True), shape (n_pixels,) or None
     """
     m_b: torch.Tensor
@@ -67,6 +70,7 @@ class DirectVariationalState:
     K_b: torch.Tensor
     KKtilde_inv_b: torch.Tensor
     Kvec: torch.Tensor
+    K_tilde: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None
 
 
@@ -102,6 +106,7 @@ def _compute_eigenspace_quantities(
         K_tilde_b: Inducing kernel in eigenspace (DIAGONAL), shape (n_b, n_b)
         K_times_Ktilde_inv_b: K @ K_tilde_inv in eigenspace, shape (N, n_b)
         Kvec: Diagonal k(x_i, x_i), shape (N,)
+        K_tilde: Full inducing kernel matrix, shape (M, M)
         mask: Pixel mask from kernel, or None
     """
     # -------------------------------------------------------------------------
@@ -129,7 +134,7 @@ def _compute_eigenspace_quantities(
     K_b = K @ B
 
     # -------------------------------------------------------------------------
-    # Step 4: K_tilde in eigenspace is DIAGONAL 
+    # Step 4: K_tilde in eigenspace is DIAGONAL
     # K_tilde_b = B.T @ K_tilde @ B = diag(eigvals_b)
     # -------------------------------------------------------------------------
     K_tilde_b = torch.diag(eigvals_b)
@@ -142,7 +147,7 @@ def _compute_eigenspace_quantities(
     # -------------------------------------------------------------------------
     K_times_Ktilde_inv_b = K_b / eigvals_b.unsqueeze(0)  # (N, n_b)
 
-    return B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask
+    return B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, K_tilde, mask
 
 
 # ==============================================================================
@@ -170,7 +175,7 @@ def _compute_initial_eigenspace(
         DirectVariationalState with initialized quantities
     """
     # Compute all eigenspace quantities (shared with _recompute_eigenspace)
-    B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask = \
+    B, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, K_tilde, mask = \
         _compute_eigenspace_quantities(kernel, X_train, X_tilde, eigval_tol)
 
     # Initialize variational parameters at prior
@@ -187,6 +192,7 @@ def _compute_initial_eigenspace(
         K_b=K_b,
         KKtilde_inv_b=K_times_Ktilde_inv_b,
         Kvec=Kvec,
+        K_tilde=K_tilde,
         mask=mask,
     )
 
@@ -221,7 +227,7 @@ def _recompute_eigenspace(
     V_b_old = state.V_b
 
     # Compute all eigenspace quantities with NEW kernel params
-    B_new, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, mask = \
+    B_new, eigvals_b, K_b, K_tilde_b, K_times_Ktilde_inv_b, Kvec, K_tilde, mask = \
         _compute_eigenspace_quantities(kernel, X_train, X_tilde, eigval_tol)
 
     # Reproject variational parameters from old eigenspace to new eigenspace
@@ -238,6 +244,7 @@ def _recompute_eigenspace(
         K_b=K_b,
         KKtilde_inv_b=K_times_Ktilde_inv_b,
         Kvec=Kvec,
+        K_tilde=K_tilde,
         mask=mask,
     )
 
@@ -452,7 +459,8 @@ class DirectVGPModel:
         X_train: torch.Tensor,
         X_tilde: torch.Tensor,
         eigval_tol: float = EIGVAL_TOL,
-        lambda_var_clamp: float = LAMBDA_VAR_CLAMP
+        lambda_var_clamp: float = LAMBDA_VAR_CLAMP,
+        _precomputed_state: Optional[DirectVariationalState] = None,
     ):
         """
         Args:
@@ -462,6 +470,11 @@ class DirectVGPModel:
             X_tilde: Inducing points, shape (M, n_features)
             eigval_tol: Eigenvalue threshold for projection (default 1e-4)
             lambda_var_clamp: Minimum posterior variance clamp (default 1e-6)
+            _precomputed_state: If provided, skip eigenspace computation and use
+                this state directly. Used by extend_model_with_new_point to avoid
+                redundant kernel evaluation when the state was already built
+                efficiently via column append. Caller is responsible for ensuring
+                consistency between the state and kernel/X_train/X_tilde.
         """
         self.kernel = kernel
         self.likelihood = likelihood
@@ -470,8 +483,11 @@ class DirectVGPModel:
         self.eigval_tol = eigval_tol
         self.lambda_var_clamp = lambda_var_clamp
 
-        # Compute initial eigenspace
-        self._state = _compute_initial_eigenspace(kernel, X_train, X_tilde, eigval_tol)
+        if _precomputed_state is not None:
+            self._state = _precomputed_state
+        else:
+            # Compute initial eigenspace
+            self._state = _compute_initial_eigenspace(kernel, X_train, X_tilde, eigval_tol)
 
     def eval(self):
         """No-op for compatibility with code that calls model.eval()."""
