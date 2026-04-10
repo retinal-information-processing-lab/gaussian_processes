@@ -33,6 +33,7 @@ Usage:
 All parameters trace to default_params.json (active_learning + utility sections).
 """
 
+import gc
 import sys
 import copy
 import time
@@ -284,7 +285,7 @@ RESULTS_REQUIRED_KEYS = frozenset({
     'final_A', 'final_lambda0', 'final_beta', 'final_rho',
     'final_sigma_0', 'final_eps_0x', 'final_eps_0y', 'final_Amp',
     'test_r', 'adjusted_r2', 'explained_var', 'reliability',
-    'wall_time_s', 'timestamp',
+    'wall_time_s', 'gpu_mem_gb', 'timestamp',
 })
 
 CURVES_REQUIRED_KEYS = frozenset({
@@ -431,6 +432,9 @@ def run_active_loop(config, al_config, cli_args, output_dir):
     phase1_final_values = _extract_final_curve_values(phase1_curves)
     n_b_phase1 = len(model.state.eigvals_b)
 
+    # GPU memory snapshot after Phase 1 (baseline for leak detection)
+    gpu_mem_gb = round(torch.cuda.memory_allocated(device) / 1024**3, 3) if device.type == 'cuda' else 0.0
+
     phase1_record = {
         'iteration': 0,
         'n_training': in_use_idx.shape[0],
@@ -440,6 +444,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         'utility': None,
         'train_loss': phase1_final_loss,
         'wall_time_s': round(phase1_time, 2),
+        'gpu_mem_gb': gpu_mem_gb,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
         **phase1_final_values,
         **eval_metrics,
@@ -563,6 +568,15 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         eval_metrics = evaluate_model(model, X_test, r_test)
         n_b_current = len(model.state.eigvals_b)
 
+        # GPU memory snapshot (for leak detection).
+        # gc.collect() + empty_cache() gives the "clean floor" after all
+        # Python-side references are released, making monotonic growth
+        # clearly visible vs transient peak usage.
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        gpu_mem_gb = round(torch.cuda.memory_allocated(device) / 1024**3, 3) if device.type == 'cuda' else 0.0
+
         wall_time = time.time() - t_start
 
         # 8. Log results row
@@ -575,6 +589,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
             'utility': utility_at_best,
             'train_loss': train_loss,
             'wall_time_s': round(wall_time, 2),
+            'gpu_mem_gb': gpu_mem_gb,
             'timestamp': datetime.now().isoformat(timespec='seconds'),
             **phase2_final_values,
             **eval_metrics,
@@ -614,6 +629,7 @@ def run_active_loop(config, al_config, cli_args, output_dir):
               f"idx={selected_pool_idx}, r={r_new.item():.1f}, "
               f"U={u_str}, test_r={eval_metrics['test_r']:.4f}, "
               f"M={in_use_idx.shape[0]} n_b={n_b_now}, "
+              f"gpu={gpu_mem_gb:.2f}GB, "
               f"time={wall_time:.1f}s")
 
     print(f"\nDone. Results written to {output_dir}")
