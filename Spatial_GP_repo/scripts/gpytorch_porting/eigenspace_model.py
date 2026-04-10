@@ -271,6 +271,10 @@ def _lambda_moments_eigenspace(state: DirectVariationalState, lambda_var_clamp: 
     a = state.KKtilde_inv_b  # (N, n_b)
 
     # Mean: lambda_m = a @ m_b
+    # TODO (cleanup): first GPU matmul in Phase 2 triggers a cuBLAS UserWarning ("no current CUDA
+    # context, attempting to set primary context") due to thread context transition after the Phase 1
+    # fit thread exits. Harmless — context is recovered automatically. Fix: warm up CUDA in the main
+    # thread with a dummy op after the fit thread joins, before entering Phase 2.
     lambda_m = a @ state.m_b  # (N,)
 
     # Variance: lambda_var = Kvec + diag(a @ (V - K) @ a.T)
