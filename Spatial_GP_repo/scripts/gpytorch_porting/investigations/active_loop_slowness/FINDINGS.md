@@ -1,11 +1,11 @@
-# Active Loop Investigation Findings (2026-04-10)
+# Active Loop Investigation Findings (2026-04-12)
 
 **Session scope**: Fix and optimize the active learning loop (`run_active_loop.py`).
 Continuation from the 2026-04-09 session (HANDOFF.md).
 
 ---
 
-## Task 1: Efficient rank-1 K_tilde column append (DONE)
+## Task 1: Efficient rank-1 K_tilde column append (DONE — no speedup on 64x64)
 
 **Commit**: `bb27094`
 
@@ -21,30 +21,91 @@ Verification (cell 8, seed 42, argmax, n_active=50, 64x64):
 - First 7 active iterations: identical selections
 - Divergence at iter 8 from float32 near-tie (relative error ~7e-8 in K_tilde)
 - n_b trajectory: identical
-- Wall time: 39.5s -> 37.8s (modest at M=50-100; savings scale with M^2)
+
+**Full 400-iter benchmark (cell 8, seed 42, argmax, 64x64, M 50->450):**
+- OLD (full recompute): 45.8 min
+- NEW (column append): 45.7 min
+- **Speedup: 1.00x** — no measurable difference
+
+The extend step is a negligible fraction of per-iteration time. Training (E/M/F steps)
+and utility evaluation dominate. The column-append optimization is correct but does not
+help on 64x64 where individual kernel evaluations are cheap (~microseconds for 4096 px).
+
+**DEFERRED**: Investigate whether the speedup materializes on 108x108 (11664 pixels,
+~6x larger C matrix per kernel call) or at M>500. Low priority since the bottleneck
+was actually the autograd leak (Task 2).
 
 ---
 
-## Task 2: Memory profiling (DONE)
+## Task 2: Autograd memory leak — root cause found and fixed (15x speedup)
 
-**Commit**: `ff9b6a7`
+**Commits**: `d771c90` (main fix), `ff9b6a7` (memory logging instrumentation)
 
-Added per-iteration `gpu_mem_gb` field to `results.jsonl` (gc.collect() + empty_cache() for clean floor).
+### The bug
 
-**Finding: Memory leak appears FIXED by the column-append optimization + gc.**
+The active loop reached **19.9 GB GPU memory at M=419**, while a single fit at the same
+M=419 with the same indices used **0.087 GB** (230x excess). After 50 EM iterations in
+Phase 1 alone, **8,760 CUDA tensors** were alive (should be ~50).
 
-Cell 0 seed 5 argmax on 108x108, 162+ iterations:
+### Root cause
+
+The E-step reads `A = model.likelihood.A.squeeze()`, where `A` has `requires_grad=True`
+(exp transform of `raw_A`). All Newton computations (`g_b = A * ...`, `G_b = A*A * ...`,
+`V_b_new`, `m_b_new`) carried autograd computation graphs. These were stored in model
+state via `update_variational_params(m_b_new, V_b_new)`. The next E-step read the stored
+m_b/V_b, creating a LONGER graph that referenced the previous one. Over 500 Newton steps
+per EM cycle x 50 EM iterations x 369 active iterations, the chained graphs accumulated
+hundreds of thousands of nodes holding intermediate GPU tensors.
+
+### The fix (4 changes)
+
+1. **`eigenspace_model.py`**: `.detach()` in `update_variational_params()` — breaks the
+   chain where m_b/V_b carry grad_fn into the next E-step. m_b and V_b are Newton-updated
+   (closed-form), never gradient-descended; detaching is semantically correct.
+
+2. **`eigenspace_estep.py`**: Wrap entire E-step body in `torch.no_grad()` — prevents
+   building ~20 graph nodes per Newton step. Without this, the nodes are built and
+   immediately discarded by the detach — pure waste.
+
+3. **`eigenspace_training.py`**: Detach `A`/`lambda0` at all 5 read sites in the training
+   loop + wrap `model(X_train)` posterior calls in `no_grad()` at 4 call sites. These
+   feed E-step, metrics, and ELBO — none need backprop. The F-step and M-step read from
+   `model.likelihood` directly inside their own closures, unaffected.
+
+4. **`run_active_loop.py`**: Null `.grad` on deepcopied kernel/likelihood params after
+   `copy.deepcopy()`. Deepcopy preserves `.grad` tensors from the previous LBFGS, which
+   reference old computation graphs.
+
+### Results
+
+| Metric | Before fix | After fix |
+|---|---|---|
+| Phase 1 CUDA tensors | 8,760 | 53 |
+| Tensor growth per active iter | ~550 | ~9 (model state only) |
+| GPU memory at M=450 | 19.9 GB (OOM risk) | 0.122 GB |
+| **400-iter wall time** | **45.7 min** | **3.0 min (15x)** |
+
+Per-M-range speedup (cell 8, seed 42, argmax, 64x64):
 ```
-Linear fit: gpu_GB = 6.77 MB/iter + 0.160 GB (R^2 = 0.98)
-Projected at iter 412: 2.95 GB
-Original OOM was at:   22.9 GB after 412 iters (OLD code)
+M=[ 51,100]:  2.7x
+M=[101,200]: 10.2x
+M=[201,300]: 18.5x
+M=[301,420]: 22.3x
 ```
 
-The memory growth is purely linear (expected from model expansion), not superlinear. The old code's `DirectVGPModel(kernel, likelihood, X_tilde_new, X_tilde_new, eigval_tol)` called `_compute_eigenspace_quantities()` which computed K_tilde (M^2 entries), K (another M^2 entries), and Kvec via three separate kernel calls with intermediate GPU caches. These caches accumulated across iterations. The column append avoids two of those three kernel calls.
+The autograd graph construction and GC overhead was the dominant cost, not the kernel
+evaluations. Training equivalence verified: test_r=0.6150 (exact match at M=50).
+
+### Future-proofing note
+
+The user plans to compute gradients of utility/prediction w.r.t. input images (x*) in
+the future. All fixes are safe for this: m_b, V_b, A, lambda0 are constants w.r.t. x*
+and should be detached. The utility code path (`acquisition.py`) is separate from the
+training loop and unaffected.
 
 ---
 
-## Task 3: Stuck-near-init diagnosis (DONE)
+## Task 3: Stuck-near-init diagnosis (root cause found, no fix yet)
 
 **Commit**: `452bc11`
 
@@ -69,12 +130,21 @@ Gradient of likelihood w.r.t. kernel params vanishes -> M-step cannot learn.
 | 200 EM iters, no ES | 0.0003 | 0.105 | 0.012 | STILL STUCK |
 | M=100 (more data) | 0.043 | 0.105 | 0.133 | A recovers, kernel stuck |
 
-- More EM iterations: A stays collapsed. The trap is structural (zero gradient), not just ES stopping too early.
-- More data (M=100): A recovers to 0.043 (40x larger). But kernel stays at init because 100 data points with 90% zeros is still too few to constrain 5+ kernel params.
+- More EM iterations: A stays collapsed. The trap is structural (zero gradient), not
+  just ES stopping too early. Re-verified after memory fix — same result.
+- More data (M=100): A recovers to 0.043 (40x larger). But kernel stays at init because
+  100 data points with 90% zeros is still too few to constrain 5+ kernel params.
 
 ### Initial training set comparison
 
-All seeds have similar zero-response fraction (84-92%). The A collapse is NOT driven by data composition differences — it's the stochastic dynamics of the first few E/F-step iterations.
+All seeds have similar zero-response fraction (84-92%). The A collapse is NOT driven
+by data composition differences — it's the stochastic dynamics of the first few
+E/F-step iterations.
+
+### Status: OPEN — no fix implemented
+
+Possible mitigations not yet tested: A lower bound, different init strategy, interleaved
+F-step (damped Newton) during Phase 1.
 
 ---
 
@@ -87,11 +157,3 @@ All seeds have similar zero-response fraction (84-92%). The A collapse is NOT dr
 - The pathological cell 0 seed 0 random (beta=0.448 -> OOM) would now be clamped
 - Added mask coverage warning when mask covers >50% of pixels
 - The warning fires at beta ~0.19 on 64x64 (72% coverage), as observed during testing
-
----
-
-## Summary of remaining issues
-
-1. **Stuck-near-init (H2)**: Structural problem in Phase 1 optimization for cells with sparse responses. Possible mitigation: larger initial set (M=100), A lower bound, or interleaved F-step (damped Newton). None fully solve it yet.
-
-2. **Memory growth**: Now linear and well-behaved (6.8 MB/iter). The original 22.9 GB OOM is likely fixed by the column-append optimization + gc.collect. Needs verification on a healthy-params run (not stuck-near-init) since the stuck model has lower memory footprint.

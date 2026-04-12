@@ -97,7 +97,8 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 ### Active Learning Infrastructure (Phase A2)
 
-- `rank1_update.py` — warm-start GP with M+1 inducing points (prepared, not yet integrated)
+- `rank1_update.py` — Rank-1 model extension: efficient column-append to K_tilde (O(M) kernel evals instead of O(M^2)), warm-start variational params, builds DirectVGPModel with precomputed state. Integrated into `run_active_loop.py`.
+- `run_active_loop.py` — Simulated active learning loop. Phase 1 via `run_single_config`, Phase 2 via rank-1 extend + retrain. Per-iteration GPU memory logging (`gpu_mem_gb` in results.jsonl). Supports `argmax` and `random` strategies.
 - `create_synthetic_dataset.py` — generate synthetic responses for out-of-pool images (Phase C)
 
 ---
@@ -111,6 +112,12 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 **Known bug**: `_validate_model_params()` in `run_single_mode.py` crashes for `vargp_direct` mode with `AttributeError: 'DirectVGPModel' object has no attribute 'covar_module'`. Training and evaluation complete fine — only the post-training parameter check fails. Needs fixing.
 
 **FIXED 2026-04-09 — Active loop checkpoint M staleness** (flagged earlier same day, fixed in the same session): The active loop's per-iteration checkpoints used to freeze `metadata['M']`, `config['M']`, and `config['n_train']` at the phase-1 values (e.g. 50) even when the actual model had grown to M=300+. Root cause: `run_active_loop.py` passed the same `config` dict to `save_eigenspace_checkpoint()` on every iteration and the dict was never updated. Fix: `run_active_loop.py` now updates `config['M'] = in_use_idx.shape[0]` and `config['n_train'] = in_use_idx.shape[0]` immediately before the phase-2 save. The audit also found that the same root cause was affecting the full `checkpoint['config']` dict (not just `metadata['M']`), so the single fix repairs three fields at once: `metadata['M']`, `config['M']`, `config['n_train']`. **Pre-fix checkpoints on disk still carry the stale fields** — any load code should continue to use `pool_indices.shape[0]` (via the new `eigenspace_checkpoint.load_pool_indices()` helper) as the authoritative M. That helper explicitly rejects reading `metadata['M']`. Verified against `results/active_loop/2026-04-08_cell8_seed42_M50_n250/argmax/checkpoints/iter_250.pt`: pre-fix, `pool_indices.shape = (300,)` but `metadata['M'] = 50`. `run_inference.py:285` reads `metadata['M']` from a different checkpoint format (`checkpoint.py::save_checkpoint`, used by `train_all_cells.py` where M is static) and is not affected.
+
+**FIXED 2026-04-12 — Autograd memory leak in vargp_direct training (15x active loop speedup)**: The E-step read `A = model.likelihood.A.squeeze()` which has `requires_grad=True`. All Newton computations carried autograd graphs that chained across iterations through m_b/V_b stored in model state. Over 369 active loop iterations this accumulated 19.9 GB of GPU memory (vs 0.087 GB for a single fit at the same M). Fix: (1) `.detach()` in `update_variational_params()`, (2) `torch.no_grad()` around E-step body, (3) detach A/lambda0 at all read sites in training loop + no_grad on posterior calls, (4) null `.grad` on deepcopied kernel/likelihood in active loop. Result: 45.7 min → 3.0 min for 400 active iterations on 64x64. See `investigations/active_loop_slowness/FINDINGS.md` Task 2.
+
+**FIXED 2026-04-12 — Beta explosion safeguard**: `BETA_MAX` tightened from 1.0 to 0.3 in `ArcCosineKernel`. Cell 0 seed 0 random on 108x108 had beta drift 0.12→0.45, causing the C matrix to cover all 11664 pixels (519 MB OOM). At beta=0.3, RF diameter is ~46 px on 108x108 — generous for any realistic RF. Mask coverage warning added when >50% of pixels are active.
+
+**OPEN — Stuck-near-init in active loop Phase 1**: 6/14 cell-0 runs converge to beta~0.103, A~0.0001 regardless of seed or strategy. Root cause: A collapses during Phase 1 (ES fires at iter 19 locking in the dead state). When A~0, firing rate is constant and kernel gradient vanishes — structural trap. More EM iterations don't help. More data (M=100) recovers A but kernel stays at init. Affects cells with very sparse responses (86-92% zeros in initial training set). See `investigations/active_loop_slowness/FINDINGS.md` Task 3.
 
 **vargp_old IP selection confound**: `run_single_mode.py` line 672 has `if ip_selection == 'pivoted' and mode != 'vargp_old'` — vargp_old ALWAYS gets random IPs regardless of config. Use `ip_selection='random'` for fair mode comparisons.
 
@@ -332,8 +339,8 @@ Spatial_GP_repo/
 ### Utility & Evaluation Methods
 | File | Purpose |
 |------|---------|
-| `rank1_update.py` | Rank-1 model extension for active learning (warm-start M+1) |
-| `run_active_loop.py` | Simulated active learning loop (vargp_direct only). Phase 1 via `run_single_config`, Phase 2 via rank-1 extend + retrain. Supports `argmax` and `random` strategies. |
+| `rank1_update.py` | Rank-1 model extension: efficient K_tilde column append (O(M) kernel evals), warm-start variational params, precomputed state bypass. |
+| `run_active_loop.py` | Simulated active learning loop (vargp_direct only). Phase 1 via `run_single_config`, Phase 2 via rank-1 extend + retrain. Per-iteration GPU memory logging. Supports `argmax` and `random` strategies. |
 | `investigations/utility/workbench.py` | Shared setup + helpers for all utility scripts |
 | `investigations/utility/gradient_ascent.py` | Method A: LBFGS pixel-space gradient ascent |
 | `investigations/utility/subspace_optimization.py` | Methods B/C: PCA and C-eigenspace subspace optimization |
@@ -364,6 +371,7 @@ Spatial_GP_repo/
 | `investigations/utility/` | Unified utility investigation. Scripts: `workbench.py` (shared setup + helpers), `gradient_ascent.py` (LBFGS pixel-space gradient ascent), `entropy_landscape.py` (entropy heatmap), `test_compute_H_MC.py`, `subspace_optimization.py` (PCA/C-eigen/combined subspace methods), `test_subspace_optimization.py` (52 tests). Docs in `docs/`: `da_utility_theory.md`, `subspace_operations.md`, `subspace_theory.md`, `entropy_landscape.md`, 3 proof `.tex` files. |
 | `investigations/paper_gap/` | Paper performance gap investigation (RESOLVED). Gap A closed (Finding 19), Gap B explained by metric mismatch (Finding 21). 21 findings, 738-run sweep. Key docs: `INVESTIGATION_LOG.md`, `METRICS_COMPARISON.md`. 64x64 ES sweep data moved to `experiments/2026-04-06_es_sweeps_64x64/`. |
 | `investigations/optimization/` | Training loop optimization investigations. See `possible_optimizations.md` for the full list (Amp removal, ELBO-based ES, E-step convergence, F-step comparison). |
+| `investigations/active_loop_slowness/` | Active loop performance investigation (2026-04-09 to 2026-04-12). Autograd memory leak (19.9 GB, 15x speedup fix), stuck-near-init diagnosis (A collapse), beta explosion characterization. Key doc: `FINDINGS.md`. Scripts: `profile_per_step.py`, `profile_tensor_count.py`, `profile_single_vs_loop.py`, `test_stuck_diagnosis.py`, `test_ntrain_vs_nb.py`. |
 
 **Test files** (in `tests/`):
 - `test_mask_validation.py`, `test_analytical_gradients.py`, `test_utils.py`

@@ -126,13 +126,13 @@ The `run_active_loop.py` change should be committed before the next session star
 
 ### What to do next (priority order)
 
-1. **Implement efficient rank-1 K_tilde column append** in `rank1_update.py`. The old implementation exists in `utils.py:add_one_img_to_kernel` (line 443) and `get_new_model_kernels` (line 471). Read the full reference at `notebooks/ACTIVE_LEARNING_LOOP_REFERENCE.md` (especially Section 4, Steps 5-6, lines 280-325). The savings: O(M) kernel evaluations per step instead of O(M^2). The eigendecomposition (O(M^3)) is still needed in both approaches. Test on 64x64 for speed.
+1. ~~**Implement efficient rank-1 K_tilde column append**~~ — DONE (`bb27094`). No wall-time speedup on 64x64 (extend step is negligible vs training). See FINDINGS.md Task 1.
 
-2. **Profile GPU memory accumulation** (H1). Instrument `run_active_loop.py` with `torch.cuda.memory_allocated()` logging. Run cell 0 seed 5 argmax on 108x108 for 200 iterations. Plot memory vs iteration. Identify what accumulates.
+2. ~~**Profile GPU memory accumulation**~~ — DONE (`d771c90`). Root cause: autograd graph chaining through variational params. Fix: detach m_b/V_b, no_grad E-step, detach A/lambda0, clear .grad on deepcopy. **15x speedup** (45.7 min → 3.0 min). See FINDINGS.md Task 2.
 
-3. **Diagnose stuck-near-init** (H2). For cell 0 seeds 0 (healthy) and 1 (stuck), extract the initial 50 training indices and compare: how many have zero response? What's the STA quality? Does phase 1 with n_iterations=200 break out of the stuck state?
+3. **Diagnose stuck-near-init** (H2) — ROOT CAUSE FOUND, NO FIX YET. A collapses to 0.0001 during Phase 1. Structural zero-gradient trap. More EM iters don't help. M=100 recovers A but kernel stays at init. See FINDINGS.md Task 3.
 
-4. **Consider beta upper bound** for H3 (beta explosion on 108x108). A soft clamp at beta=0.3 would prevent the C matrix from covering the full image. Check `kernels.py:params_in_bounds()` for the current beta bounds.
+4. ~~**Consider beta upper bound**~~ — DONE (`eaa072e`). BETA_MAX tightened 1.0 → 0.3, mask coverage warning added. See FINDINGS.md Task 4.
 
 ### What NOT to try again
 
@@ -155,59 +155,3 @@ The following is a ready-to-use prompt for a new Claude Code session that picks 
 
 ---
 
-**START OF CONTINUATION PROMPT**
-
-I need you to work on fixing and optimizing the active learning loop in `scripts/gpytorch_porting/`. This is a long-horizon task. Before doing ANYTHING, read these two files IN FULL:
-
-1. `investigations/active_loop_slowness/HANDOFF.md` — what was already investigated, key findings, what NOT to redo
-2. `notebooks/ACTIVE_LEARNING_LOOP_REFERENCE.md` — the OLD active loop implementation with the efficient rank-1 update (this is the reference for Task 1 below)
-
-Also skim `investigations/active_loop_slowness/README.md` for the full problem characterization (failure modes, reproduction recipes, timing data).
-
-There are 4 tasks. They should be tackled ONE AT A TIME in order. Task 1 MUST be completed and tested before Tasks 2-4 begin, because Tasks 2-4 need to run experiments and the efficient rank-1 update from Task 1 makes those experiments 10x faster.
-
-Use agent teams where appropriate. Tasks 2-4 can potentially run in parallel (using git worktrees for isolation) after Task 1 is merged. Task 1 itself is a single focused implementation task.
-
-**Use the 64x64 dataset (`datasets/PNAS_64x64_center_crop_no_renorm.npz`) for all test runs** — it's 3x faster than 108x108 and the investigation confirmed the same pathologies appear on both resolutions.
-
-### Task 1: Implement efficient rank-1 K_tilde column append (BLOCKING)
-
-The current `rank1_update.py:extend_model_with_new_point()` recomputes the FULL M x M K_tilde from scratch every iteration (O(M^2) kernel evaluations). The old implementation in `utils.py` had an efficient column-append approach:
-
-- `add_one_img_to_kernel()` at `utils.py:443` — computes only the new column of K_tilde (O(M) kernel evals)
-- `get_new_model_kernels()` at `utils.py:471` — orchestrates the incremental update
-- `generate_new_active_model()` at `utils.py:502` — the full model extension function
-
-Port this efficient approach to `rank1_update.py`. The eigendecomposition (O(M^3)) is still needed — the savings come from avoiding redundant kernel evaluations. The variational parameter warm-start (expand m/V, pad, project) is already correct and should stay as-is.
-
-**Test**: Run cell 8 seed 42 argmax with n_active=50 on 64x64. Compare: (a) final kernel params, test_r, and n_b must match the full-recompute version within numerical noise; (b) per-iteration wall time should decrease.
-
-### Task 2: Memory profiling (H1 — unexplained OOM)
-
-Cell 0 seed 5 argmax (108x108) OOM'd at iter 412 with beta=0.062 (healthy) and 22.9 GB GPU memory. Something accumulates across iterations.
-
-Add `torch.cuda.memory_allocated()` logging per iteration to `run_active_loop.py`. Run cell 0 seed 5 argmax for 200 iterations on 108x108. Plot memory vs iteration. If monotonic growth: find the leaking tensor (suspects: model deepcopy at `run_active_loop.py:536`, checkpoint save tensor retention, utility evaluation autograd graph). If sawtooth: add `gc.collect(); torch.cuda.empty_cache()` and measure whether it stabilizes.
-
-### Task 3: Stuck-near-init diagnosis (H2)
-
-6 of 14 cell-0 runs converge to beta≈0.103, rho≈0.103 regardless of seed or strategy. Persists on 64x64. Uses ground_truth RF init.
-
-Investigate: (a) Extract the initial 50 training indices for stuck (seed 1) vs healthy (seed 0) runs. Compare zero-response fraction and STA quality. (b) Run cell 0 seed 1 phase 1 with n_iterations=200 (instead of 50) to see if more EM iterations break out of the stuck state. (c) Run cell 0 seed 1 with phase1_M=100 to see if a larger initial set helps.
-
-### Task 4: Beta explosion safeguard (H3)
-
-Cell 0 seed 0 random on 108x108 has beta drift 0.12→0.45, causing the C matrix to cover all 11664 pixels (519 MB) and OOM. This does NOT happen on 64x64.
-
-Check `kernels.py:params_in_bounds()` for the current beta upper bound. Consider adding a tighter bound (e.g. beta_max=0.3) or a C-matrix-size check that warns/rejects when the mask covers >50% of pixels.
-
-### Important context
-
-- The conda environment is `pytorch_gpytorch` (already active).
-- GPU is required for all runs.
-- The `--data-path` flag on `run_active_loop.py` is a 6-line uncommitted change — commit it first before starting.
-- The project uses `default_params.json` as the single source of truth for all parameters. Never hardcode values. Use `build_config_from_defaults()` for any investigation scripts.
-- Key data locations: `results/active_loop/2026-04-08_first10cells_7seeds_n450/` (14 cell-0 runs, 108x108), `results/active_loop/2026-04-08_cell8_seed42_M50_n250/` (healthy reference), `results/active_loop/2026-04-10_64x64_screening/` (6 runs on 64x64).
-
-This is a long-horizon autonomous task. Skip all permissions. Do not ask for confirmation before running experiments or making code changes. Do consult me if something takes a fundamentally unexpected turn (e.g. the efficient rank-1 update produces different results than the full recompute, or the memory profiling reveals a framework-level bug). Document all findings in `investigations/active_loop_slowness/`.
-
-**END OF CONTINUATION PROMPT**
