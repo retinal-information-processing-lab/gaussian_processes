@@ -284,11 +284,15 @@ def train_eigenspace(
     param_Amp_curve = []
     iter_time_curve = []
 
-    # Initial moments (GPyTorch-like: call model to get posterior)
-    posterior = model(model.X_train)
-    lambda_m, lambda_var = posterior.mean, posterior.variance
-    A = model.likelihood.A.squeeze()
-    lambda0 = model.likelihood.lambda0.squeeze()
+    # Initial moments (GPyTorch-like: call model to get posterior).
+    # no_grad: posterior is for E-step input, not for backprop.
+    # A/lambda0 detached: they are constants in the E-step/metrics context.
+    # The F-step and M-step read from model.likelihood directly.
+    with torch.no_grad():
+        posterior = model(model.X_train)
+        lambda_m, lambda_var = posterior.mean, posterior.variance
+    A = model.likelihood.A.squeeze().detach()
+    lambda0 = model.likelihood.lambda0.squeeze().detach()
     f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
     for iteration in range(1, n_iterations):
@@ -297,10 +301,11 @@ def train_eigenspace(
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
             model.recompute_eigenspace()
-            posterior = model(model.X_train)
-            lambda_m, lambda_var = posterior.mean, posterior.variance
-            A = model.likelihood.A.squeeze()
-            lambda0 = model.likelihood.lambda0.squeeze()
+            with torch.no_grad():
+                posterior = model(model.X_train)
+                lambda_m, lambda_var = posterior.mean, posterior.variance
+            A = model.likelihood.A.squeeze().detach()
+            lambda0 = model.likelihood.lambda0.squeeze().detach()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
             if capture_checkpoints:
@@ -322,8 +327,9 @@ def train_eigenspace(
 
             estep_eigenspace(model, r, f_mean)
 
-            posterior = model(model.X_train)
-            lambda_m, lambda_var = posterior.mean, posterior.variance
+            with torch.no_grad():
+                posterior = model(model.X_train)
+                lambda_m, lambda_var = posterior.mean, posterior.variance
 
             if interleave_fstep:
                 # Paper's approach: update A, lambda0 at every E-step iteration
@@ -332,8 +338,8 @@ def train_eigenspace(
                     f_mean_max_threshold=f_mean_max_threshold,
                     f_mean_mean_threshold=f_mean_mean_threshold,
                 )
-                A = model.likelihood.A.squeeze()
-                lambda0 = model.likelihood.lambda0.squeeze()
+                A = model.likelihood.A.squeeze().detach()
+                lambda0 = model.likelihood.lambda0.squeeze().detach()
             else:
                 f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
@@ -354,10 +360,11 @@ def train_eigenspace(
                     with torch.no_grad():
                         model.likelihood.raw_A.copy_(raw_A_prev)
                         model.likelihood.lambda0.copy_(lambda0_prev)
-                    A = model.likelihood.A.squeeze()
-                    lambda0 = model.likelihood.lambda0.squeeze()
-                posterior = model(model.X_train)
-                lambda_m, lambda_var = posterior.mean, posterior.variance
+                    A = model.likelihood.A.squeeze().detach()
+                    lambda0 = model.likelihood.lambda0.squeeze().detach()
+                with torch.no_grad():
+                    posterior = model(model.X_train)
+                    lambda_m, lambda_var = posterior.mean, posterior.variance
                 f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
                 print(f"  E-step {i_estep}: f_mean diverged "
                       f"(max={f_mean.max().item():.1f}), reverted")
@@ -369,8 +376,8 @@ def train_eigenspace(
                              f_mean_max_threshold=f_mean_max_threshold,
                              f_mean_mean_threshold=f_mean_mean_threshold)
 
-        A = model.likelihood.A.squeeze()
-        lambda0 = model.likelihood.lambda0.squeeze()
+        A = model.likelihood.A.squeeze().detach()
+        lambda0 = model.likelihood.lambda0.squeeze().detach()
         f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
         if capture_checkpoints:

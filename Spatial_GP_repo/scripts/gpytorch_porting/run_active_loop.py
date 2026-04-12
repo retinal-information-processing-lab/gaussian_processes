@@ -540,6 +540,13 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         # 5. Extend model (rank-1 warm-start)
         kernel_copy = copy.deepcopy(model.kernel)
         likelihood_copy = copy.deepcopy(model.likelihood)
+        # deepcopy preserves .grad tensors from the previous M-step/F-step
+        # LBFGS, which reference the old computation graphs. Null them so
+        # the new model starts without stale autograd state.
+        for p in kernel_copy.parameters():
+            p.grad = None
+        for p in likelihood_copy.parameters():
+            p.grad = None
         new_model = extend_model_with_new_point(
             model, x_new, kernel_copy, likelihood_copy, eigval_tol
         )
