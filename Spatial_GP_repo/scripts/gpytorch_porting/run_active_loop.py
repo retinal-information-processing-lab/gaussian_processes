@@ -79,6 +79,17 @@ standard_utility = _acq.standard_utility
 # Data loading
 # =============================================================================
 
+
+# TODO: Held-out validation set for fair log-likelihood comparison.
+# Currently, train_log_lik is evaluated on each strategy's own training images,
+# making argmax vs random log-lik comparison confounded (different images).
+# Future change: before Phase 1, carve out N validation images from the pool
+# (using the run seed). Neither strategy selects from them. At each iteration,
+# evaluate model log-likelihood on this fixed held-out set and log as
+# heldout_log_lik in results.jsonl. See compute_heldout_loglik.py in the
+# 2026-04-12 experiment results for the post-hoc version of this analysis.
+
+
 def load_pool_and_responses(data_path, cell, device, dtype):
     """Load PNAS dataset, combine train+val into pool, extract single cell.
 

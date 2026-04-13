@@ -3,10 +3,10 @@
 Plot active learning comparison curves: argmax vs random, for a single cell.
 
 Reads results.jsonl files produced by run_active_loop.py and produces a
-3-panel figure comparing the two selection strategies as the training set grows:
+2-panel figure comparing the two selection strategies as the training set grows:
 
-  Row 0: test_r       — Pearson r on the 30-image held-out test set (primary metric)
-  Row 1: train_log_lik — log-likelihood on the growing training set
+  Row 0: test_r       -- Pearson r on the 30-image held-out test set (primary metric)
+  Row 1: log-lik      -- log-likelihood (train or held-out, see --heldout flag)
 
 X-axis is n_training (number of images seen so far), starting at phase1_M (default 50)
 and growing to phase1_M + n_active_iterations (default 300).
@@ -43,6 +43,13 @@ Multi-seed (batch layout from run_active_loop_batch.py):
                  results/.../cell_09/seed_1/random \\
                  results/.../cell_09/seed_2/random
 
+Options:
+    --ceiling <path>    JSON file with per-cell ceiling test_r
+                        (e.g. checkpoints/64x64_ceiling_M1500/ceiling_results.json)
+    --cell <id>         Cell ID to look up in the ceiling JSON
+    --heldout           Use heldout_metrics.jsonl for the log-lik panel
+                        (per-image avg on a fixed held-out set, fair comparison)
+
 Output
 ------
 Default: <common ancestor of all input dirs>/plots/comparison.png
@@ -62,8 +69,9 @@ import numpy as np
 
 # -- Style constants (consistent with plot_training.py) -----------------------
 
-COLOR_ARGMAX = '#2176AE'   # steel blue
-COLOR_RANDOM = '#FF7F0E'   # orange
+COLOR_ARGMAX = '#66BB6A'   # light green
+COLOR_RANDOM = '#000000'   # black
+COLOR_CEILING = '#999999'  # gray
 
 ALPHA_SEED   = 0.25   # individual seed lines
 LW_SEED      = 1.0
@@ -77,6 +85,18 @@ LW_MEAN_MULTI = 2.5   # mean-of-many line width
 def load_results_jsonl(results_dir):
     """Load results.jsonl from a run directory. Returns list of row dicts."""
     path = Path(results_dir) / 'results.jsonl'
+    rows = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def load_heldout_jsonl(results_dir):
+    """Load heldout_metrics.jsonl from a run directory. Returns list of row dicts."""
+    path = Path(results_dir) / 'heldout_metrics.jsonl'
     rows = []
     with open(path) as f:
         for line in f:
@@ -151,7 +171,7 @@ def _plot_metric_row(ax, argmax_runs, random_runs, key, ylabel,
         ax.plot(x_ref, mean_y, color=COLOR_ARGMAX, alpha=ALPHA_MEAN,
                 linewidth=LW_MEAN_MULTI, label='argmax', zorder=3)
     elif argmax_ys_interp:
-        # Single seed — re-label the already-drawn line
+        # Single seed -- re-label the already-drawn line
         ax.get_lines()[-1].set_label('argmax')
 
     # --- random ---
@@ -183,14 +203,17 @@ def _plot_metric_row(ax, argmax_runs, random_runs, key, ylabel,
 
 # -- Top-level ----------------------------------------------------------------
 
-def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None):
-    """Build the 3-panel active learning comparison figure and save it.
+def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None,
+                     ceiling_test_r=None, use_heldout=False):
+    """Build the 2-panel active learning comparison figure and save it.
 
     Args:
         argmax_dirs: list of paths to argmax run directories (one per seed)
         random_dirs: list of paths to random run directories (one per seed)
         output_path: full path for the output PNG
         title: optional suptitle string
+        ceiling_test_r: if set, draw a horizontal dashed line at this test_r
+        use_heldout: if True, use heldout_metrics.jsonl for the log-lik panel
     """
     if len(argmax_dirs) != len(random_dirs):
         raise ValueError(
@@ -198,9 +221,21 @@ def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None):
             f"(got {len(argmax_dirs)} vs {len(random_dirs)})"
         )
 
-    # Load all runs
+    # Load all runs from results.jsonl (always needed for test_r)
     argmax_runs = [load_results_jsonl(d) for d in argmax_dirs]
     random_runs = [load_results_jsonl(d) for d in random_dirs]
+
+    # For log-lik panel: either use heldout_metrics.jsonl or results.jsonl
+    if use_heldout:
+        argmax_ll_runs = [load_heldout_jsonl(d) for d in argmax_dirs]
+        random_ll_runs = [load_heldout_jsonl(d) for d in random_dirs]
+        ll_key = 'heldout_log_lik'
+        ll_ylabel = 'held-out log-lik (per image)'
+    else:
+        argmax_ll_runs = argmax_runs
+        random_ll_runs = random_runs
+        ll_key = 'train_log_lik'
+        ll_ylabel = 'train log-lik'
 
     fig, axes = plt.subplots(2, 1, figsize=(7, 6),
                              sharex=True,
@@ -210,11 +245,18 @@ def plot_active_loop(argmax_dirs, random_dirs, output_path, title=None):
     _plot_metric_row(axes[0], argmax_runs, random_runs,
                      key='test_r', ylabel='test r (Pearson)',
                      plot_random=True)
+
+    # Ceiling line
+    if ceiling_test_r is not None:
+        axes[0].axhline(y=ceiling_test_r, color=COLOR_CEILING,
+                        linestyle='--', linewidth=1.5, zorder=1,
+                        label=f'ceiling ({ceiling_test_r:.3f})')
+
     axes[0].legend(fontsize=10, framealpha=0.7)
 
-    # Row 1: train_log_lik
-    _plot_metric_row(axes[1], argmax_runs, random_runs,
-                     key='train_log_lik', ylabel='train log-lik',
+    # Row 1: log-likelihood
+    _plot_metric_row(axes[1], argmax_ll_runs, random_ll_runs,
+                     key=ll_key, ylabel=ll_ylabel,
                      plot_random=True)
 
     # Shared x-axis label on bottom panel only
@@ -246,8 +288,27 @@ def main():
                              'input dirs>/plots/comparison.png')
     parser.add_argument('--title', type=str, default=None,
                         help='Optional figure suptitle')
+    parser.add_argument('--ceiling', type=str, default=None,
+                        help='Path to ceiling_results.json (per-cell ceiling test_r)')
+    parser.add_argument('--cell', type=int, default=None,
+                        help='Cell ID to look up in --ceiling JSON')
+    parser.add_argument('--heldout', action='store_true',
+                        help='Use heldout_metrics.jsonl for the log-lik panel')
 
     args = parser.parse_args()
+
+    # Load ceiling if provided
+    ceiling_test_r = None
+    if args.ceiling is not None:
+        if args.cell is None:
+            parser.error("--ceiling requires --cell to specify which cell to look up")
+        with open(args.ceiling) as f:
+            ceiling_data = json.load(f)
+        cell_key = str(args.cell)
+        if cell_key not in ceiling_data:
+            print(f"WARNING: cell {args.cell} not found in ceiling JSON, skipping ceiling line")
+        else:
+            ceiling_test_r = ceiling_data[cell_key]['test_r']
 
     output = args.output
     if output is None:
@@ -255,7 +316,8 @@ def main():
         experiment_dir = Path(os.path.commonpath(all_dirs))
         output = experiment_dir / 'plots' / 'comparison.png'
 
-    plot_active_loop(args.argmax, args.random, output, title=args.title)
+    plot_active_loop(args.argmax, args.random, output, title=args.title,
+                     ceiling_test_r=ceiling_test_r, use_heldout=args.heldout)
 
 
 if __name__ == '__main__':

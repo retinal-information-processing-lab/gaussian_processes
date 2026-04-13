@@ -207,6 +207,8 @@ def main():
                              f'(default: {n_active_default} from default_params.json)')
     parser.add_argument('--phase1-M', type=int, default=None,
                         help='Pass-through: phase 1 inducing points')
+    parser.add_argument('--data-path', type=str, default=None,
+                        help='Pass-through: path to PNAS .npz dataset')
 
     args = parser.parse_args()
 
@@ -225,6 +227,8 @@ def main():
         passthrough_args += ['--n-active', str(args.n_active)]
     if args.phase1_M is not None:
         passthrough_args += ['--phase1-M', str(args.phase1_M)]
+    if args.data_path is not None:
+        passthrough_args += ['--data-path', args.data_path]
 
     run_batch(
         cells=args.cells,
