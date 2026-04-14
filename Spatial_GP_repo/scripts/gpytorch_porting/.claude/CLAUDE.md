@@ -486,6 +486,7 @@ Spatial_GP_repo/
 | Math formulas | `.claude/rules/math.md` (auto-loads, or `/math` skill) |
 | "Why was X designed this way?" | DECISION_LOG.md |
 | Performance numbers | `analyze_experiment.py --exp <name>` (old: `old_results/BENCHMARK_LOG.md`) |
+| **64×64 intl+fixAmp M-sweep** (how test_r depends on M for the current best config) | **`experiments/2026-04-13_M_sweep_64x64/README.md`** (984-fit sweep, 41 cells × 8 M × 3 seeds; investigation story at `investigations/M_degradation/FINDINGS.md`) |
 | How to work on this project | .claude/rules/working_guidelines.md (auto-loaded) |
 | vargp_direct implementation | EIGENSPACE_REFERENCE.md |
 | Analytical gradients | `.claude/rules/gradients.md` (auto-loads, or `/gradients` skill) |
