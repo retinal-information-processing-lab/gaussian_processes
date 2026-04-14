@@ -27,19 +27,8 @@
   },
 
   "link_function": {
-    "_comment_A_init_mode": "'fixed' = use the literal A_init value (legacy default, preserves all reproductions of pre-2026-04-14 results). 'adaptive' = compute A_init = sqrt(A_init_T_safe / sum(r^2)) per cell, derived from E-step Newton stability bound A^2 * sum(r^2) < A_init_T_safe (see investigations/M_degradation/REGULARIZATION_PROPOSAL.md Section on Option beta1). Used by run_single_mode.py and downstream sweep scripts.",
-    "A_init_mode": "fixed",
-    "_comment_A_init_T_safe": "Safety target for A^2 * sum(r^2) at the first E-step Newton step. The empirical danger threshold from ToDo.md is ~1; 0.01 gives a 100x margin. Only consulted when A_init_mode='adaptive'.",
-    "A_init_T_safe": 0.01,
     "A_init": 0.01,
     "lambda0_init": 1.0
-  },
-
-  "_comment_hyperparam_prior": "Weakly-informative log-normal prior on the gain parameter A. Added to address the M-degradation overfitting found in experiments/2026-04-13_M_sweep_64x64 (9/41 cells degrade as M grows because the ELBO has no prior on hyperparameters). Disabled by default to preserve baseline reproducibility. When enabled, the F-step (both interleaved damped Newton and standalone LBFGS) maximizes log-posterior = log-likelihood - 0.5*(log(A) - A_mu)^2 / A_sigma^2 instead of pure log-likelihood. The damped Newton uses a Fisher-information curvature term 1/(A^2 * A_sigma^2) for the Hessian augmentation (positive, keeps Newton step well-defined when log(A) is far from A_mu). A_mu=-3.0 gives prior mode A=0.05, centered on the empirical mean of log(A_opt@M=50) across 41 cells (-2.59, rounded to -3.0 for universality). A_sigma=0.5 was chosen from a smoke test showing sigma=1.0 is too loose (essentially inactive) while sigma=0.3 regresses the improver control (Cell 8) by 0.007 test_r. sigma=0.5 matches 2x the empirical std of log(A_opt) across cells. See investigations/M_degradation/REGULARIZATION_PROPOSAL.md.",
-  "hyperparam_prior": {
-    "enabled": false,
-    "A_mu": -3.0,
-    "A_sigma": 0.5
   },
 
   "training": {

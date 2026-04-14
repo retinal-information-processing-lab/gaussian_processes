@@ -26,12 +26,3 @@ ES_MIN_DELTA_REL = _es['min_delta_rel']
 ES_MIN_ITERATIONS = _es['min_iterations']
 ES_RESTORE_BEST = _es['restore_best']
 ES_METRIC = _es['es_metric']
-
-_lik = _defaults['link_function']
-A_INIT_MODE = _lik['A_init_mode']
-A_INIT_T_SAFE = _lik['A_init_T_safe']
-
-_hp = _defaults['hyperparam_prior']
-HYPERPARAM_PRIOR_ENABLED = _hp['enabled']
-HYPERPARAM_PRIOR_A_MU = _hp['A_mu']
-HYPERPARAM_PRIOR_A_SIGMA = _hp['A_sigma']

@@ -2,9 +2,30 @@
 
 **Date**: 2026-04-14
 **Branch**: `pietro/investigate-M-degradation`
+**Status**: CLOSED. Investigation concluded — the proposed fix was a modest
+partial improvement only, not a universal fix. The feature code (A-prior +
+adaptive A_init) has been reverted; this folder is archival.
 **Scope**: 11 cells × 3 M × 3 seeds = 99 runs on 64x64 PNAS, validating the
 hyperparameter-prior + adaptive-A_init fix proposed in
 `investigations/M_degradation/REGULARIZATION_PROPOSAL.md`.
+
+## Conclusion
+
+- 1/9 degraders saved by the strict trend criterion (Cell 27 only).
+- 1/2 controls preserved (Cell 8 regressed by 0.006, slightly over the
+  0.005 criterion).
+- Grand mean test_r at M=1500 across the 11 validation cells: +0.004 over
+  baseline — net neutral.
+- The A-prior cannot address degraders whose overfitting flows through β
+  (Cell 39's β grows +47% with M; A is stable). A β-prior was considered
+  and rejected because β grows for improvers (Cell 8 β grows 2.1×) as much
+  as for degraders — a universal β prior would penalize legitimate RF
+  growth.
+- Decision: M-degradation for the 9 minority cells accepted as a known
+  limit. See `investigations/M_degradation/FINDINGS.md` Resolution section.
+- The JSONL + 99 checkpoints below remain on disk as a record of what was
+  tried. The sweep script can no longer be re-run after the revert (it
+  depends on feature-flags that were removed).
 
 ## Context
 

@@ -1,4 +1,12 @@
 """
+ARCHIVAL — DO NOT RE-RUN.
+
+This script depends on feature-flagged code (hyperparam_prior_enabled +
+A_init_mode='adaptive') that was reverted after the validation run showed
+the fix was insufficient. See README.md Conclusion and
+investigations/M_degradation/FINDINGS.md Resolution. Results from the one
+run that was executed remain on disk (results.jsonl + checkpoints/).
+
 Validation sweep for the hyperparameter-prior + adaptive A_init fix.
 
 Configuration (matching experiments/2026-04-13_M_sweep_64x64 baseline in every

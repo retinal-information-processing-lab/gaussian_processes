@@ -16,7 +16,7 @@ Extracted from fstep.py during codebase reorganization (2025-02).
 import torch
 
 # Import shared utilities
-from utils import lambda0_given_A, compute_f_mean, log_normal_prior_A_terms
+from utils import lambda0_given_A, compute_f_mean
 
 
 def fstep_eigenspace(
@@ -27,20 +27,11 @@ def fstep_eigenspace(
     n_fstep: int,
     lr: float,
     f_mean_max_threshold: float = 500,
-    f_mean_mean_threshold: float = 100,
-    A_prior_enabled: bool = False,
-    A_prior_mu: float = -3.0,
-    A_prior_sigma: float = 1.0,
+    f_mean_mean_threshold: float = 100
 ):
     """F-step for eigenspace mode: Optimize A with LBFGS, lambda0 computed analytically.
 
     This is a simplified version that directly uses LBFGS on raw_A.
-
-    When A_prior_enabled is True, maximizes the log-posterior
-    log_lik(A) - 0.5 * (log A - A_prior_mu)^2 / A_prior_sigma^2 instead of
-    pure log-likelihood. The prior gradient is added to the analytical
-    gradient assigned to raw_A.grad. lambda0 update is unaffected — the
-    prior is on A only.
 
     Args:
         model: DirectVGPModel instance
@@ -49,8 +40,6 @@ def fstep_eigenspace(
         lambda_var: Posterior variance (held fixed), shape (N,)
         n_fstep: Number of LBFGS iterations
         lr: Learning rate for LBFGS
-        A_prior_enabled: If True, add log-normal prior penalty on A.
-        A_prior_mu, A_prior_sigma: log-normal prior hyperparameters.
     """
     likelihood = model.likelihood
 
@@ -116,25 +105,9 @@ def fstep_eigenspace(
         dL_dA = r @ lambda_m - torch.dot(lambda_m + A * lambda_var, f_mean)
         dL_dlogA = A * dL_dA
 
-        # MAP loss = -log_lik + prior_penalty.
-        # Gradient w.r.t. raw_A (= log A):
-        #   d(-log_lik)/d(raw_A)        = -dL_dlogA
-        #   d(prior_penalty)/d(log A)   = (log A - mu) / sigma^2   (by chain rule on the
-        #                                A-space gradient: A * (log A - mu)/(A * sigma^2))
-        loss = -log_lik
-        if A_prior_enabled:
-            penalty, _, _ = log_normal_prior_A_terms(
-                A, A_prior_mu, A_prior_sigma
-            )
-            loss = loss + penalty
-            d_penalty_d_logA = (torch.log(A) - A_prior_mu) / (A_prior_sigma ** 2)
-            likelihood.raw_A.grad = (-dL_dlogA + d_penalty_d_logA).reshape(
-                likelihood.raw_A.shape
-            )
-        else:
-            likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
+        likelihood.raw_A.grad = -dL_dlogA.reshape(likelihood.raw_A.shape)
 
-        return loss
+        return -log_lik
 
     # Save pre-step state for revert on divergence
     raw_A_prev = likelihood.raw_A.detach().clone()
@@ -172,16 +145,13 @@ def damped_newton_update_A_lambda0(
     tol: float = 1e-6,
     f_mean_max_threshold: float = 500,
     f_mean_mean_threshold: float = 100,
-    A_prior_enabled: bool = False,
-    A_prior_mu: float = -3.0,
-    A_prior_sigma: float = 1.0,
 ) -> torch.Tensor:
     """Damped Newton update for A and lambda0 (matches paper's updateA).
 
     Jointly optimizes (A, lambda0) by iterating a damped Newton step:
         psi_new = psi - alpha * solve(H, g)
     where g is the gradient and H the Hessian of the expected log-likelihood
-    (or log-posterior, when A_prior_enabled) w.r.t. psi = [A, lambda0].
+    w.r.t. psi = [A, lambda0].
 
     Called at every E-step Newton iteration when interleave_fstep=True,
     keeping A/lambda0 in sync with variational parameters (m, V).
@@ -190,13 +160,9 @@ def damped_newton_update_A_lambda0(
         f_i = exp(A * mu_i + 0.5 * A^2 * var_i + lambda0)
         d_i = mu_i + A * var_i
 
-        Gradient (log-lik): R = [r @ mu - d @ f,  sum(r) - sum(f)]
-        Hessian  (log-lik): H = -[[var @ f + d^2 @ f, d @ f], [d @ f, sum(f)]]
-        Update: psi -= alpha * solve(H, R)
-
-    When A_prior_enabled, augment R[0] and H[0,0] with the log-normal
-    prior contribution (Fisher-information curvature for the Hessian to
-    stay PSD-safe; see utils.log_normal_prior_A_terms).
+        Gradient:  R = [r @ mu - d @ f,  sum(r) - sum(f)]
+        Hessian:   H = -[[var @ f + d^2 @ f, d @ f], [d @ f, sum(f)]]
+        Update:    psi -= alpha * solve(H, R)
 
     Args:
         model: DirectVGPModel instance
@@ -208,8 +174,6 @@ def damped_newton_update_A_lambda0(
         tol: Convergence tolerance on sum(|gradient|) (default 1e-6)
         f_mean_max_threshold: Max f_mean.max() before rejecting step
         f_mean_mean_threshold: Max f_mean.mean() before rejecting step
-        A_prior_enabled: If True, add log-normal prior on A.
-        A_prior_mu, A_prior_sigma: log-normal prior hyperparameters.
 
     Returns:
         f_mean: Updated expected firing rate, shape (N,)
@@ -233,33 +197,19 @@ def damped_newton_update_A_lambda0(
             f_star = d_exp * f_mean
 
             # Gradient of log-likelihood w.r.t. [A, lambda0]
-            R0 = r_dot_mu - f_star.sum()
-            R1 = sum_r - f_mean.sum()
+            R = torch.stack([
+                r_dot_mu - f_star.sum(),
+                sum_r - f_mean.sum(),
+            ])
+
+            # Convergence check
+            if R.abs().sum().item() < tol:
+                break
 
             # Hessian (negative definite)
             H00 = -(lambda_var @ f_mean + d_exp @ f_star)
             H01 = -f_star.sum()
             H11 = -f_mean.sum()
-
-            # Add prior penalty contribution (subtract from objective being
-            # maximized: log_post = log_lik - penalty). The Fisher curvature
-            # 1/(A^2 * sigma^2) is positive, so subtracting it from H00 (which
-            # is already <= 0) keeps H negative-definite. The exact 2nd
-            # derivative in A-space is sign-indefinite, hence the Fisher
-            # approximation — see utils.log_normal_prior_A_terms.
-            if A_prior_enabled:
-                _, d_penalty_dA, h_fisher = log_normal_prior_A_terms(
-                    A_val, A_prior_mu, A_prior_sigma
-                )
-                R0 = R0 - d_penalty_dA
-                H00 = H00 - h_fisher
-
-            R = torch.stack([R0, R1])
-
-            # Convergence check (gradient of log-posterior, not log-lik)
-            if R.abs().sum().item() < tol:
-                break
-
             H = torch.stack([
                 torch.stack([H00, H01]),
                 torch.stack([H01, H11]),

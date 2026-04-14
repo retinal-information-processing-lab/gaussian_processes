@@ -1,6 +1,13 @@
 # Regularization Proposal — Principled Fix for M Degradation + A Initialization
 
-**Status**: PROPOSAL — awaiting user decision before any code change.
+**Status**: CONCLUDED — proposal implemented, validated on 99 runs, result
+was a modest partial fix (1/9 degraders saved, Cell 8 improver regressed);
+code reverted. See FINDINGS.md "Resolution" section and
+`experiments/2026-04-14_hyperparam_prior_validation/` for data. This
+document is retained as the record of the design choices and the
+σ-sensitivity smoke tests that drove the parameter values, so that a
+future session does not need to re-derive them.
+
 **Branch**: `pietro/investigate-M-degradation`
 **Date**: 2026-04-14
 **Supersedes**: The "hyperparameter overfitting" and "data-adaptive A_init" follow-ups

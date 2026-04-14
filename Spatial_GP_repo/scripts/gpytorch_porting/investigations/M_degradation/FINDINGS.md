@@ -1,13 +1,14 @@
 # M Degradation Investigation — Findings
 
 **Branch**: `pietro/investigate-M-degradation`
-**Date**: 2026-04-13
-**Status**: RESOLVED
+**Date**: 2026-04-13 → 2026-04-14
+**Status**: CLOSED — M-degradation accepted as a known limit for a minority of cells.
 
 > **Canonical results** for this sweep live at
 > `experiments/2026-04-13_M_sweep_64x64/` (README + JSONL + scripts).
 > This file records the *investigation story* — how the problem was
-> found, the wrong turns, and why the final config is what it is.
+> found, why the final config is what it is, and why the attempted fix
+> was abandoned.
 
 ---
 
@@ -158,16 +159,49 @@ Do not use this file for conclusions — kept only as part of the investigation 
 
 ---
 
-## Open follow-ups
+## Resolution (2026-04-14)
 
-- **Data-adaptive A_init** to replace the hardcoded 1e-4. See `ToDo.md` "Data-adaptive
-  A initialization for interleaved F-step stability" for the analysis and candidate
-  formulas.
-- **Hyperparameter regularization** (prior on A) to prevent the drift that causes H4
-  overfitting for near-ceiling sparse cells. Not implemented; would need user decision
-  on the prior strength.
-- **Cell 39** shows catastrophic M-degradation (-0.199). Mechanism likely the same as
-  Cell 35 but more extreme. Deferred.
+**Decision: accept the degradation as a known limit.**
+
+A fix attempt (weakly-informative log-normal prior on the gain parameter A,
+plus an adaptive A_init formula) was designed, implemented, and validated
+on 11 cells × 3 M × 3 seeds = 99 runs. See
+`experiments/2026-04-14_hyperparam_prior_validation/` for the data and
+`REGULARIZATION_PROPOSAL.md` (this folder) for the proposal + σ-sensitivity
+smoke tests that led to σ=0.5.
+
+**Outcome of the validation sweep**: 1/9 degraders "saved" by the strict
+trend criterion (Cell 27 only); 1/2 controls preserved (Cell 1 OK, Cell 8
+regressed by 0.006 — slightly over the 0.005 criterion). Grand mean at
+M=1500 moved by +0.004 — net neutral.
+
+**Why the fix is insufficient**: the overfitting channel is not uniformly A.
+Some degraders (notably Cell 39, worst at −0.199) overfit via β-drift
+(receptive-field locality scale grows from 0.071 to 0.104 with M, +47%),
+with A barely moving. A β-prior was considered but β grows for **every**
+cell — including the biggest improver (Cell 8, β grows 2.1× with M). A
+universal β prior would penalize legitimate RF-growth just as much as
+overfitting; the two are indistinguishable in hyperparameter space without
+access to held-out signal, which we rightly do not use during training.
+
+**Prior work on validation-based early stopping is already documented**
+(see `experiments/2026-04-06_es_sweeps_64x64/README.md` and CLAUDE.md
+Early Stopping section): all three validation metrics (val_ll, val_r,
+val_rho) underperformed the ELBO-ES baseline by ~0.02 mean test_r due to
+A-transient noise on a 250-image val set. This closes off the most obvious
+alternative pathway.
+
+**Operational guidance** (already in
+`experiments/2026-04-13_M_sweep_64x64/README.md`): population sweet spot
+is M = 200–300. Beyond that, gains are ≤ 0.002 on average, and a minority
+of near-ceiling sparse cells start to overfit.
+
+The feature-flagged prior + adaptive A_init code was reverted in this
+session (see commit at the close of the investigation). No library behavior
+changed. `REGULARIZATION_PROPOSAL.md` is retained as a record of the
+proposal and the σ-sensitivity smoke-test findings that drove the
+parameter choices, so a future session revisiting this problem does not
+have to re-derive them.
 
 ---
 
@@ -175,15 +209,5 @@ Do not use this file for conclusions — kept only as part of the investigation 
 
 | File | Purpose |
 |------|---------|
-| `FINDINGS.md` | This document — investigation story |
-| `phase1_correct_config.py` | Main sweep script (13 cells, correct config) |
-| `phase1_remaining_cells.py` | Follow-up sweep script (28 remaining cells) |
-| `phase1_m_sweep.py` | Original wrong-config sweep (historical) |
-| `phase1_extended_sweep.py` | Original wrong-config extended sweep (historical) |
-| `phase2_seed_sweep.py` | Original wrong-config seed sweep (historical) |
-| `results/phase1_correct_config.jsonl` | **Canonical 984-record results** (also in experiments/) |
-| `results/phase1_results.jsonl` | Wrong-config historical data |
-| `results/probe_cells_8_25.jsonl` | Parallel probe during main sweep |
-| `phase1_correct_config.log` | Main sweep stdout |
-| `phase1_remaining_cells.log` | Follow-up sweep stdout |
-| `HANDOFF.md` | Handoff from the previous session (superseded) |
+| `FINDINGS.md` | This document — investigation story + resolution |
+| `REGULARIZATION_PROPOSAL.md` | Prior proposal, smoke-test σ-sensitivity, post-hoc outcome (CONCLUDED) |
