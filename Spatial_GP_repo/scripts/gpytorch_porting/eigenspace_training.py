@@ -183,6 +183,9 @@ def train_eigenspace(
     X_val: torch.Tensor = None,
     r_val: torch.Tensor = None,
     es_metric: str = 'elbo',
+    A_prior_enabled: bool = False,
+    A_prior_mu: float = -3.0,
+    A_prior_sigma: float = 1.0,
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -243,6 +246,10 @@ def train_eigenspace(
 
     if interleave_fstep:
         print(f"  F-step INTERLEAVED: damped Newton (alpha=0.25) at each E-step iteration")
+
+    if A_prior_enabled:
+        print(f"  A prior: log-normal(mu={A_prior_mu:.3f}, sigma={A_prior_sigma:.3f}) "
+              f"(A_mode={torch.exp(torch.tensor(A_prior_mu)).item():.4f})")
 
     time_estep_total = 0.0
     time_mstep_total = 0.0
@@ -337,6 +344,9 @@ def train_eigenspace(
                     model, r, lambda_m, lambda_var,
                     f_mean_max_threshold=f_mean_max_threshold,
                     f_mean_mean_threshold=f_mean_mean_threshold,
+                    A_prior_enabled=A_prior_enabled,
+                    A_prior_mu=A_prior_mu,
+                    A_prior_sigma=A_prior_sigma,
                 )
                 A = model.likelihood.A.squeeze().detach()
                 lambda0 = model.likelihood.lambda0.squeeze().detach()
@@ -374,7 +384,10 @@ def train_eigenspace(
         if not interleave_fstep:
             fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
                              f_mean_max_threshold=f_mean_max_threshold,
-                             f_mean_mean_threshold=f_mean_mean_threshold)
+                             f_mean_mean_threshold=f_mean_mean_threshold,
+                             A_prior_enabled=A_prior_enabled,
+                             A_prior_mu=A_prior_mu,
+                             A_prior_sigma=A_prior_sigma)
 
         A = model.likelihood.A.squeeze().detach()
         lambda0 = model.likelihood.lambda0.squeeze().detach()

@@ -323,7 +323,16 @@ def build_config_from_defaults(**overrides):
 
         # --- Likelihood (from link_function section) ---
         'A_init': lik['A_init'],
+        'A_init_mode': lik['A_init_mode'],      # 'fixed' | 'adaptive'
+        'A_init_T_safe': lik['A_init_T_safe'],  # used only when A_init_mode='adaptive'
         'lambda0_init': lik['lambda0_init'],
+
+        # --- Hyperparameter prior (from hyperparam_prior section) ---
+        # When enabled, the F-step maximizes log-posterior instead of
+        # log-likelihood. See investigations/M_degradation/REGULARIZATION_PROPOSAL.md.
+        'hyperparam_prior_enabled': defaults['hyperparam_prior']['enabled'],
+        'A_prior_mu': defaults['hyperparam_prior']['A_mu'],
+        'A_prior_sigma': defaults['hyperparam_prior']['A_sigma'],
 
         # --- Training (from training section) ---
         'n_estep': trn['n_estep'],
@@ -964,6 +973,24 @@ def run_single_config(config):
     f_mean_mean_threshold = config['f_mean_mean_threshold']
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
+    A_init_mode = config.get('A_init_mode', 'fixed')
+    A_init_T_safe = config.get('A_init_T_safe', 0.01)
+
+    # Resolve adaptive A_init from response data when requested.
+    # Formula derivation + constant choice in
+    # investigations/M_degradation/REGULARIZATION_PROPOSAL.md (Option beta1).
+    if A_init_mode == 'adaptive':
+        from utils import compute_adaptive_A_init
+        A_init = compute_adaptive_A_init(r_train, A_init_T_safe)
+        print(f"  A_init_mode=adaptive: A_init={A_init:.6f} "
+              f"(T_safe={A_init_T_safe}, sum(r^2)={(r_train.float()**2).sum().item():.1f})")
+    elif A_init_mode != 'fixed':
+        raise ValueError(f"A_init_mode must be 'fixed' or 'adaptive', got {A_init_mode!r}")
+
+    # Hyperparameter prior config (used by train_eigenspace/F-step when enabled)
+    A_prior_enabled = bool(config.get('hyperparam_prior_enabled', False))
+    A_prior_mu = float(config.get('A_prior_mu', -3.0))
+    A_prior_sigma = float(config.get('A_prior_sigma', 1.0))
 
     # =========================================================================
     # VARGP_OLD MODE: Use original varGP implementation
@@ -1133,6 +1160,9 @@ def run_single_config(config):
                 X_val=X_val,
                 r_val=r_val,
                 es_metric=es_metric,
+                A_prior_enabled=A_prior_enabled,
+                A_prior_mu=A_prior_mu,
+                A_prior_sigma=A_prior_sigma,
             )
 
         train_time = time.time() - start_time
@@ -1378,6 +1408,7 @@ def run_single_config(config):
         '_model': model if mode != 'vargp_old' else None,
         '_likelihood': likelihood if mode != 'vargp_old' else None,
         '_indices_train': indices_train,
+        '_indices_inducing': indices_inducing if mode != 'vargp_old' else None,
         '_STA_init_2d': STA_init_2d,
         '_STA_train_2d': _compute_sta_2d(X[indices_train], r[indices_train], n_px_side),
         '_init_eps_0x': eps_0x,

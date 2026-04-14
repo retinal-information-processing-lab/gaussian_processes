@@ -189,6 +189,69 @@ def lambda0_given_A(
     return torch.log(sumr) - torch.log(sumexpr)
 
 
+def log_normal_prior_A_terms(A, mu, sigma):
+    """Log-normal prior on the gain parameter A: penalty, dpenalty/dA, Fisher curvature.
+
+    Penalty form (added to the negative log-likelihood being minimized):
+        penalty(A) = 0.5 * (log A - mu)^2 / sigma^2
+
+    The exact second derivative in A-space, (1 - (logA - mu)) / (A^2 * sigma^2),
+    is sign-indefinite — it goes negative when |logA - mu| > 1, which can break
+    Newton's negative-definiteness. We return the Fisher-information curvature
+    1 / (A^2 * sigma^2) instead: it is the convex (always-positive) part of the
+    exact Hessian and is the standard MAP-Newton choice in this situation.
+    Choice rationale + alternatives in
+    investigations/M_degradation/REGULARIZATION_PROPOSAL.md.
+
+    Returns:
+        penalty: scalar tensor, value of 0.5 * (log A - mu)^2 / sigma^2
+        d_penalty_dA: scalar tensor, dpenalty/dA = (log A - mu) / (A * sigma^2)
+        h_fisher: scalar tensor, 1 / (A^2 * sigma^2)  (always positive)
+    """
+    log_A = torch.log(A)
+    diff = log_A - mu
+    sigma2 = sigma * sigma
+    penalty = 0.5 * diff * diff / sigma2
+    d_penalty_dA = diff / (A * sigma2)
+    h_fisher = 1.0 / (A * A * sigma2)
+    return penalty, d_penalty_dA, h_fisher
+
+
+def compute_adaptive_A_init(r_train, T_safe):
+    """Stability-derived initial A: A_init = sqrt(T_safe / sum(r^2)).
+
+    Derivation: at the first E-step Newton step (m=0, lambda~exp(lambda0)),
+    the dangerous quantity for f_mean overshoot scales as A^2 * sum(r^2)
+    (see ToDo.md "Data-adaptive A initialization for interleaved F-step
+    stability"). Setting A^2 * sum(r^2) = T_safe gives the formula above.
+    The empirical danger threshold from ToDo is ~1; T_safe = 0.01 (the
+    default) places initialization 100x below it. The result is a per-cell
+    A_init that adapts to response magnitudes (sparser cells get a larger
+    starting A, dense bursty cells get a smaller one) without any
+    dataset-specific calibration.
+
+    Args:
+        r_train: Spike counts for the training set, shape (N,). torch.Tensor
+                 or numpy array; both are accepted (numpy is converted).
+        T_safe: Safety target; A_init satisfies A^2 * sum(r^2) = T_safe.
+
+    Returns:
+        Float — initial A value, suitable for PoissonLikelihood(A_init=...).
+
+    Raises:
+        ValueError: if sum(r^2) is zero (the cell has no spikes at all).
+    """
+    if not isinstance(r_train, torch.Tensor):
+        r_train = torch.as_tensor(r_train)
+    sum_r2 = (r_train.float() ** 2).sum().item()
+    if sum_r2 <= 0.0:
+        raise ValueError(
+            "compute_adaptive_A_init: sum(r^2) = 0. The cell has no spikes; "
+            "cannot derive a stability-based initial A."
+        )
+    return float((T_safe / sum_r2) ** 0.5)
+
+
 def compute_f_mean(
     lambda_m: torch.Tensor,
     lambda_var: torch.Tensor,
