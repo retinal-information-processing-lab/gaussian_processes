@@ -10,6 +10,35 @@
 ## Variational Parameters
 - Variational parameters (inducing points, variational distribution m/V) are **critical model state** — never omit them when reproducing or comparing models.
 
+## Save the Final Trained Model for Expensive Sweeps
+
+**Any sweep or experiment that (a) takes more than ~30 minutes of compute AND
+(b) could plausibly be a reference for later work MUST save the final
+trained model (one .pt per run) — not just summary metrics.** This includes
+all multi-cell × multi-M × multi-seed sweeps.
+
+- **One file per run, the final trained state.** NOT per-iteration
+  snapshots, NOT intermediate checkpoints during training. Just the model
+  at the end of training (`train_eigenspace` return).
+- A JSONL with `test_r`, `final_A`, `final_beta`, etc. is **not enough** to
+  use a trained model later. The variational parameters `m_b`, `V_b`, the
+  eigenspace basis, and the inducing point indices are not serializable
+  from summary numbers — the model is irretrievable once the Python
+  process exits.
+- Use `eigenspace_checkpoint.save_eigenspace_checkpoint()` for
+  `vargp_direct` runs. See `train_ceiling_models.py` for the canonical
+  pattern.
+- Naming convention: `<experiment_dir>/models/cell_XX_M<M>_seed<S>.pt`
+  (one `.pt` per run, final state only). Store alongside the JSONL.
+- Exception: quick debug runs, single-seed single-cell smoke tests, or
+  experiments explicitly flagged as "throwaway". If unsure, save.
+
+**Historical context**: the 2026-04-13 M-sweep (984 runs, ~12h of compute)
+wrote only the summary JSONL. Every fitted model was lost when the
+processes exited. When the user later wanted to hand "the best fits" to a
+colleague for inference, re-training was required. This rule exists so
+that never happens again.
+
 ## Import Side Effects
 - Importing from old codebase (1D/2D playgrounds, utility.py) can change `torch.default_dtype` and `sys.path`. Always save and restore both before/after import. See `acquisition.py` for the pattern.
 

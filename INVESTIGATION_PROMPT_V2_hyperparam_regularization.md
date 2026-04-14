@@ -285,6 +285,15 @@ Store results in a new experiment folder under
 documented in `experiments/2026-04-06_es_sweeps_64x64/README.md` and
 `experiments/2026-04-13_M_sweep_64x64/README.md`.
 
+**IMPORTANT — save the final trained model for every run** (critical rule #9
+in `.claude/CLAUDE.md`). One `.pt` per run, the final trained state — NOT
+per-iteration snapshots. The M-sweep from April 13 did NOT save any models
+and that was a costly mistake. Use
+`eigenspace_checkpoint.save_eigenspace_checkpoint()` per run, naming the
+files `<experiment_dir>/models/cell_XX_M<M>_seed<S>.pt`. The pattern is in
+`train_ceiling_models.py`. The JSONL alone is not sufficient for a colleague
+to run inference on these models later.
+
 **Reference baseline** (for comparison, already on disk):
 
 | Cell | M=50 | M=300 | M=1500 |

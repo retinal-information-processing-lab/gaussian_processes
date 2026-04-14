@@ -71,6 +71,8 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 8. **No silent pixel clipping in plots** - When plotting images (especially optimized or synthetic ones), every subplot must check if pixel values exceed the dataset global range [min, max] and flag OOB with a red title. Use fixed vmin/vmax = dataset global range, never adaptive scaling. See `.claude/rules/critical_short_rules.md` "Image Pixel Range and Plotting" for full rule.
 
+9. **Save the final trained model for expensive sweeps** - Any sweep/experiment that (a) takes more than ~30 minutes AND (b) could plausibly be a reference for later work MUST save the final trained model (one `.pt` per run, NOT per-iteration snapshots) alongside the summary JSONL. A JSONL with final hyperparameters is NOT enough to reuse the model — variational params (m_b, V_b), eigenspace basis, and inducing points are required for inference. Use `eigenspace_checkpoint.save_eigenspace_checkpoint()`; pattern in `train_ceiling_models.py`. See `.claude/rules/critical_short_rules.md` "Save the Final Trained Model for Expensive Sweeps" for full rule.
+
 ---
 
 ## Evaluation Framework
