@@ -54,6 +54,12 @@ that never happens again.
 - **Never write `= 1e-4` or `= 1e-6`** (or any numeric literal) as a default argument in a library function. Import the constant from `_constants.py` instead.
 - A pre-commit hook enforces this for module-level `UPPERCASE = <scientific notation>` in root-level `.py` files.
 
+## Modifying `default_params.json`: Add Yes, Change No
+
+- **NEVER change an existing value** in `default_params.json` without asking the user first. It is shared across branches, so a silent edit can break unrelated work (the main failure mode of the M-degradation investigation: the default `A_init=0.01` is wrong for interleaved training, but "fixing" it in the JSON would have broken every script that depends on the non-interleaved path).
+- **Adding a new key IS allowed** when introducing a new library-level parameter that needs a default. This is the correct way to resolve the tension with rule #7 (no hidden hardcoded parameters) — a new parameter with a sensible default in the JSON is the project convention. If the parameter is numerical and used inside library code, also add it to `_constants.py`.
+- Summary: **add yes, change no**. If uncertain, ask.
+
 ## Config API: Use the Right Builder
 - **Standalone scripts** (investigations, one-offs): use `build_config_from_defaults(mode, **overrides)` from `run_single_mode.py`. It reads `default_params.json` and returns a complete config.
 - **Experiment matrix iteration**: use `flatten_yaml_config(yaml_config, mode, M, n_train, seed, cell)`. This is for `run_experiment.py`'s `itertools.product()` loop — not for standalone scripts.

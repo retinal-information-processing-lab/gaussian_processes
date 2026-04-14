@@ -33,9 +33,17 @@ You have broad permissions. In exchange, follow these rules strictly:
 - **NEVER `git push --force`, `git push origin main`, or push to any branch
   other than `pietro/investigate-M-degradation`.** Regular `git push origin
   pietro/investigate-M-degradation` is fine.
-- **NEVER modify `default_params.json`.** It is shared with other branches and
-  changing it would affect unrelated work. If you need different default values,
+- **Do not CHANGE existing values in `default_params.json`** without asking
+  the user first. It is shared with other branches and a silent edit can
+  break unrelated work. If you need different values for your experiments,
   pass them explicitly in your config-building code.
+  **Adding NEW keys IS allowed** when you introduce a new library-level
+  parameter that needs a default — that's the correct way to resolve the
+  tension with the "no hidden hardcoded parameters" rule. Add the key with
+  a sensible default to `default_params.json` (and to `_constants.py` if
+  it's a numerical constant used inside library code). See
+  `.claude/rules/critical_short_rules.md` → "Modifying `default_params.json`:
+  Add Yes, Change No".
 - **NEVER delete files that are already tracked in git.** If you think a file
   should be removed, propose it to the user and wait.
 - **Scope your work to `Spatial_GP_repo/scripts/gpytorch_porting/`.** Do not
