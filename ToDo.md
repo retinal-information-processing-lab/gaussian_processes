@@ -8,6 +8,14 @@ If the code is too slow the the chosen purpose some things might be implemented
 
 # To make things more stable:
 - [ ] Implement the lbfgs algorithm with boundary limits.
+- [x] ~~Data-adaptive A initialization for interleaved F-step stability.~~
+  **Closed 2026-04-14 without implementing.** Considered as part of the
+  M-degradation investigation; a stability-derived formula was tried
+  (`A_init = sqrt(T_safe / sum(r^2))`) but showed no outcome-level
+  benefit over the hardcoded `A_init = 1e-4` at N=3160, and was reverted
+  together with the A-prior. Revisit if/when active-loop work at small N
+  hits initialization problems. See `investigations/M_degradation/FINDINGS.md`
+  Resolution and `REGULARIZATION_PROPOSAL.md` Section 3.4 for the analysis.
 
 # Bugs:
 - When the xtilde indexes are not sorted, some stability problems might arise. In the case of full ntilde=ntrain as with initialization of "/models/exact_fit_cells/cell8/10_10_10/metadata" a Nan in the f params update emerges in the second iteration. This disappears when indices get sorted. Regarding this, I also tried with smaller ntildes with and without sorting the xtilde indices, to see if any differences arise. There is indeed a difference, even in the r2 value on the test set, even if very small ( 0.01 difference ). I found that the mask coming from the localkernel is probably the cause of it, due to the fact that by changing the order of inputs in the kernel, the mask is changing shape, and number of True values. This should be investigated but the differenc eis minimal, I will just resort to sorting the inddexes every time.
