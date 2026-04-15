@@ -486,9 +486,15 @@ class DirectVGPModel:
 
         Note:
             V_b is symmetrized for numerical stability.
+            Both tensors are detached from the autograd graph. m_b and V_b are
+            updated by Newton's method (closed-form), not by gradient descent.
+            Without detach, the E-step computation graph chains across iterations
+            through A (which has requires_grad=True), causing unbounded memory
+            growth: ~550 CUDA tensors per active-loop iteration, reaching 19.9 GB
+            at M=419. See investigations/active_loop_slowness/FINDINGS.md.
         """
-        self._state.m_b = m_b
-        self._state.V_b = (V_b + V_b.T) / 2  # Symmetrize for stability
+        self._state.m_b = m_b.detach()
+        self._state.V_b = ((V_b + V_b.T) / 2).detach()  # Symmetrize for stability
 
     def recompute_eigenspace(self) -> None:
         """Recompute eigenspace after kernel hyperparameters change.

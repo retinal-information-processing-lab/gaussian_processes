@@ -158,11 +158,15 @@ def train_eigenspace(
     stopped_early = False
     final_iteration = 0
 
-    # Initial moments (GPyTorch-like: call model to get posterior)
-    posterior = model(model.X_train)
-    lambda_m, lambda_var = posterior.mean, posterior.variance
-    A = model.likelihood.A.squeeze()
-    lambda0 = model.likelihood.lambda0.squeeze()
+    # Initial moments (GPyTorch-like: call model to get posterior).
+    # no_grad: posterior is for E-step input, not for backprop.
+    # A/lambda0 detached: they are constants in the E-step/metrics context.
+    # The F-step and M-step read from model.likelihood directly.
+    with torch.no_grad():
+        posterior = model(model.X_train)
+        lambda_m, lambda_var = posterior.mean, posterior.variance
+    A = model.likelihood.A.squeeze().detach()
+    lambda0 = model.likelihood.lambda0.squeeze().detach()
     f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
     for iteration in range(1, n_iterations):
@@ -170,10 +174,11 @@ def train_eigenspace(
         # ===== Kernel recomputation after M-step =====
         if n_mstep > 0 and iteration > 1:
             model.recompute_eigenspace()
-            posterior = model(model.X_train)
-            lambda_m, lambda_var = posterior.mean, posterior.variance
-            A = model.likelihood.A.squeeze()
-            lambda0 = model.likelihood.lambda0.squeeze()
+            with torch.no_grad():
+                posterior = model(model.X_train)
+                lambda_m, lambda_var = posterior.mean, posterior.variance
+            A = model.likelihood.A.squeeze().detach()
+            lambda0 = model.likelihood.lambda0.squeeze().detach()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
             if capture_checkpoints:
@@ -192,8 +197,9 @@ def train_eigenspace(
 
             estep_eigenspace(model, r, f_mean)
 
-            posterior = model(model.X_train)
-            lambda_m, lambda_var = posterior.mean, posterior.variance
+            with torch.no_grad():
+                posterior = model(model.X_train)
+                lambda_m, lambda_var = posterior.mean, posterior.variance
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
             if capture_checkpoints:
@@ -207,8 +213,9 @@ def train_eigenspace(
             # Revert to pre-step state if triggered (matches original varGP).
             if f_mean.max().item() > stability_threshold or torch.any(torch.isnan(f_mean)):
                 model.update_variational_params(m_b_prev, V_b_prev)
-                posterior = model(model.X_train)
-                lambda_m, lambda_var = posterior.mean, posterior.variance
+                with torch.no_grad():
+                    posterior = model(model.X_train)
+                    lambda_m, lambda_var = posterior.mean, posterior.variance
                 f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
                 print(f"  E-step {i_estep}: f_mean diverged "
                       f"(max={f_mean.max().item():.1f}), reverted")
@@ -218,8 +225,8 @@ def train_eigenspace(
         fstep_eigenspace(model, r, lambda_m, lambda_var, n_fstep, lr_f,
                          stability_threshold=stability_threshold)
 
-        A = model.likelihood.A.squeeze()
-        lambda0 = model.likelihood.lambda0.squeeze()
+        A = model.likelihood.A.squeeze().detach()
+        lambda0 = model.likelihood.lambda0.squeeze().detach()
         f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
         if capture_checkpoints:
