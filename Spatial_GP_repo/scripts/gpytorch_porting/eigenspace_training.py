@@ -327,6 +327,14 @@ def train_eigenspace(
             lambda0 = model.likelihood.lambda0.squeeze().detach()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
 
+            # Capture ELBO after eigenspace reprojection — the NET effect of
+            # the previous M-step, including any gain lost to reprojection.
+            if collect_mstep_diagnostics and mstep_diagnostics_list:
+                _elbo_after = compute_elbo_eigenspace(
+                    model.state, r, lambda_m, lambda_var, A, lambda0
+                ).item()
+                mstep_diagnostics_list[-1]['elbo_after_reproject'] = _elbo_after
+
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(
                     'C1_eigenspace', iteration, model.state,
@@ -552,6 +560,10 @@ def train_eigenspace(
         # START of the next iteration to sync with the new kernel params.
         start_mstep = time.time()
 
+        # Capture ELBO before M-step for diagnostics (same model state as
+        # the loss just computed above — reuse it, no extra forward pass).
+        _elbo_before_mstep = -loss if collect_mstep_diagnostics else None
+
         if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
                 mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
@@ -566,6 +578,7 @@ def train_eigenspace(
                 )
                 if collect_mstep_diagnostics and _mstep_diag is not None:
                     _mstep_diag['outer_iter'] = iteration
+                    _mstep_diag['elbo_before_mstep'] = _elbo_before_mstep
                     mstep_diagnostics_list.append(_mstep_diag)
 
             if capture_checkpoints:

@@ -96,17 +96,38 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         line_search_fn='strong_wolfe'
     )
 
-    def _record(loss_tensor, call_start):
+    def _record(loss_tensor, call_start, grads_available=False):
         # Only called when collect_diagnostics=True.
         try:
             lv = float(loss_tensor.item())
         except Exception:
             lv = float('inf')
-        diagnostics['closure_calls'].append({
+        rejected = not math.isfinite(lv)
+        entry = {
             'loss': lv,
             'time_s': time.perf_counter() - call_start,
-            'rejected': not math.isfinite(lv),
-        })
+            'rejected': rejected,
+        }
+        # Gradient telemetry: the exact quantities LBFGS checks
+        if grads_available and not rejected:
+            entry['grad_max'] = max(
+                p.grad.abs().max().item() for p in kernel_params if p.grad is not None
+            )
+            entry['grad_norm'] = math.sqrt(sum(
+                p.grad.pow(2).sum().item() for p in kernel_params if p.grad is not None
+            ))
+        # Parameter snapshot: current kernel param values (may be trial position
+        # during Wolfe line search). Lets us compute param steps in post-analysis.
+        if not rejected:
+            entry['params'] = {
+                'beta': kernel.beta.item(),
+                'rho': kernel.rho.item(),
+                'sigma_0': kernel.sigma_0.item(),
+                'Amp': kernel.Amp.item(),
+                'eps_0x': kernel.eps_0x.item(),
+                'eps_0y': kernel.eps_0y.item(),
+            }
+        diagnostics['closure_calls'].append(entry)
 
     def closure():
         call_start = time.perf_counter() if collect_diagnostics else None
@@ -192,21 +213,25 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
                 param.grad = grad
 
         if collect_diagnostics:
-            _record(loss, call_start)
+            _record(loss, call_start, grads_available=True)
         return loss
 
     try:
         optimizer.step(closure)
         if collect_diagnostics:
             # PyTorch LBFGS stores state under self.state[self._params[0]].
-            # Key 'n_iter' is the outer LBFGS iteration count actually run.
-            n_iter_run = optimizer.state.get(kernel_params[0], {}).get('n_iter', None)
+            opt_state = optimizer.state.get(kernel_params[0], {})
+            n_iter_run = opt_state.get('n_iter', None)
             if n_iter_run is None:
                 diagnostics['n_lbfgs_iters'] = -1
                 diagnostics['termination'] = 'unknown'
             else:
                 diagnostics['n_lbfgs_iters'] = int(n_iter_run)
                 diagnostics['termination'] = 'max_iter' if n_iter_run >= n_mstep else 'tolerance'
+            # Additional state for tolerance analysis
+            diagnostics['n_func_evals'] = int(opt_state.get('func_evals', -1))
+            t_val = opt_state.get('t')
+            diagnostics['final_step_size'] = float(t_val) if t_val is not None else None
     except (IndexError, RuntimeError) as e:
         # LBFGS line search can crash (IndexError in _strong_wolfe) when
         # NaN/inf propagates into the search state. Treat as failed step.
