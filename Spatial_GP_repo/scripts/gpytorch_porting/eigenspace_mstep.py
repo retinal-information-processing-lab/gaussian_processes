@@ -11,6 +11,8 @@ Two implementations:
 Extracted from mstep.py during codebase reorganization (2025-02).
 """
 
+import math
+import time
 import warnings
 import torch
 
@@ -27,7 +29,8 @@ from eigenspace_gradients import (
 
 def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
                               f_mean_mean_threshold: float = 100,
-                              lambda_var_clamp: float = LAMBDA_VAR_CLAMP):
+                              lambda_var_clamp: float = LAMBDA_VAR_CLAMP,
+                              collect_diagnostics: bool = False):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
     Uses LBFGS with PyTorch autograd for gradients (not analytical gradients).
@@ -43,14 +46,42 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         lr: Learning rate for LBFGS
         f_mean_mean_threshold: Max f_mean.mean() before step rejection
         lambda_var_clamp: Minimum posterior variance clamp
+        collect_diagnostics: If True, record per-closure-call telemetry and
+            return it as a dict. If False (default), behavior and return value
+            are unchanged (returns None) — no measurable overhead.
+
+    Returns:
+        None when collect_diagnostics=False.
+        When collect_diagnostics=True, a dict with keys:
+          - 'closure_calls': list of per-call dicts
+              {'loss': float, 'time_s': float, 'rejected': bool}
+              'rejected' is True when closure returned inf (OOB params,
+              numerical failure, or f_mean overflow).
+          - 'n_lbfgs_iters': int, actual LBFGS iterations run (<= n_mstep)
+          - 'termination': 'max_iter' | 'tolerance' | 'crash' | 'skipped'
+          - 'total_time_s': float, wall time of the full M-step call
     """
     kernel = model.kernel
     likelihood = model.likelihood
     X = model.X_train
     X_tilde = model.X_tilde
     state = model.state
+
+    if collect_diagnostics:
+        diagnostics = {
+            'closure_calls': [],
+            'n_lbfgs_iters': 0,
+            'termination': 'skipped',
+            'total_time_s': 0.0,
+        }
+        mstep_start = time.perf_counter()
+    else:
+        diagnostics = None
+
     if n_mstep == 0:
-        return
+        if collect_diagnostics:
+            diagnostics['total_time_s'] = time.perf_counter() - mstep_start
+        return diagnostics
 
     # Get kernel parameters (exclude frozen params to avoid LBFGS Hessian corruption)
     kernel_params = [p for p in kernel.parameters() if p.requires_grad]
@@ -65,12 +96,28 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         line_search_fn='strong_wolfe'
     )
 
+    def _record(loss_tensor, call_start):
+        # Only called when collect_diagnostics=True.
+        try:
+            lv = float(loss_tensor.item())
+        except Exception:
+            lv = float('inf')
+        diagnostics['closure_calls'].append({
+            'loss': lv,
+            'time_s': time.perf_counter() - call_start,
+            'rejected': not math.isfinite(lv),
+        })
+
     def closure():
+        call_start = time.perf_counter() if collect_diagnostics else None
         optimizer.zero_grad()
 
         # Reject trial step if kernel parameters are out of bounds
         if not kernel.params_in_bounds():
-            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            result = torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            if collect_diagnostics:
+                _record(result, call_start)
+            return result
 
         # Compute kernels WITH gradients
         K_tilde = kernel(X_tilde, X_tilde).to_dense()
@@ -88,7 +135,10 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
                                                device=K_tilde_b.device, dtype=K_tilde_b.dtype))
         except RuntimeError:
             # Singular matrix - return inf to reject this step
-            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            result = torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            if collect_diagnostics:
+                _record(result, call_start)
+            return result
 
         # Compute moments with fixed m_b, V_b
         a = K_b @ K_tilde_b_inv  # (N, n_b)
@@ -105,7 +155,10 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         f_mean = torch.exp(A * lambda_m + 0.5 * A * A * lambda_var + lambda0)
 
         if f_mean.mean().item() > f_mean_mean_threshold or torch.any(torch.isnan(f_mean)):
-            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            result = torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            if collect_diagnostics:
+                _record(result, call_start)
+            return result
 
         log_lik = (r * (A * lambda_m + lambda0) - f_mean).sum()
 
@@ -122,7 +175,10 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         sign_V, log_det_V = torch.linalg.slogdet(state.V_b)
 
         if sign_K.item() <= 0 or sign_V.item() <= 0:
-            return torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            result = torch.tensor(float('inf'), device=X.device, dtype=X.dtype)
+            if collect_diagnostics:
+                _record(result, call_start)
+            return result
 
         KL = 0.5 * (trace_term + quad_term - n_b + log_det_K - log_det_V)
 
@@ -135,16 +191,33 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
             for param, grad in zip(kernel_params, grads):
                 param.grad = grad
 
+        if collect_diagnostics:
+            _record(loss, call_start)
         return loss
 
     try:
         optimizer.step(closure)
+        if collect_diagnostics:
+            # PyTorch LBFGS stores state under self.state[self._params[0]].
+            # Key 'n_iter' is the outer LBFGS iteration count actually run.
+            n_iter_run = optimizer.state.get(kernel_params[0], {}).get('n_iter', None)
+            if n_iter_run is None:
+                diagnostics['n_lbfgs_iters'] = -1
+                diagnostics['termination'] = 'unknown'
+            else:
+                diagnostics['n_lbfgs_iters'] = int(n_iter_run)
+                diagnostics['termination'] = 'max_iter' if n_iter_run >= n_mstep else 'tolerance'
     except (IndexError, RuntimeError) as e:
         # LBFGS line search can crash (IndexError in _strong_wolfe) when
         # NaN/inf propagates into the search state. Treat as failed step.
-        import warnings
         warnings.warn(f"M-step LBFGS crashed: {e}. Keeping pre-step parameters.")
+        if collect_diagnostics:
+            diagnostics['termination'] = 'crash'
     kernel.clamp_hyperparameters()
+
+    if collect_diagnostics:
+        diagnostics['total_time_s'] = time.perf_counter() - mstep_start
+    return diagnostics
 
 
 def mstep_eigenspace_analytical(model, r: torch.Tensor, n_mstep: int, lr: float,

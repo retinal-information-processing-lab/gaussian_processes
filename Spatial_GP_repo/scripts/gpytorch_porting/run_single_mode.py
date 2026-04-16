@@ -965,6 +965,8 @@ def run_single_config(config):
     A_init = config['A_init']
     lambda0_init = config['lambda0_init']
 
+    mstep_diagnostics = None
+
     # =========================================================================
     # VARGP_OLD MODE: Use original varGP implementation
     # =========================================================================
@@ -1133,6 +1135,7 @@ def run_single_config(config):
                 X_val=X_val,
                 r_val=r_val,
                 es_metric=es_metric,
+                collect_mstep_diagnostics=config.get('collect_mstep_diagnostics', False),
             )
 
         train_time = time.time() - start_time
@@ -1143,6 +1146,7 @@ def run_single_config(config):
         final_iteration = result.get('final_iteration', len(losses))
         best_iteration = result.get('best_iteration', final_iteration)
         curves = result.get('curves', {})
+        mstep_diagnostics = result.get('mstep_diagnostics', None)
 
         print(f"\nTraining time: {train_time:.1f}s")
         print(f"  E-step (+ F-step): {time_estep_total:.1f}s")
@@ -1243,6 +1247,7 @@ def run_single_config(config):
             final_iteration = result.get('final_iteration', len(losses))
             best_iteration = result.get('best_iteration', final_iteration)
             curves = result.get('curves', {})
+            mstep_diagnostics = None
 
         train_time = time.time() - start_time
         print(f"\nTraining time: {train_time:.1f}s")
@@ -1366,6 +1371,7 @@ def run_single_config(config):
         'stopped_early': stopped_early,
         'best_iteration': best_iteration if mode != 'vargp_old' else None,
         'curves': curves if mode != 'vargp_old' else None,
+        'mstep_diagnostics': mstep_diagnostics,
         'timestamp': datetime.now().isoformat(timespec='seconds'),
         # Provenance: path to the .pt file whose pool_indices were used as
         # the training set (None if the seed-based selection path was taken).
