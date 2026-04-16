@@ -26,7 +26,7 @@ Default Parameters:
     across vargp_old, vargp_direct, and default_gpy modes:
     - Kernel: sigma_0=1.0, Amp=1.0, beta=0.1, rho=0.1
     - Link function: A_init=0.01, lambda0_init=1.0
-    - Training: n_iterations=50, n_estep=10, n_fstep=10, n_mstep=10, lr=0.1
+    - Training: n_iterations=50, n_estep=10, n_fstep=10, n_mstep=20, lr=0.1
     - Data: n_train=500, ntilde=100
 """
 

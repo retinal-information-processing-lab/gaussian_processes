@@ -35,7 +35,8 @@
     "n_iterations": 50,
     "n_estep": 10,
     "n_fstep": 10,
-    "n_mstep": 10,
+    "_comment_n_mstep": "20 is safe: LBFGS hits tolerance_change/tolerance_grad before max_iter in 100% of 514 M-steps tested (5 cells x 3 seeds, median 9 iters, max 17). See investigations/n_mstep_reduction/.",
+    "n_mstep": 20,
     "lr": 0.1,
     "optimizer": "lbfgs"
   },
@@ -94,7 +95,7 @@
     "phase2_n_iterations": 5,
     "phase2_n_estep": 10,
     "phase2_n_fstep": 10,
-    "phase2_n_mstep": 10,
+    "phase2_n_mstep": 20,
     "phase2_lr": 0.1,
     "phase2_early_stop": false,
     "phase2_print_every": 999,
