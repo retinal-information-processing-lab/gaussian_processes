@@ -539,9 +539,11 @@ def train_eigenspace(
                                             f_mean_mean_threshold=f_mean_mean_threshold,
                                             lambda_var_clamp=model.lambda_var_clamp)
             else:
-                mstep_eigenspace_autograd(model, r, n_mstep, lr_m,
-                                          f_mean_mean_threshold=f_mean_mean_threshold,
-                                          lambda_var_clamp=model.lambda_var_clamp)
+                mstep_eigenspace_autograd(
+                    model, r, n_mstep, lr_m,
+                    f_mean_mean_threshold=f_mean_mean_threshold,
+                    lambda_var_clamp=model.lambda_var_clamp,
+                )
 
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(

@@ -14,7 +14,7 @@ Extracted from mstep.py during codebase reorganization (2025-02).
 import warnings
 import torch
 
-from _constants import LAMBDA_VAR_CLAMP
+from _constants import LAMBDA_VAR_CLAMP, LBFGS_TOLERANCE_CHANGE
 
 # Analytical gradient functions for M-step
 from eigenspace_gradients import (
@@ -27,7 +27,8 @@ from eigenspace_gradients import (
 
 def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
                               f_mean_mean_threshold: float = 100,
-                              lambda_var_clamp: float = LAMBDA_VAR_CLAMP):
+                              lambda_var_clamp: float = LAMBDA_VAR_CLAMP,
+                              lbfgs_tolerance_change: float = LBFGS_TOLERANCE_CHANGE):
     """M-step for eigenspace mode: Optimize kernel hyperparameters with LBFGS using autograd.
 
     Uses LBFGS with PyTorch autograd for gradients (not analytical gradients).
@@ -43,12 +44,16 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         lr: Learning rate for LBFGS
         f_mean_mean_threshold: Max f_mean.mean() before step rejection
         lambda_var_clamp: Minimum posterior variance clamp
+        lbfgs_tolerance_change: LBFGS tolerance_change (loss-diff + step-size
+            stopping criterion). Default from default_params.json (1e-3). See
+            investigations/n_mstep_reduction for the calibration that set this.
     """
     kernel = model.kernel
     likelihood = model.likelihood
     X = model.X_train
     X_tilde = model.X_tilde
     state = model.state
+
     if n_mstep == 0:
         return
 
@@ -59,7 +64,7 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
         kernel_params,
         lr=lr,
         max_iter=n_mstep,
-        tolerance_change=1e-9,
+        tolerance_change=lbfgs_tolerance_change,
         tolerance_grad=1e-7,
         history_size=100,
         line_search_fn='strong_wolfe'
@@ -142,7 +147,6 @@ def mstep_eigenspace_autograd(model, r: torch.Tensor, n_mstep: int, lr: float,
     except (IndexError, RuntimeError) as e:
         # LBFGS line search can crash (IndexError in _strong_wolfe) when
         # NaN/inf propagates into the search state. Treat as failed step.
-        import warnings
         warnings.warn(f"M-step LBFGS crashed: {e}. Keeping pre-step parameters.")
     kernel.clamp_hyperparameters()
 

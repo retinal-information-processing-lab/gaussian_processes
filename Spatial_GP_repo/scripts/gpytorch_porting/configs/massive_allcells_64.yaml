@@ -51,7 +51,7 @@ likelihood:
 training:
   n_estep: 10
   n_fstep: 10
-  n_mstep: 10
+  n_mstep: 20
   lr: 0.1
   optimizer: lbfgs
 
