@@ -41,6 +41,25 @@ Answer evolved through the investigation:
 - `tolerance_grad` never triggers at any value up to 1e-1 because gradient magnitudes stay in 1–350 in float32. It is inert. Don't waste time retuning it for float32.
 - M-step's own internal ELBO gain is often wiped by eigenspace reprojection at the start of the next outer iteration (the M-step optimizes in a stale eigenspace). 68% of reprojections have negative ELBO delta. This is normal EM behavior, not a bug — the E-step restores it next iteration.
 
+## Untried paths (for future sessions returning to this investigation)
+
+### High priority — worth revisiting
+
+**1. Kronecker factorization of C_smooth**
+The RBF spatial smoothing kernel is evaluated on a regular 2D pixel grid. This means `C_smooth` factorizes as a Kronecker product (rows ⊗ cols), reducing the dominant O(N × n_pixels²) cost to O(N × n_rows + N × n_cols). This is the correct structural lever for real M-step speedups — not n_mstep tuning. Implementation would go in `kernels.py:_compute_C_matrix`. Not started.
+
+**2. Redundant kernel recomputation between M-step and E-step**
+The M-step's final LBFGS closure evaluates `K_tilde`, `K`, `Kvec` with the converged kernel params. At the start of the next EM iteration, `recompute_eigenspace()` recomputes the same matrices from scratch with those same final params. This is one full redundant kernel evaluation per EM iteration. Fix: cache the M-step's final matrices and pass them to `recompute_eigenspace()`. See `eigenspace_mstep.py` + `eigenspace_training.py`.
+
+### Lower priority — not worth pursuing without a specific motivation
+
+- **LBFGS history_size**: currently 100 for 5–6 params. Reducing to 10 is sufficient (LBFGS needs history ≥ n_params for full quasi-Newton). Never measured whether this changes convergence or per-iteration cost. Low impact expected.
+- **Adaptive tolerance schedule**: the adopted `tolerance_change=1e-3` is fixed across all EM iterations. A looser early / tighter late schedule was the deferred "Phase 2" but never characterized. Given that tolerance=1e-3 already matches baseline within 0.001 test_r, the benefit is likely small.
+- **Analytical / VJP gradient mode for M-step**: investigation only characterized the `autograd` path. The VJP path (`gradient_mode='vjp'`) computes the same math with explicit formulas. May have different float32 numerical behavior, but no evidence it matters.
+- **n_mstep ceiling for unstable cells** (0, 15, 20, 39): LBFGS max was 17 with ceiling 20. Since LBFGS terminates via tolerance before hitting the ceiling, raising n_mstep to 50 would not change behavior. The |delta test_r| > 0.01 observed for these cells is within their normal seed-level variance (~0.05) and is not caused by the tolerance change. Not a real issue.
+
+---
+
 ## What NOT to do
 
 1. **Don't lower `n_mstep` below 20.** The tolerance mechanism handles early termination. Lowering the ceiling would clip the 10% of M-steps that legitimately need 14–17 iters (mostly iter 1).
