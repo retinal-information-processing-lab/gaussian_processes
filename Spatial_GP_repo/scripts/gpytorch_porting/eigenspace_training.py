@@ -183,7 +183,6 @@ def train_eigenspace(
     X_val: torch.Tensor = None,
     r_val: torch.Tensor = None,
     es_metric: str = 'elbo',
-    collect_mstep_diagnostics: bool = False,
 ) -> Dict:
     """Train using eigenspace-based variational GP - model-based API.
 
@@ -211,11 +210,6 @@ def train_eigenspace(
         f_mean_mean_threshold: Max f_mean.mean() before step rejection (default: 100)
         X_val: Validation images, shape (N_val, n_features). None = no validation.
         r_val: Validation spike counts, shape (N_val,). None = no validation.
-        collect_mstep_diagnostics: If True, collect per-M-step LBFGS telemetry
-            (closure calls, ELBO trace, timing, termination reason) for the
-            autograd M-step path. Off by default. Only supported for the
-            autograd M-step path — warns and collects nothing if
-            use_analytical_mstep=True.
 
     Returns:
         Dict with:
@@ -228,10 +222,6 @@ def train_eigenspace(
             'best_iteration': Iteration with the highest ES metric value (ELBO by default)
             'curves': Dict of per-iteration curves (train_loss, val_log_lik, params, etc.)
             'checkpoints': List of checkpoint dicts (only if capture_checkpoints=True)
-            'mstep_diagnostics': List of per-outer-iteration M-step diagnostic
-                dicts, or None if collect_mstep_diagnostics=False. Each entry:
-                  {'outer_iter': int, 'n_lbfgs_iters': int, 'termination': str,
-                   'total_time_s': float, 'closure_calls': [...]}
     """
     from eigenspace_estep import estep_eigenspace
     from eigenspace_fstep import fstep_eigenspace, damped_newton_update_A_lambda0
@@ -258,15 +248,6 @@ def train_eigenspace(
     time_mstep_total = 0.0
     losses = []
     checkpoints = [] if capture_checkpoints else None
-
-    if collect_mstep_diagnostics and use_analytical_mstep:
-        import warnings as _warnings
-        _warnings.warn(
-            "collect_mstep_diagnostics=True with use_analytical_mstep=True: "
-            "analytical M-step path is not instrumented. No diagnostics will "
-            "be recorded."
-        )
-    mstep_diagnostics_list = [] if collect_mstep_diagnostics else None
 
     # Early stopping state
     stopped_early = False
@@ -326,14 +307,6 @@ def train_eigenspace(
             A = model.likelihood.A.squeeze().detach()
             lambda0 = model.likelihood.lambda0.squeeze().detach()
             f_mean = compute_f_mean(lambda_m, lambda_var, A, lambda0)
-
-            # Capture ELBO after eigenspace reprojection — the NET effect of
-            # the previous M-step, including any gain lost to reprojection.
-            if collect_mstep_diagnostics and mstep_diagnostics_list:
-                _elbo_after = compute_elbo_eigenspace(
-                    model.state, r, lambda_m, lambda_var, A, lambda0
-                ).item()
-                mstep_diagnostics_list[-1]['elbo_after_reproject'] = _elbo_after
 
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(
@@ -560,26 +533,17 @@ def train_eigenspace(
         # START of the next iteration to sync with the new kernel params.
         start_mstep = time.time()
 
-        # Capture ELBO before M-step for diagnostics (same model state as
-        # the loss just computed above — reuse it, no extra forward pass).
-        _elbo_before_mstep = -loss if collect_mstep_diagnostics else None
-
         if n_mstep > 0 and iteration < n_iterations - 1:
             if use_analytical_mstep:
                 mstep_eigenspace_analytical(model, r, n_mstep, lr_m,
                                             f_mean_mean_threshold=f_mean_mean_threshold,
                                             lambda_var_clamp=model.lambda_var_clamp)
             else:
-                _mstep_diag = mstep_eigenspace_autograd(
+                mstep_eigenspace_autograd(
                     model, r, n_mstep, lr_m,
                     f_mean_mean_threshold=f_mean_mean_threshold,
                     lambda_var_clamp=model.lambda_var_clamp,
-                    collect_diagnostics=collect_mstep_diagnostics,
                 )
-                if collect_mstep_diagnostics and _mstep_diag is not None:
-                    _mstep_diag['outer_iter'] = iteration
-                    _mstep_diag['elbo_before_mstep'] = _elbo_before_mstep
-                    mstep_diagnostics_list.append(_mstep_diag)
 
             if capture_checkpoints:
                 checkpoints.append(capture_checkpoint(
@@ -626,7 +590,6 @@ def train_eigenspace(
     }
     if capture_checkpoints:
         result['checkpoints'] = checkpoints
-    result['mstep_diagnostics'] = mstep_diagnostics_list
     return result
 
 

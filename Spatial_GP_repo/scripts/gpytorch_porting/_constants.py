@@ -18,6 +18,7 @@ CHOLESKY_MAX_TRIES = _model['cholesky_max_tries']
 GPY_LBFGS_MAX_ITER = _model['gpy_lbfgs_max_iter']
 F_MEAN_MAX_THRESHOLD = _model['f_mean_max_threshold']
 F_MEAN_MEAN_THRESHOLD = _model['f_mean_mean_threshold']
+LBFGS_TOLERANCE_CHANGE = _model['lbfgs_tolerance_change']
 
 _es = _defaults['early_stopping']
 ES_ENABLED = _es['enabled']

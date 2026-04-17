@@ -59,7 +59,8 @@
     "gpy_lbfgs_max_iter": 20,
     "lambda_var_clamp": 1e-6,
     "f_mean_max_threshold": 500,
-    "f_mean_mean_threshold": 100
+    "f_mean_mean_threshold": 100,
+    "lbfgs_tolerance_change": 1e-3
   },
 
   "data": {
