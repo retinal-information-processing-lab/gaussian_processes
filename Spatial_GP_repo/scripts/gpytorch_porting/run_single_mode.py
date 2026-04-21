@@ -374,9 +374,12 @@ def build_config_from_defaults(**overrides):
         'f_max': utl['f_max'],
         'adaptive_r_max': utl['adaptive_r_max'],
 
-        # --- Runtime flags (not configurable via default_params.json) ---
+        # --- Runtime flags ---
         'mstep_analytical': False,
         'unwhitened_variational_dist': False,
+        # default_gpy only: separate LBFGS steps for (model) and (A/lambda0)
+        # Reads from default_params.json['training']['alternating_fstep']
+        'alternating_fstep': trn.get('alternating_fstep', False),
         'save_plot': 'none',
         'plot': False,
     }
@@ -1237,6 +1240,7 @@ def run_single_config(config):
                 X_val=X_val,
                 r_val=r_val,
                 es_metric=es_metric,
+                alternating_fstep=config.get('alternating_fstep', False),
             )
             losses = result['losses']
             stopped_early = result.get('stopped_early', False)

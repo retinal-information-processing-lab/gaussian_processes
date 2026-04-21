@@ -117,6 +117,8 @@ Key issues: torch.pi workaround, Cholesky jitter architecture (see `.claude/rule
 
 **FIXED 2026-04-12 — Beta explosion safeguard**: `BETA_MAX` tightened from 1.0 to 0.3 in `ArcCosineKernel`. Cell 0 seed 0 random on 108x108 had beta drift 0.12→0.45, causing the C matrix to cover all 11664 pixels (519 MB OOM). At beta=0.3, RF diameter is ~46 px on 108x108 — generous for any realistic RF. Mask coverage warning added when >50% of pixels are active.
 
+**UNDER INVESTIGATION 2026-04-17 — default_gpy A parameter explosion in joint LBFGS** (branch `pietro/investigate-default-gpy`): default_gpy has a gap vs vargp_direct (test_r 0.63–0.79 vs 0.80–0.85 on cell 8). Root cause: A jumps 30× in 3–4 outer iterations in joint LBFGS, then plateaus at a bad local minimum. Candidate fix: `alternating_fstep=True` separates A optimization. Preliminary results on 2 cells × 3 seeds look promising — awaiting user review before declaring fixed. See `investigations/default_gpy_gap/SCRAPBOOK.md`.
+
 **OPEN — Stuck-near-init in active loop Phase 1**: 6/14 cell-0 runs converge to beta~0.103, A~0.0001 regardless of seed or strategy. Root cause: A collapses during Phase 1 (ES fires at iter 19 locking in the dead state). When A~0, firing rate is constant and kernel gradient vanishes — structural trap. More EM iterations don't help. More data (M=100) recovers A but kernel stays at init. Affects cells with very sparse responses (86-92% zeros in initial training set). See `investigations/active_loop_slowness/FINDINGS.md` Task 3.
 
 **vargp_old IP selection confound**: `run_single_mode.py` line 672 has `if ip_selection == 'pivoted' and mode != 'vargp_old'` — vargp_old ALWAYS gets random IPs regardless of config. Use `ip_selection='random'` for fair mode comparisons.

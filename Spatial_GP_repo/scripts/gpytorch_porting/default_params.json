@@ -38,7 +38,9 @@
     "_comment_n_mstep": "20 is safe: LBFGS hits tolerance_change/tolerance_grad before max_iter in 100% of 514 M-steps tested (5 cells x 3 seeds, median 9 iters, max 17). See investigations/n_mstep_reduction/.",
     "n_mstep": 20,
     "lr": 0.1,
-    "optimizer": "lbfgs"
+    "optimizer": "lbfgs",
+    "_comment_alternating_fstep": "default_gpy only. If true, uses separate LBFGS optimizers for (model=variational+kernel) and (likelihood=A,lambda0), stepped in sequence each outer iteration. Candidate fix for A explosion in joint LBFGS — see investigations/default_gpy_gap/SCRAPBOOK.md. Awaiting validation before changing default.",
+    "alternating_fstep": false
   },
 
   "early_stopping": {
