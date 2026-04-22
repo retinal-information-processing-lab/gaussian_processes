@@ -288,6 +288,7 @@ def build_config_from_defaults(**overrides):
     ind = defaults['inducing']
     utl = defaults['utility']
     al = defaults['active_learning']  # only one key read: checkpoint_pool_sum_tolerance
+    ngd = defaults['ngd']
 
     # ------------------------------------------------------------------
     # Build flat config — every value traces back to default_params.json
@@ -373,6 +374,18 @@ def build_config_from_defaults(**overrides):
         'r_max': utl['r_max'],
         'f_max': utl['f_max'],
         'adaptive_r_max': utl['adaptive_r_max'],
+
+        # --- NGD (mode='ngd' only; ignored otherwise) ---
+        # These override early_stopping.* when mode='ngd', because NGD's
+        # first-order step size requires larger patience and min_delta_rel
+        # than vargp_direct's default (15, 1e-3). See default_params.json["ngd"].
+        'ngd_n_iterations': ngd['n_iterations'],
+        'ngd_lr': ngd['lr'],
+        'ngd_adam_lr': ngd['adam_lr'],
+        'ngd_es_patience': ngd['es_patience'],
+        'ngd_es_min_delta_rel': ngd['es_min_delta_rel'],
+        'ngd_es_min_iterations': ngd['es_min_iterations'],
+        'ngd_es_restore_best': ngd['es_restore_best'],
 
         # --- Runtime flags ---
         'mstep_analytical': False,
@@ -1303,6 +1316,131 @@ def run_single_config(config):
         time_estep = None
         time_mstep = None
 
+    # =========================================================================
+    # NGD MODE: GPyTorch SVGP with TrilNaturalVariationalDistribution
+    # =========================================================================
+    # Variational params optimized by gpytorch.optim.NGD; kernel+likelihood by Adam.
+    # Validated against vargp_direct on 48 paired (cell, seed) runs: |mean_Δ|=0.012,
+    # below the 0.02 gap threshold. See investigations/default_gpy_gap_v2/SCRAPBOOK.md
+    # Phase 3/3B.
+    elif mode == 'ngd':
+        from ngd_training import train_ngd
+
+        kernel = create_kernel(config, n_px_side, eps_0x, eps_0y)
+        from utils import apply_rf_center_bounds
+        apply_rf_center_bounds(kernel, eps_0x, eps_0y, config)
+
+        # fix_Amp support — same pattern as eigenspace_training.py:240-242.
+        # With requires_grad_(False) on raw_Amp, Adam skips it on step().
+        if config.get('fix_Amp', False):
+            kernel.raw_Amp.requires_grad_(False)
+            print(f"  Amp FROZEN at {kernel.Amp.item():.4f} (fix_Amp=True)")
+
+        model = VariationalGPModel(
+            inducing_points, kernel, jitter=jitter,
+            standard_variational_distribution=True,
+            variational_distribution_cls='tril_natural',
+        )
+        likelihood = PoissonLikelihood(A_init=A_init, lambda0_init=lambda0_init)
+
+        model = model.to(dtype=dtype, device=device)
+        likelihood = likelihood.to(dtype=dtype, device=device)
+
+        print(f"\nInitial parameters:")
+        print(f"  A_init: {A_init}, lambda0_init: {lambda0_init}")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+        print(f"  Amp: {kernel.Amp.item():.4f} "
+              f"({'frozen' if config.get('fix_Amp', False) else 'learned'})")
+        print(f"  jitter: {jitter}")
+
+        n_iters_ngd = config.get('ngd_n_iterations', n_iterations)
+        print(f"\nTraining with mode='ngd' (NGD+Adam):")
+        print(f"  ngd_lr={config['ngd_lr']}, adam_lr={config['ngd_adam_lr']}, "
+              f"n_iterations={n_iters_ngd}")
+        print(f"  ES: patience={config['ngd_es_patience']}, "
+              f"min_delta_rel={config['ngd_es_min_delta_rel']}, "
+              f"min_iterations={config['ngd_es_min_iterations']}, "
+              f"restore_best={config['ngd_es_restore_best']}")
+        print_every_ngd = max(1, n_iters_ngd // 5)
+        start_time = time.time()
+
+        with torch.enable_grad():
+            result_ngd = train_ngd(
+                model, likelihood, X_train, r_train,
+                n_iterations=n_iters_ngd,
+                ngd_lr=config['ngd_lr'],
+                adam_lr=config['ngd_adam_lr'],
+                jitter=jitter,
+                cholesky_max_tries=config['cholesky_max_tries'],
+                device=device,
+                print_every=print_every_ngd,
+                early_stop=early_stop,
+                patience=config['ngd_es_patience'],
+                min_delta_rel=config['ngd_es_min_delta_rel'],
+                min_iterations=config['ngd_es_min_iterations'],
+                restore_best=config['ngd_es_restore_best'],
+            )
+            losses = result_ngd['losses']
+            stopped_early = result_ngd.get('stopped_early', False)
+            final_iteration = result_ngd.get('final_iteration', len(losses))
+            best_iteration = result_ngd.get('best_iteration', final_iteration)
+            curves = result_ngd.get('curves', {})
+
+        train_time = time.time() - start_time
+        print(f"\nTraining time: {train_time:.1f}s")
+        if stopped_early:
+            print(f"  Stopped early at iteration {final_iteration}")
+        if best_iteration > 0:
+            print(f"  Best ES iteration: {best_iteration}")
+
+        print(f"\nFinal parameters (after restore_best):")
+        print(f"  A: {likelihood.A.item():.4f}")
+        print(f"  lambda0: {likelihood.lambda0.item():.4f}")
+
+        print("\nEvaluating on test data...")
+        try:
+            predictions = predict(model, likelihood, X_test, device=device,
+                                  jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'],
+                                  lambda_var_clamp=lambda_var_clamp)
+            f_pred = predictions['f_pred']
+
+            r_test_mean = r_test.mean(dim=0)
+            test_corr = compute_pearson_correlation(r_test_mean, f_pred)
+            explained_var, reliability = compute_explained_variance(r_test, f_pred)
+            adjusted_r2 = compute_adjusted_r_squared(r_test, f_pred)
+
+            train_preds = predict(model, likelihood, X_train, device=device,
+                                  jitter=jitter, cholesky_max_tries=config['cholesky_max_tries'])
+            train_corr = compute_pearson_correlation(r_train, train_preds['f_pred'])
+        except RuntimeError as e:
+            print(f"  Prediction failed: {e}")
+            print("  Recording NaN metrics.")
+            f_pred = torch.full((X_test.shape[0],), float('nan'), device=device)
+            predictions = {'f_pred': f_pred}
+            r_test_mean = r_test.mean(dim=0)
+            test_corr = float('nan')
+            explained_var = float('nan')
+            adjusted_r2 = float('nan')
+            reliability = compute_explained_variance(r_test, f_pred)[1]
+            train_corr = float('nan')
+
+        pred_mean = f_pred.mean().item()
+        pred_std = f_pred.std().item()
+        pred_min = f_pred.min().item()
+        pred_max = f_pred.max().item()
+
+        final_A = likelihood.A.item()
+        final_lambda0 = likelihood.lambda0.item()
+        final_sigma_0 = kernel.sigma_0.item()
+        final_Amp = kernel.Amp.item()
+        final_beta = kernel.beta.item()
+        final_rho = kernel.rho.item()
+        final_eps_0x = kernel.eps_0x.item()
+        final_eps_0y = kernel.eps_0y.item()
+        time_estep = None
+        time_mstep = None
+
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
@@ -1452,7 +1590,7 @@ def main():
                         help=f'Optimizer for default_gpy mode (default: {defaults["training"]["optimizer"]})')
     parser.add_argument('--device', type=str, default=defaults['run']['device'], help=f'Device (default: {defaults["run"]["device"]})')
     parser.add_argument('--mode', type=str, default=defaults['run']['mode'],
-                        choices=['vargp_old', 'default_gpy', 'vargp_direct'],
+                        choices=['vargp_old', 'default_gpy', 'vargp_direct', 'ngd'],
                         help=f'Training mode (default: {defaults["run"]["mode"]})')
 
     # Kernel parameters

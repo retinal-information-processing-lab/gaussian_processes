@@ -1,0 +1,156 @@
+{
+  "procedure": "stratified by firing rate, 3 buckets x 5 positions; plus user-added cells (deviation from charter pre-registration)",
+  "data_path": "datasets/PNAS_64x64_center_crop_no_renorm.npz",
+  "pool_source": "responses_train + responses_val (3160 rows)",
+  "bucket_boundaries": [
+    0,
+    14,
+    28,
+    41
+  ],
+  "bucket_labels": [
+    "low",
+    "mid",
+    "high"
+  ],
+  "positions_within_bucket": [
+    1,
+    3,
+    6,
+    9,
+    12
+  ],
+  "user_added_cells": [
+    8
+  ],
+  "cells": [
+    {
+      "cell_id": 40,
+      "firing_rate": 0.1268987341772152,
+      "bucket": "low",
+      "bucket_pos": 1,
+      "global_rank_ascending": 1,
+      "user_added": false
+    },
+    {
+      "cell_id": 30,
+      "firing_rate": 0.20253164556962025,
+      "bucket": "low",
+      "bucket_pos": 3,
+      "global_rank_ascending": 3,
+      "user_added": false
+    },
+    {
+      "cell_id": 4,
+      "firing_rate": 0.3503164556962025,
+      "bucket": "low",
+      "bucket_pos": 6,
+      "global_rank_ascending": 6,
+      "user_added": false
+    },
+    {
+      "cell_id": 7,
+      "firing_rate": 0.3977848101265823,
+      "bucket": "low",
+      "bucket_pos": 9,
+      "global_rank_ascending": 9,
+      "user_added": false
+    },
+    {
+      "cell_id": 23,
+      "firing_rate": 0.4487341772151899,
+      "bucket": "low",
+      "bucket_pos": 12,
+      "global_rank_ascending": 12,
+      "user_added": false
+    },
+    {
+      "cell_id": 25,
+      "firing_rate": 0.575,
+      "bucket": "mid",
+      "bucket_pos": 1,
+      "global_rank_ascending": 15,
+      "user_added": false
+    },
+    {
+      "cell_id": 19,
+      "firing_rate": 0.7234177215189873,
+      "bucket": "mid",
+      "bucket_pos": 3,
+      "global_rank_ascending": 17,
+      "user_added": false
+    },
+    {
+      "cell_id": 21,
+      "firing_rate": 0.8607594936708861,
+      "bucket": "mid",
+      "bucket_pos": 6,
+      "global_rank_ascending": 20,
+      "user_added": false
+    },
+    {
+      "cell_id": 32,
+      "firing_rate": 0.919620253164557,
+      "bucket": "mid",
+      "bucket_pos": 9,
+      "global_rank_ascending": 23,
+      "user_added": false
+    },
+    {
+      "cell_id": 20,
+      "firing_rate": 0.964240506329114,
+      "bucket": "mid",
+      "bucket_pos": 12,
+      "global_rank_ascending": 26,
+      "user_added": false
+    },
+    {
+      "cell_id": 10,
+      "firing_rate": 1.0591772151898735,
+      "bucket": "high",
+      "bucket_pos": 1,
+      "global_rank_ascending": 29,
+      "user_added": false
+    },
+    {
+      "cell_id": 24,
+      "firing_rate": 1.0689873417721518,
+      "bucket": "high",
+      "bucket_pos": 3,
+      "global_rank_ascending": 31,
+      "user_added": false
+    },
+    {
+      "cell_id": 38,
+      "firing_rate": 1.2718354430379746,
+      "bucket": "high",
+      "bucket_pos": 6,
+      "global_rank_ascending": 34,
+      "user_added": false
+    },
+    {
+      "cell_id": 29,
+      "firing_rate": 1.639873417721519,
+      "bucket": "high",
+      "bucket_pos": 9,
+      "global_rank_ascending": 37,
+      "user_added": false
+    },
+    {
+      "cell_id": 16,
+      "firing_rate": 1.9575949367088608,
+      "bucket": "high",
+      "bucket_pos": 12,
+      "global_rank_ascending": 40,
+      "user_added": false
+    },
+    {
+      "cell_id": 8,
+      "firing_rate": 0.9822784810126582,
+      "bucket": "high",
+      "bucket_pos": 0,
+      "global_rank_ascending": 28,
+      "user_added": true
+    }
+  ]
+}

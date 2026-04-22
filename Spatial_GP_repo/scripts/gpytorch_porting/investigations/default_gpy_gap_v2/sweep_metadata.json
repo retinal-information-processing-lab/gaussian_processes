@@ -1,0 +1,44 @@
+{
+  "investigation": "default_gpy_gap_v2",
+  "charter": "investigations/default_gpy_gap_v2/PROMPT.md",
+  "started_at": "2026-04-21T15:01:19",
+  "git_commit": "d27c4eb387b48ffe38451fbbf6b334e2427a1e6c",
+  "git_working_tree_dirty_at_launch": true,
+  "config_locked": {
+    "data_path": "datasets/PNAS_64x64_center_crop_no_renorm.npz",
+    "M": 300,
+    "n_train": 1500,
+    "seeds_main": [
+      42,
+      123,
+      789
+    ],
+    "seeds_alt": [
+      42
+    ],
+    "modes_main": [
+      "vargp_direct",
+      "default_gpy"
+    ],
+    "mode_alt": "default_gpy_alt"
+  },
+  "cells": [
+    40,
+    30,
+    4,
+    7,
+    23,
+    25,
+    19,
+    21,
+    32,
+    20,
+    10,
+    24,
+    38,
+    29,
+    16,
+    8
+  ],
+  "planned_run_count": 112
+}

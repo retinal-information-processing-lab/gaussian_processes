@@ -65,6 +65,18 @@
     "lbfgs_tolerance_change": 1e-3
   },
 
+  "ngd": {
+    "_comment": "NGD (Natural Gradient Descent) mode — GPyTorch SVGP with TrilNaturalVariationalDistribution + gpytorch.optim.NGD for variational parameters, Adam for hyperparameters. Validated against vargp_direct on 16-cell/3-seed sweep: |mean_Δ test_r| = 0.012 < 0.02 threshold. See investigations/default_gpy_gap_v2/SCRAPBOOK.md Phase 3/3B.",
+    "n_iterations": 1000,
+    "lr": 0.1,
+    "adam_lr": 0.01,
+    "_comment_es": "ELBO-based ES; scales vargp_direct's (patience=15, min_delta_rel=1e-3) by ~10x on both axes to account for NGD's per-iter step being ~1 grad eval vs LBFGS's ~7/outer. See SCRAPBOOK.md §22 / Finding P3B-2.",
+    "es_patience": 200,
+    "es_min_delta_rel": 0.01,
+    "es_min_iterations": 50,
+    "es_restore_best": true
+  },
+
   "data": {
     "_comment_n_val_split": "0 = no validation carving (default since April 2026; ELBO ES does not need val data). Set >0 to enable diagnostic val_log_lik / val_r / val_rho curves. Those curves are NOT used for ES, which remains ELBO-based.",
     "path": "datasets/PNAS_108x108_original.npz",

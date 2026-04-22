@@ -10,48 +10,75 @@ import torch
 from _constants import JITTER
 import gpytorch
 from gpytorch.models import ApproximateGP
-from gpytorch.variational import CholeskyVariationalDistribution, VariationalStrategy, UnwhitenedVariationalStrategy
+from gpytorch.variational import (
+    CholeskyVariationalDistribution,
+    TrilNaturalVariationalDistribution,
+    VariationalStrategy,
+    UnwhitenedVariationalStrategy,
+)
 
 
 class VariationalGPModel(ApproximateGP):
     """Sparse Variational GP model.
 
-    Uses inducing points for scalability and CholeskyVariationalDistribution
-    for the variational posterior q(λ̃) = N(m, V).
+    Uses inducing points for scalability. Three variational-distribution
+    parameterizations are supported:
+
+    - `CholeskyVariationalDistribution` (default) — standard whitened
+      parameterization, optimized jointly with hyperparams via LBFGS/Adam.
+    - `TrilNaturalVariationalDistribution` — Tril-natural parameters, must
+      be optimized by `gpytorch.optim.NGD`. Used by `mode='ngd'`.
+    - `None` (unwhitened strategy) — see `standard_variational_distribution=False`.
 
     Parameters
     ----------
     inducing_points : Tensor, shape (n_inducing, n_features)
-        Locations of inducing points
     kernel : gpytorch.kernels.Kernel
-        Kernel function to use (e.g., ArcCosineKernel)
-    learn_inducing_locations : bool
-        Whether to optimize inducing point locations (default: False)
     jitter : float
-        Jitter to add for numerical stability 
+        Jitter to add for numerical stability.
     standard_variational_distribution : bool
-        If True (default), use VariationalStrategy (whitened parameterization).
-        If False, use UnwhitenedVariationalStrategy (stores natural params directly).
-        Use False for EM-style optimization where kernel changes between steps.
+        If True (default), use `VariationalStrategy` (whitened).
+        If False, use `UnwhitenedVariationalStrategy`.
+    variational_distribution_cls : {'cholesky', 'tril_natural'}, default 'cholesky'
+        Which variational-distribution class to instantiate. Only used when
+        `standard_variational_distribution=True`. `'tril_natural'` requires
+        updates via `gpytorch.optim.NGD` — plain Adam/LBFGS would break PSD
+        constraints (see natural_variational_distribution.py:103-107).
+    learn_inducing_locations : bool
 
     Attributes
     ----------
     variational_strategy : VariationalStrategy or UnwhitenedVariationalStrategy
-        GPyTorch's strategy for computing q(f) from q(u)
     mean_module : ZeroMean
-        Mean function (zero for our model)
     covar_module : Kernel
-        Covariance function
-    standard_variational_distribution : bool
-        Whether whitened (standard) parameterization is used
+    variational_distribution_kind : {'cholesky', 'tril_natural'}
+        Flag for downstream code (e.g. training loop) to pick the right
+        optimizer. Replaces the old `standard_variational_distribution`
+        bool-only flag, which conflated strategy and distribution choice.
     """
 
-    def __init__(self, inducing_points, kernel, jitter, standard_variational_distribution, learn_inducing_locations=False):
-        # Variational distribution q(u) = N(m, LLᵀ)
-        # Uses Cholesky parameterization for numerical stability
-        variational_distribution = CholeskyVariationalDistribution(
-            inducing_points.size(0)
-        )
+    def __init__(self, inducing_points, kernel, jitter, standard_variational_distribution,
+                 learn_inducing_locations=False,
+                 variational_distribution_cls='cholesky'):
+        if variational_distribution_cls == 'cholesky':
+            variational_distribution = CholeskyVariationalDistribution(
+                inducing_points.size(0)
+            )
+        elif variational_distribution_cls == 'tril_natural':
+            if not standard_variational_distribution:
+                raise ValueError(
+                    "variational_distribution_cls='tril_natural' requires "
+                    "standard_variational_distribution=True (UnwhitenedVariationalStrategy "
+                    "is not supported for natural params)."
+                )
+            variational_distribution = TrilNaturalVariationalDistribution(
+                num_inducing_points=inducing_points.size(0)
+            )
+        else:
+            raise ValueError(
+                f"Unknown variational_distribution_cls: {variational_distribution_cls!r}. "
+                "Use 'cholesky' or 'tril_natural'."
+            )
 
         # Variational strategy: how to compute q(f) from q(u)
         # IMPORTANT: Pass jitter_val to ensure GPyTorch uses the same jitter as our code
@@ -77,6 +104,9 @@ class VariationalGPModel(ApproximateGP):
         # Store strategy type for downstream code (e.g., estep.py needs to know
         # whether to do explicit L_K whitening conversions)
         self.standard_variational_distribution = standard_variational_distribution
+        # Track which variational-distribution class was used; training loops
+        # (e.g. train_ngd) inspect this to pick the right optimizer.
+        self.variational_distribution_kind = variational_distribution_cls
 
         # Mean function: zero mean (as in custom implementation)
         self.mean_module = gpytorch.means.ZeroMean()
