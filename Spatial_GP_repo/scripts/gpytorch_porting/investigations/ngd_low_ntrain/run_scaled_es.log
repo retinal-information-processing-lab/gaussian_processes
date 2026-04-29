@@ -1,0 +1,249 @@
+NGD scaled-ES sweep: 123 runs, 0 done, 123 remaining
+  ES: patience=15, min_delta_rel=0.001, min_iters=10, cap=200
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0366  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3279  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0534  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8290  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9542  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9634  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1572  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0710  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1196  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2545  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6441  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7241  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6453  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7353  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5064  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1241  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0700  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0238  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1431  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2595  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0719  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4972  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5690  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6093  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6299  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8175  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9288  n_iter=200  wall=24s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8269  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8028  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6767  n_iter=200  wall=24s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1458  n_iter=196  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1506  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0589  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7300  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8798  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8615  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2712  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3671  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9197  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8071  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8607  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7776  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4682  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7352  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8110  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0387  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1464  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0884  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8885  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7744  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8590  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6745  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5767  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6165  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5955  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8242  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8850  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.3354  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0453  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1227  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6805  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6797  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7413  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0257  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0425  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2683  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3735  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4126  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4585  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1355  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0191  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.3828  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6125  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6702  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5410  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4651  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6541  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7660  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6349  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6605  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4230  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5548  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8040  n_iter=200  wall=24s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8866  n_iter=200  wall=24s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1652  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4714  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7124  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7002  n_iter=200  wall=19s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7259  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7662  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.4248  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0345  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6090  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5052  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7032  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8898  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2190  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.0358  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6024  n_iter=200  wall=22s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.8842  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9537  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.9703  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3234  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5590  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.6572  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1083  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1504  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1724  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1277  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3371  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.7432  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0755  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3193  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0942  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.2469  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3908  n_iter=200  wall=23s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.5001  n_iter=200  wall=25s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.3740  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1221  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.1754  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1011  n_iter=200  wall=20s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=-0.1395  n_iter=200  wall=21s
+  ES: patience=15, min_delta_rel=0.001, min_iterations=10, restore_best=True
+  test_r=0.0938  n_iter=200  wall=22s
+Done. 123/123 in 43.2 min
