@@ -71,6 +71,8 @@ Dev tests (`run_single_mode.py`) use `default_params.json` + CLI flags — faste
 
 8. **No silent pixel clipping in plots** - When plotting images (especially optimized or synthetic ones), every subplot must check if pixel values exceed the dataset global range [min, max] and flag OOB with a red title. Use fixed vmin/vmax = dataset global range, never adaptive scaling. See `.claude/rules/critical_short_rules.md` "Image Pixel Range and Plotting" for full rule.
 
+9. **Never delete a file that took >20 minutes of compute to produce** without asking the user first. This includes — but is not limited to — sweep result JSONLs, training checkpoints, large logs from long-running experiments, derived data products like .pt model files, and aggregated analysis outputs. Even if the file looks redundant ("a backup", "an old version") or you're cleaning up before commit, ask first. Re-running 17h GPU sweeps because a session "tidied up" is unrecoverable cost. The 20-min threshold is conservative — when in doubt, ask. Applies to deletion, overwriting, `git rm`, and `rm`. Excluded: __pycache__, .pid files, .pyc files (regenerable in seconds).
+
 ---
 
 ## Evaluation Framework

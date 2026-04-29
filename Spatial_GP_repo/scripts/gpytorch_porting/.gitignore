@@ -2,6 +2,23 @@
 checkpoints/
 results/
 
+# Process state files (local, never commit)
+*.pid
+
+# Result backup files from in-place dedup / rerun safety nets.
+# These are duplicates of the live `*.jsonl` and have no historical value
+# once the live file is verified.
+*.backup_dedup.jsonl
+*.backup_20*.jsonl
+
+# M-sweep results: 80 MB JSONL with full per-iter curves for 1107 runs.
+# Lives on dgx3 only — see MERGE_CHECKLIST.md and
+# experiments/2026-04-23_ngd_M_sweep_64x64/README.md for the committed
+# summary file (results.summary.jsonl, curves stripped) and how to
+# regenerate the full version (~17h GPU). Do NOT delete from dgx3
+# without checking first (CRITICAL RULE 9 in CLAUDE.md).
+experiments/2026-04-23_ngd_M_sweep_64x64/results.jsonl
+
 # Packaging artifacts (temporary)
 package/
 
