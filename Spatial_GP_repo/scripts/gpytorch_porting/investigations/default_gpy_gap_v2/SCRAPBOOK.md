@@ -1887,3 +1887,628 @@ logging reads either:
 Do NOT mix pre-step `output` with post-step likelihood reads — it
 produces the Frankenstein quantity above.
 
+
+---
+
+# Phase 3E — LBFGS for hyperparameters: investigation findings (2026-04-22 / 2026-04-23)
+
+Scope: execution of the Phase 3E charter pre-registered in §39-46. Four
+variants of NGD+LBFGS were prototyped on 5 cells × 3 seeds each. All
+four failed the §40 pass gate. No full 41×3 verdict sweep has been run.
+This section is the canonical handoff document — read it first if you
+are picking up this investigation after a gap.
+
+## 51. Current status (top of section, for quick orientation)
+
+- **PHASE 3E DEFERRED (2026-04-23)**: user decision after five failed
+  variants — "nothing came out of it, adam seems enough". The
+  investigation is paused. No production change. NGD+Adam (Phase 3C,
+  `experiments/2026-04-22_ngd_final_verdict_64x64/`) remains the
+  recommended GPyTorch-native training mode.
+- **Five variants tested** (V0 joint no-warmup, V1 separate no-warmup,
+  V2 joint + warm-up, V3 separate + warm-up, V5 joint + warm-up +
+  damped inner loop). None pass the §40 pass gate on the 5 × 3
+  prototype. V4 (LBFGS cadence) was discussed and deprioritized.
+- **V2 is the frontier** we found: 4/5 prototype cells within ±0.05
+  of NGD+Adam, but cell 30 persistently disasters across every LBFGS
+  variant. See §54 for the tables, §55 for per-variant mechanism,
+  §60 for V5.
+- **Dominant failure mechanism**: LBFGS with strong_wolfe line search
+  aggressively exploits the A→0 local optimum of the Poisson-exp
+  likelihood (where `f_mean = exp(λ₀) = const`). Adam's small steps
+  cannot reach this basin; LBFGS can and does. Damping LBFGS (V5,
+  max_iter=1) prevents the collapse but prevents training too — no
+  clean middle ground on the `lbfgs_max_iter` axis.
+- **No production code has been changed.** Everything is in
+  `investigations/default_gpy_gap_v2/ngd_lbfgs/` as an investigation.
+- **To reopen**: see §57 for untried avenues (LBFGS cadence, longer
+  warm-up, heavier reparameterizations). None looked promising enough
+  to pursue given Adam already works.
+
+## 52. Charter reminder
+
+The Phase 3E charter (§39-46) pre-registers:
+
+- Question: does swapping Adam for LBFGS on NGD's hyperparameter step
+  change the paired-Δ against `vargp_direct` (intl_fixAmp + ELBO ES p=15)?
+- Pass gate (§40 Step 1): 5 cells × 1 seed prototype — no crashes, no
+  cell regresses > 0.05 vs NGD+Adam. (We used 5 cells × 3 seeds to
+  reduce seed noise; see §53.)
+- Kill signals (§42): "Any cell shows Phase-2-style A-explosion or
+  β-collapse on any seed"; ">5 cells regress by >0.05"; "LBFGS crashes
+  on any run".
+- If pass: 41×3 full verdict sweep; apply §41 decision matrix.
+
+The 5 prototype cells are {40, 38, 16, 30, 29} — same as Phase 3's
+prototype. Seeds are {42, 123, 789} (the Phase 3B set — not the Phase
+3C final-sweep set of {1, 2, 3}).
+
+Dataset: `PNAS_64x64_center_crop_no_renorm.npz`. M=250. n_train=3160.
+`fix_Amp=True`. `ip_selection='random'`. All variants share this.
+
+## 53. Prototype-gate modification: 3 seeds instead of 1
+
+The §40 charter specified 5 cells × 1 seed. We used 3 seeds per cell
+because V0's single-seed result (seed 42) showed cell 38/40's NGD+Adam
+reference has huge seed variance (std 0.18 on cell 38 across seeds
+42/123/789 for NGD+Adam+ES). The single-seed gate is uninterpretable
+there. 3 seeds gives 3-seed paired means that map cleanly onto the
+§42 "any seed shows A-collapse" kill signal.
+
+Trade-off: 3× the prototype cost (~9 min vs ~3 min), same decision
+quality for the hard cells, strictly better for the noisy cells.
+
+## 54. Variants tested — results summary
+
+All four variants share `ngd_lbfgs_training.py` with two flags:
+`separate_likelihood` (False = joint, True = split kernel vs A/λ₀) and
+`n_warmup` (0 = no warmup, 50 = 50 NGD-only iters with kernel +
+likelihood frozen before the main loop).
+
+| Variant | `separate_likelihood` | `n_warmup` | JSONL | Log |
+|---------|----------------------|-----------|-------|-----|
+| V0 joint no-warmup | False | 0 | `prototype_V0_joint_3seed.jsonl` | `log_V0_joint_3seed.log` |
+| V1 separate no-warmup | True | 0 | `prototype_V1_separate_3seed.jsonl` | `log_V1_separate_3seed.log` |
+| V2 joint + warmup | False | 50 | `prototype_V2_warmup_joint_3seed.jsonl` | `log_V2_warmup_joint_3seed.log` |
+| V3 separate + warmup | True | 50 | `prototype_V3_separate_warmup_3seed.jsonl` | `log_V3_separate_warmup_3seed.log` |
+
+Additional file: `prototype_V0_joint_seed42only.jsonl` — 5 runs from
+the initial single-seed V0 test before we switched to 3 seeds. Kept
+as historical.
+
+**3-seed paired Δ vs NGD+Adam+ES** (reference:
+`investigations/default_gpy_gap_v2/ngd/ngd_results.jsonl`, Phase 3B
+sweep with ELBO ES p=200; same 15 (cell, seed) pairs):
+
+| cell | V0 Δ | V1 Δ | V2 Δ | V3 Δ | Adam mean ref |
+|------|------|------|------|------|---------------|
+| 40   | −0.01 | −0.30 | **+0.01** | −0.10 | 0.756 |
+| 38   | +0.06 | −0.01 | −0.02 | **+0.08** | 0.662 |
+| 16   | −0.02 | **+0.00** | −0.01 | +0.00 | 0.959 |
+| 30   | −0.50 | −0.75 | −0.99 | −0.75 | 0.752 |
+| 29   | −0.06 | −0.10 | −0.05 | −0.07 | 0.749 |
+| **passing cells (\|Δ\|≤0.05)** | **3/5** | **2/5** | **4/5** | **2/5** | — |
+
+**Per-variant disaster counts** (test_r < 0.3, excluding NaN):
+
+| Variant | disasters / 15 | NaN / 15 | hit 200-iter cap / 15 |
+|---------|---------------|----------|-----------------------|
+| V0 joint | 2 | 0 | 0 |
+| V1 separate | 5 | 1 | 0 |
+| V2 warmup joint | 3 | 0 | 0 |
+| V3 separate+warmup | 4 | 1 | 7 |
+
+**Cell 30 detailed**, all three seeds (the cell that drove the whole exercise):
+
+| seed | V0 joint | V1 separate | V2 warmup joint | V3 separate+warmup | Adam+ES ref |
+|------|----------|-------------|-----------------|--------------------|-------------|
+| 42   | 0.744    | 0.000       | −0.157          | 0.000              | 0.732 |
+| 123  | −0.207   | 0.000       | −0.405          | 0.000              | 0.751 |
+| 789  | 0.227    | 0.000       | −0.145          | NaN                | 0.774 |
+
+Cell 30 fails every LBFGS variant. Adam+ES handles it cleanly (3/3 seeds
+in [0.73, 0.78]). Per §42 kill signal "A-collapse on any seed",
+triggered on all four variants.
+
+## 55. Mechanism analysis per variant
+
+### V0: joint LBFGS, no warm-up
+
+The first variant tried (pre-registered default per §40). Joint LBFGS
+optimizes (kernel + A + λ₀) on a single `.step()` per outer iter with
+`lbfgs_max_iter=20` strong_wolfe.
+
+Observed on cell 30 seed 789: LBFGS takes a big step at iter 1 (A
+drops from 0.01 to 0.013, β jumps from init 0.10 to 0.15), then
+**freezes** for all 87 subsequent outer iters. A ends at 8.7e-4 →
+test_r = 0.23. LBFGS closure hits `+inf` rejection 99% of outer iters
+(line search probes invalid regions), but still finds valid points;
+the final point just happens to be a near-collapsed basin.
+
+**Why freezing?** LBFGS's Hessian approximation latches onto a
+direction at iter 1 that is orthogonal to any useful update once q has
+been updated (via NGD). Subsequent line searches find no improvement
+along that direction. This is the H2 prediction from §39.
+
+### V1: separate LBFGS, no warm-up
+
+Split the joint LBFGS into two separate LBFGS optimizers: one over
+kernel hyperparams, one over (A, λ₀). Hypothesis (user): A-kernel
+coupling is the root cause; separating them cleans the problem up
+(vargp's E→M→F pattern).
+
+Observed: **worse than V0**. Cell 30 now collapses on 3/3 seeds
+(A ∼ 1e-9, fully trivial predictions, test_r = 0.000). Cell 40 also
+collapses on 2/3 seeds; 1 NaN.
+
+**Mechanism**: the Poisson-exp likelihood has a trivial local
+optimum at A=0 where `f_mean = exp(λ₀) = const`, and ELBO is
+locally maximized by setting `λ₀ = log(mean(r))`. The joint LBFGS
+had a *weakly* constraining A-kernel coupling that slowed A's descent
+into this basin; once separated, the F-step LBFGS sees only ∂(-ell)/∂(A, λ₀)
+and line search hits A=0 in a handful of evals.
+
+At zero-init q, ∂(-ell)/∂A ≈ A · Σ σ² · f_mean (penalty only; signal
+term vanishes because μ ≈ 0). So the gradient pushes A to 0, and line
+search finds the A=0 optimum in 1-2 probes.
+
+### V2: joint LBFGS + 50-iter NGD-only warm-up
+
+Hypothesis (Pietro): warm-starting q(λ̃) gives μ structure correlating
+with r, so ∂(-ell)/∂A = -Σ μ(r−f_mean) + Σ A σ² f_mean gains a
+non-vanishing signal term that counteracts the A → 0 attractor.
+Implementation: freeze kernel + likelihood `requires_grad=False` for
+50 NGD steps, then re-enable and run the main NGD+LBFGS loop.
+
+Observed: **frontier of the investigation**. 4/5 prototype cells pass
+the §40 gate. Cells 16/29/38/40 are within ±0.05 of Adam mean.
+Cell 30 STILL disasters (3/3 seeds now NEGATIVE test_r,
+−0.157, −0.405, −0.145).
+
+**Why 4/5 works**: warm-up drops loss ~65% on each cell (e.g. 8657 →
+2973 on cell 30 seed 789). For cells where the init kernel is
+reasonable, q acquires signal, and ∂(-ell)/∂A acquires the
+counter-attractor term. A stabilizes at a non-trivial value.
+
+**Why cell 30 still fails**: warm-up fits q *to the bad init kernel*.
+Once LBFGS then moves the kernel, q can't re-adapt fast enough (1
+NGD step per outer iter). The post-warmup trajectory lands in a
+region where the kernel gradient pushes toward a direction q can't
+follow, ELBO regresses, and ES fires early on a worse-than-init
+state. Note cell 30 seed 42 went 0.74 (V0) → −0.16 (V2), i.e. V2
+*destroyed* the one seed that worked in V0.
+
+### V3: separate LBFGS + warm-up
+
+The obvious combination. Hypothesis: warm-up defuses the A→0
+attractor *and* separation prevents A-kernel coupling in the
+kernel LBFGS. Together they should work.
+
+Observed: **not the magic combo**. Cell 30 collapses on 3/3 seeds
+again (A → 0, identical behavior to V1). Cell 40 seed 789 regresses
+from V2's 0.83 to V3's 0.25. Cell 29 seed 42 regresses from 0.79
+to 0.53. 7/15 runs hit the 200-iter cap (stopping-behaviour worse
+than other variants). Disasters: 4/15 (worse than V2's 3/15).
+
+**Mechanism**: warm-up defusing was effective in V2 *because the
+joint closure couples A with kernel*. Once separation exists, the
+F-step LBFGS sees only the likelihood's A=0 local optimum — the
+warm-up state of q is irrelevant because ∂(-ell)/∂(A, λ₀) still
+has A=0 as a near-optimal point once line search probes there.
+Essentially V3 = V1-like A-collapse with a wasted warm-up cost.
+
+## 56. Synthesis: the dominant failure mode is structural
+
+Across all four variants, the pattern on cell 30 is consistent:
+
+- **Separate F-step LBFGS** (V1, V3): A goes to ~0 in 1-5 evals and
+  stays there.
+- **Joint LBFGS without warm-up** (V0): A drifts to 0.001 and freezes.
+- **Joint LBFGS with warm-up** (V2): warm-up forces q to fit bad
+  kernel, post-warmup trajectory ends in a worse place than init.
+
+Adam does not have these problems because:
+1. Adam's step is `lr * grad / sqrt(v)`, bounded by ~lr per step. A
+   can't jump to 0 in one iter; requires ~100 iters of consistent
+   negative grad, which fails to occur in practice (other gradients
+   shift q and the kernel, changing the A landscape).
+2. Adam's second-moment tracking adapts step sizes per-param — A with
+   a small gradient gets a small step.
+
+LBFGS + strong_wolfe explicitly seeks the line-search optimum, which
+IS the A=0 trivial optimum when q is poorly informed.
+
+**This is not a numerical or tuning issue — it is a property of the
+Poisson-exp likelihood landscape interacting with exact line-search
+second-order methods.**
+
+The cells where LBFGS works (16, 29, 38, 40 under V2) share the
+property that the init kernel is reasonable enough for q to pick up
+signal during warm-up. The cells where LBFGS fails (notably 30 on
+this dataset) have an init kernel mismatch that warm-up can't fix
+without kernel training, which in turn needs a working LBFGS.
+Chicken-and-egg.
+
+## 57. Remaining options — decision matrix for the user
+
+**Stop and write up** (aligned with §40/§42 strict reading):
+
+> "NGD+LBFGS for SVGP hyperparams shows a structural failure mode on
+> cell-specific basins (A-collapse at A=0 local optimum of Poisson-exp
+> likelihood). V2 (joint LBFGS + 50-iter warm-up) is the best found
+> variant, passing the gate on 4/5 prototype cells but failing on
+> cell 30 under all four variants tried. The A-collapse mechanism is
+> structurally incompatible with LBFGS line search; fixes would
+> require either a different optimizer (Adam, which defeats the
+> GPyTorch-native-LBFGS premise) or a different parameterization
+> (`lambda0_given_A` à la vargp, which is heavier than an
+> optimizer-swap investigation). Recommend keeping NGD+Adam as the
+> production default. Phase 3E findings informative but do not
+> change production mode."
+
+**Run V2 on the full 41 × 3 sweep** (~5 min):
+
+The §40 gate was violated, but §41's decision matrix operates on the
+123-paired-obs level. If cell 30 is an isolated failure (say 1-3 cells
+fail out of 41), the aggregate mean-Δ might still be near zero. We
+need the actual number to know whether V2 is "almost adoptable with
+known failures" vs "broken". Cost: ~5 min on the GPU at the V2
+walltime we saw (2.7 min for 15 runs → ~22 min for 123 runs, but
+likely much less in practice because cap is 200 iters and many
+converge much sooner).
+
+**Try remaining untried variants** — my read is these don't address
+the dominant failure mode but are cheap to test:
+
+- **V4: LBFGS cadence** (every N NGD iters, e.g. N=5). Addresses V0's
+  iter-1 latching. Would only help *joint* mode (separate mode's
+  failure is in the F-step itself, not the cadence). Should be
+  prototyped as V2-like + cadence. Not expected to fix cell 30 for
+  the same reason V2 doesn't.
+- **V5: `lbfgs_max_iter=1-3`** (damp the inner LBFGS loop). Similar
+  scope to V4 — addresses latching, not A-collapse.
+- **Longer warm-up** (100-200 iters instead of 50). Tested only at 50.
+  Cheap but unlikely to cross the chicken-and-egg on cell 30.
+
+**Heavier changes the user has de-scoped**:
+
+- Hybrid Adam(A, λ₀) + LBFGS(kernel). Rejected — defeats the native-
+  GPyTorch-native premise.
+- `lambda0_given_A` reparameterization. Rejected earlier for scope; it
+  would change more than the optimizer.
+- Damped Newton F-step (à la `eigenspace_fstep`). Same as above —
+  heavier than optimizer-swap and essentially re-derives vargp.
+
+## 58. Artifact map (for a future session)
+
+All files under `investigations/default_gpy_gap_v2/ngd_lbfgs/`:
+
+```
+ngd_lbfgs_training.py                          # the training loop, parameterised by
+                                                # `separate_likelihood` and `n_warmup`
+run_prototype.py                               # 5 cells × 3 seeds runner
+                                                # monkey-patches ngd_training.train_ngd
+                                                # → train_ngd_lbfgs, then calls
+                                                # run_single_config with mode='ngd'
+run_sweep.py                                   # 41 × 3 runner (written, never run)
+
+prototype_V0_joint_3seed.jsonl                 # V0 results
+prototype_V1_separate_3seed.jsonl              # V1 results
+prototype_V2_warmup_joint_3seed.jsonl          # V2 results
+prototype_V3_separate_warmup_3seed.jsonl       # V3 results
+prototype_V0_joint_seed42only.jsonl            # V0 5-run single-seed smoke (pre-3-seed)
+
+prototype_results.jsonl                        # most-recent run (currently V3,
+                                                # will be overwritten by next run)
+
+log_V0_joint_3seed.log
+log_V1_separate_3seed.log
+log_V2_warmup_joint_3seed.log
+log_V3_separate_warmup_3seed.log
+
+__pycache__/                                   # .pyc files
+```
+
+The current `ngd_lbfgs_training.py` defaults are V3 (separate=True,
+n_warmup=50). The file's §51-style docstring records this. To run a
+different variant, modify the defaults in the function signature OR
+pass overrides via config keys (but run_single_mode.py currently
+doesn't forward `separate_likelihood` / `n_warmup` from config —
+either pass kwargs to `run_single_config` via the monkey-patch
+wrapper, or edit the defaults directly).
+
+Reference baseline (Phase 3B/3C):
+- Phase 3B paired reference:
+  `investigations/default_gpy_gap_v2/ngd/ngd_results.jsonl`
+  (48 runs = 16 cells × 3 seeds, NGD+Adam+ES p=200, seeds {42,123,789}).
+  This is what the prototype Δ compares against.
+- Phase 3C full sweep (for context on the full-sweep scale):
+  `experiments/2026-04-22_ngd_final_verdict_64x64/results.jsonl`
+  (123 runs = 41 cells × 3 seeds, seeds {1,2,3}, NGD+Adam+ES).
+
+Pre-fix LOSS_CONVENTION note: both the Phase 3B JSONL and the Phase 3C
+JSONL use the mixed pre/post-step logging convention (§47). The loss
+curves are biased upward but `test_r` is correct. The ngd_lbfgs
+prototype JSONLs here all use the POST-fix pre-step convention — they
+are apples-to-apples internally but the loss curves are not directly
+comparable to the Phase 3B/3C JSONLs.
+
+## 59. What to tell the user on re-entry
+
+"You were investigating Phase 3E — whether LBFGS can replace Adam on
+the NGD hyperparameter step. Four variants were prototyped on 5 cells
+× 3 seeds. None passed the §40 gate because of a persistent A-collapse
+on cell 30 that all four variants hit. V2 (joint LBFGS + 50-iter
+warm-up) was the best, passing 4/5 cells. You were deciding between
+writing up Phase 3E as a negative result, running V2 on the full
+41×3 sweep to measure the real bad-cell fraction, or trying V4/V5
+(expected not to help but cheap). See SCRAPBOOK §51-59 for the full
+context and §57 for the decision matrix."
+
+
+## 60. V5 addendum — damped LBFGS inner loop (2026-04-23)
+
+Ran V5 = V2 config (joint LBFGS + 50-iter warm-up) with `lbfgs_max_iter=1`
+instead of 20. Hypothesis: limit strong_wolfe to a single line-search
+step per outer iter, preventing the aggressive jump into the A=0 basin.
+
+**Result: fails all 5 cells of the gate, but for a different mechanism.**
+
+| cell | V5 3-seed mean_r | V2 mean_r | Adam ref mean_r | V5 Δ vs Adam |
+|------|------------------|-----------|-----------------|--------------|
+| 40 | 0.418 | 0.763 | 0.756 | −0.337 |
+| 38 | 0.327 | 0.645 | 0.662 | −0.336 |
+| 16 | 0.815 | 0.949 | 0.959 | −0.144 |
+| 30 | 0.148 | −0.236 | 0.752 | −0.604 |
+| 29 | 0.508 | 0.702 | 0.749 | −0.242 |
+
+Disasters (tr<0.3): 3/15. Wall time: 2.4s/run (V2 was 10.7s, Adam 11.5s).
+V5 iters mean: 46 (ES fires early because loss barely moves).
+
+**Mechanism shift**: with max_iter=1 the inner LBFGS loop does one
+line-search step per outer iter. This prevents the A→0 jump (cell 30
+now has A=0.008 instead of 1e-4) but also prevents any meaningful
+kernel or likelihood training — **A stays at init (≈0.01) on essentially
+every cell**. ES fires at ~40-50 outer iters because ELBO barely moves.
+
+**Trade-off curve for `lbfgs_max_iter`**: 20 = too aggressive (A-collapse
+on cell 30), 1 = too damped (no training on any cell). A value in
+{3..10} was not tested — it is exactly the "tune the knob until one
+cell works" territory. Without a principled a-priori reason to pick a
+specific value, testing it would be overfitting.
+
+File: `prototype_V5_damp_joint_warmup_3seed.jsonl`, log:
+`log_V5_damp_joint_warmup_3seed.log`.
+
+## 61. Final Phase 3E status (2026-04-23 end-of-session)
+
+Five variants tested — V0, V1, V2, V3, V5. **None pass the §40 pass
+gate on the 5 × 3 prototype.** V2 remains the frontier (4/5 cells pass,
+cell 30 disasters). V5 fails universally via an orthogonal mechanism
+(under-training). V4 (LBFGS cadence) was discussed and deprioritized —
+it addresses latching which V2 already addressed via warm-up; not
+expected to fix the cell-30 A-collapse.
+
+**Investigation is paused, not closed.** A complete negative writeup
+would say: "NGD+LBFGS for SVGP hyperparams has a structural failure
+mode (A→0 attractor of Poisson-exp likelihood) that is unavoidable
+under any tested LBFGS configuration with reasonable inner-loop budget.
+The failure affects a minority of cells (1/5 in the prototype);
+`lbfgs_max_iter` tuning trades off catastrophic failure vs.
+under-training without a clean middle ground. Keep NGD+Adam as the
+production default."
+
+**Remaining untried-but-discussed path**: LBFGS cadence (every N NGD
+iters instead of every iter), possibly combined with V2. Not attempted
+— see §57. Also: longer warm-up (100-200 NGD iters), init/kernel-init
+engineering (rejected as overfitting per the user). Those would be the
+next experiments if this is reopened.
+
+---
+
+# Phase 3G — NGD validation pipeline (2026-04-23 → 2026-04-29)
+
+After Phase 3E (LBFGS investigation, deferred), the focus shifted from
+"can NGD be improved" to "is NGD ready to be the GPyTorch-native
+default?" Three follow-up validation experiments + a deep-dive
+investigation. This section is the canonical recap of all post-3E work
+on the NGD-as-default question.
+
+## 62. Why this exists
+
+Phase 3C validated NGD vs vargp at *one* operating point (M=250,
+n_train=3160, 64×64, fix_Amp=True). To promote NGD as default, we
+needed to know:
+
+1. **M-dependence**: does NGD's accuracy hold across M? Does it have
+   the same M-degradation as vargp on 9/41 cells at large M?
+2. **fix_Amp=False**: does NGD work when Amp is trainable, or did
+   `fix_Amp=True` mask a problem?
+3. **108×108 dataset**: NGD was only validated on 64×64. The harder
+   dataset (vargp mean ≈ 0.745 vs 0.838 on 64×64) may stress the
+   algorithm differently.
+4. **Low n_train (active-learning regime)**: with M = n_train very
+   small (50–300), how does NGD compare?
+
+## 63. M-sweep (`experiments/2026-04-23_ngd_M_sweep_64x64/`)
+
+41 cells × 9 M values {50, 100, 200, 250, 300, 500, 750, 1000, 1500}
+× seeds {0, 1, 2} = 1107 runs. Same grid as
+`experiments/2026-04-13_M_sweep_64x64/` (vargp), so paired comparison.
+
+Result: **NGD ≥ vargp at every M ≥ 200**, plateau at M ≈ 200–300.
+No M-degradation (unlike vargp's 9/41 cells).
+
+| M | NGD mean_r | vargp mean_r | Δ |
+|---|---|---|---|
+| 50 | 0.815 | 0.817 | −0.002 |
+| 100 | 0.828 | 0.830 | −0.002 |
+| 200 | 0.843 | 0.838 | +0.005 |
+| 300 | 0.845 | 0.838 | +0.007 |
+| 500 | 0.848 | 0.834 | +0.014 |
+| 750 | 0.853 | 0.838 | +0.015 |
+| 1000 | 0.846 | 0.840 | +0.007 |
+| 1500 | 0.846 | 0.840 | +0.007 |
+
+Wall-time: NGD ~95–160s/run, vargp ~45–55s/run. NGD 2–3× *slower*
+**due to GPU contention** (matteo's grid_search ran simultaneously,
+consuming ~8 GB GPU). On clean GPU (Phase 3C measurement), NGD was
+4× faster than vargp at M=250.
+
+Reproducible from `experiments/2026-04-23_ngd_M_sweep_64x64/run_sweep.py`.
+
+## 64. Validation pipeline (`experiments/2026-04-28_ngd_validation/`)
+
+Three back-to-back experiments via `run_pipeline.py`. Total wall
+9.3h. Each crash-safe.
+
+**Exp B — free Amp on 64×64.** 41 cells × seed=1, M=250, n_train=3160,
+fix_Amp=False. Compared to existing vargp `64_elbo_intl_freeAmp_Amp1`
+seed=1 baseline (mean=0.838). NGD mean=0.848, **Δ = +0.011**, paired
+SEM 0.005. Amp values [1.07, 2.37] — Adam trains correctly. ✓
+
+**Exp A — NGD on 108×108.** 41 cells × seed=1, M=300, n_train=2910,
+fix_Amp=False. Compared to existing
+`experiments/2026-03-20_massive_allcells_108/` seed=1 baseline.
+NGD mean=0.773, vargp mean=0.729, **Δ = +0.043**. Crucially, NGD std
+(0.17) is *half* of vargp's (0.29). Particularly handles the 6 cells
+with STA edge artefacts better. ✓
+
+**Exp C — low n_train (M = n_train).** 41 cells × seed=1 × {50, 150, 300}
+= 246 runs, both modes from scratch (no existing baseline). NGD trails
+vargp at every value, gap shrinks with n_train but does not invert:
+
+| M=n_train | vargp mean | NGD mean | Δ | NGD-only disasters |
+|-----------|------------|----------|---|--------------------|
+| 50  | 0.512 | 0.394 | −0.118 | 7/41 |
+| 150 | 0.545 | 0.462 | −0.083 | 7/41 |
+| 300 | 0.637 | 0.573 | −0.064 | 2/41 |
+
+⚠️ Real and consistent. Triggered an open investigation (§65).
+
+## 65. Low-n_train deep dive (`investigations/ngd_low_ntrain/`)
+
+Investigation of WHY NGD trails at low n_train, and whether the gap
+can be closed by config tuning.
+
+**Mini-investigation (3 cells × 4 iter caps)**: cells 0, 35 (NGD-only
+disasters at M=50) and cell 16 (healthy control). Iter caps 100, 300,
+500, 1500 with ES disabled. Result: hard cells degrade monotonically
+with iter cap (cell 0: cap=100 → +0.19, cap=1500 → −0.10). Easy cell
+robust. Confirmed: NGD's first-order Adam over 1500 iters inflates A
+on hard cells, where there's not enough data signal to support large A.
+Train ELBO improves monotonically (loss 143 → 12 on cell 35) so
+`restore_best` selects the most-overfit iteration.
+
+**Hypothesis from mini**: gap is a config issue. Phase 3C's
+patience=200, min_delta_rel=1e-2, n_iterations=1500 were tuned for
+n_train=3160; at n_train=50 those let NGD overtrain.
+
+**41-cell scaled-ES test (`run_scaled_es.py`, 2026-04-29)**: rerun the
+same Exp C grid (41 cells × {M=50,150,300} × seed=1 = 123 runs) with
+NGD using vargp-scale ES (patience=15, min_delta_rel=1e-3, cap=200).
+
+**Hypothesis FALSIFIED.** Scaling ES made the gap *wider*:
+
+| M=n_train | Δ default vs vargp | Δ scaled-ES vs vargp |
+|-----------|--------------------|--------------------|
+| 50  | −0.118 | **−0.157** |
+| 150 | −0.083 | **−0.098** |
+| 300 | −0.064 | **−0.133** |
+
+ES rate at scaled config: 1/41, 1/41, 0/41 — patience=15 with
+min_delta_rel=1e-3 essentially never fires (loss keeps improving by
+>0.1% every iter). All runs hit cap=200. Result: cap=200 fixed the
+~7 disaster cells (over-trainers) but undertrained the other ~30
+cells (which need 500+ iters for the kernel to fit).
+
+**Refined diagnosis**: there's no single iter cap that wins. Some
+cells need short caps, others need long. This is an algorithmic
+limitation of Adam at low n_train, not a config issue.
+
+**Wall time also unfavorable for NGD at low n_train**:
+
+| M=n_train | vargp | NGD-default | NGD/vargp |
+|-----------|-------|-------------|-----------|
+| 50  | 47s | 113s | 2.4× slower |
+| 150 | 58s | 125s | 2.1× slower |
+| 300 | 69s | 140s | 2.0× slower |
+
+Reverses the high-n_train pattern (Phase 3C: NGD 4× faster). Reason:
+vargp's LBFGS converges in ~45 outer iters via Newton-like steps;
+NGD needs ~1050 iters because Adam is first-order.
+
+**Investigation status: OPEN.** First hypothesis (config tuning)
+falsified. Open avenues listed in
+`investigations/ngd_low_ntrain/README.md`, summarized:
+- Held-out validation ES (would naturally find per-cell stop point;
+  caveat: known noisy at small validation sets)
+- Mode-switching (vargp early, NGD late)
+- Different optimizer (AdamW with weight decay on A?)
+- Per-cell adaptive iter cap
+
+## 66. Where the project stands on the NGD-default question
+
+| Operating point | Δ NGD−vargp | NGD speed vs vargp | Verdict |
+|-----------------|-------------|--------------------|---------|
+| Phase 3C (M=250, n=3160, 64×64, fix_Amp=True) | +0.007 | 4× faster (clean GPU) | ✓ NGD wins |
+| M-sweep (n=3160, M ∈ [50,1500], 64×64, fix_Amp=True) | +0.000 to +0.015 | (contested GPU) | ✓ NGD ≥ vargp |
+| Exp B (M=250, n=3160, 64×64, fix_Amp=False) | +0.011 | (not measured) | ✓ NGD wins |
+| Exp A (M=300, n=2910, 108×108, fix_Amp=False) | +0.043 | (not measured) | ✓ NGD wins, lower variance |
+| Exp C (M=n=50,150,300, 64×64, fix_Amp=True) | −0.118, −0.083, −0.064 | NGD 2× **slower** | ✗ vargp wins |
+
+**Headline**: NGD wins for "production" workflows (n_train ≥ ~500).
+NGD loses for "active-learning early-iteration" workflows (n_train
+< ~300).
+
+`default_params.json["run"]["mode"]` is still `'default_gpy'`. NGD is
+*available* as a first-class mode (Phase 3D wiring) but not the
+default. Promoting NGD to default before resolving the low-n_train
+question would regress active-learning users.
+
+## 67. Files (canonical inventory)
+
+```
+experiments/2026-04-23_ngd_M_sweep_64x64/      # M-sweep (1107 runs)
+  README.md                                    # final results inline
+  run_sweep.py / metadata.json / results.jsonl
+  effective_config.json                        # frozen resolved config
+
+experiments/2026-04-28_ngd_validation/          # B+C+A pipeline
+  README.md                                    # final results inline
+  run_pipeline.py
+  run_B_freeamp_64x64.py / results_B.jsonl
+  run_C_lowntrain_64x64.py / results_C.jsonl
+  run_A_108x108.py / results_A.jsonl
+  pipeline.log                                 # huge; grep test_r/Exp.*done
+
+investigations/ngd_low_ntrain/                  # open investigation
+  README.md                                    # current hypothesis status
+  iter_cap_sweep.py / .jsonl                  # 3-cell mini-sweep (motivation)
+  diagnose_overfit.py / overfit_diagnostic.jsonl  # A inflation curves
+  run_scaled_es.py / results_scaled_es.jsonl  # 41-cell test (falsified H1)
+  analyze_scaled_es.py
+```
+
+## 68. What to tell future Claude on re-entry
+
+"You were validating NGD before promoting it to GPyTorch-native default.
+The M-sweep (1107 runs) and Exp A/B (82 runs at production points)
+showed NGD wins or ties vargp on accuracy at every test EXCEPT low
+n_train. Exp C (246 runs at M=n_train=50/150/300) showed NGD trails
+vargp by 0.06–0.12 in this regime, AND is 2× slower wall-time.
+`investigations/ngd_low_ntrain/` is OPEN — first hypothesis (NGD's
+ES patience=200 is wrong for low n_train) was tested with a 41-cell
+follow-up and falsified (made the gap wider). Open avenues are
+listed in that folder's README."
+
+The default mode hasn't been changed. Don't change it without
+resolving §65 (low-n_train) first.
+
+**If asked to merge this branch into `pietro/workingbranch`**, read
+`MERGE_CHECKLIST.md` at the gpytorch_porting/ root first. It lists
+production files changed, what NOT to do (don't flip default mode),
+pre-merge verification commands, gotchas (108×108 default path,
+ngd_n_iterations 1000 vs 1500 discrepancy, loss-logging convention),
+and a suggested PR structure with explicit known-limitation disclosures.
+
