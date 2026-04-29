@@ -1,0 +1,335 @@
+  Starting Exp B: NGD free Amp 64x64        (41 runs, ~10 min)
+  test_r=0.6638  Amp=1.921  wall=111s
+  test_r=0.9861  Amp=2.091  wall=73s
+  test_r=0.9179  Amp=2.080  wall=138s
+  test_r=0.8686  Amp=1.083  wall=55s
+  test_r=0.8997  Amp=1.486  wall=76s
+  test_r=0.6703  Amp=1.608  wall=62s
+  test_r=0.7861  Amp=1.799  wall=82s
+  test_r=0.6918  Amp=1.732  wall=117s
+  test_r=0.8739  Amp=1.176  wall=42s
+  test_r=0.9163  Amp=2.195  wall=128s
+  test_r=0.8980  Amp=1.686  wall=79s
+  test_r=0.9617  Amp=1.139  wall=41s
+  test_r=0.9569  Amp=1.481  wall=82s
+  test_r=0.9482  Amp=1.873  wall=101s
+  test_r=0.8999  Amp=1.696  wall=83s
+  test_r=0.6523  Amp=1.810  wall=75s
+  test_r=0.9537  Amp=1.673  wall=88s
+  test_r=0.8584  Amp=1.691  wall=116s
+  test_r=0.9675  Amp=1.931  wall=148s
+  test_r=0.7458  Amp=2.126  wall=67s
+  test_r=0.8519  Amp=1.136  wall=53s
+  test_r=0.8119  Amp=1.956  wall=91s
+  test_r=0.7708  Amp=1.378  wall=76s
+  test_r=0.8192  Amp=1.186  wall=54s
+  test_r=0.9441  Amp=2.119  wall=145s
+  test_r=0.9467  Amp=1.606  wall=91s
+  test_r=0.9103  Amp=1.589  wall=124s
+  test_r=0.8516  Amp=2.365  wall=153s
+  test_r=0.7072  Amp=1.970  wall=88s
+  test_r=0.7984  Amp=1.988  wall=124s
+  test_r=0.7884  Amp=1.756  wall=135s
+  test_r=0.9806  Amp=2.305  wall=98s
+  test_r=0.7873  Amp=1.517  wall=81s
+  test_r=0.9584  Amp=1.699  wall=80s
+  test_r=0.8470  Amp=1.067  wall=73s
+  test_r=0.8643  Amp=1.674  wall=96s
+  test_r=0.8448  Amp=1.221  wall=68s
+  test_r=0.8779  Amp=1.899  wall=72s
+  test_r=0.7662  Amp=1.509  wall=88s
+  test_r=0.6927  Amp=1.673  wall=88s
+  test_r=0.8373  Amp=1.614  wall=97s
+Exp B done. 41/41 in 62.3 min
+  Starting Exp C: Low n_train 64x64 both    (246 runs, ~2 h)
+  test_r=0.3882  wall=34s
+  test_r=0.9128  wall=31s
+  test_r=0.0770  wall=28s
+  test_r=0.4228  wall=37s
+  test_r=0.5647  wall=25s
+  test_r=0.0805  wall=34s
+  test_r=0.2127  wall=19s
+  test_r=0.6747  wall=32s
+  test_r=-0.0782  wall=66s
+  test_r=0.6579  wall=73s
+  test_r=0.7391  wall=43s
+  test_r=0.8109  wall=32s
+  test_r=0.8763  wall=34s
+  test_r=0.7294  wall=58s
+  test_r=0.7206  wall=41s
+  test_r=0.5691  wall=76s
+  test_r=0.5309  wall=106s
+  test_r=0.8055  wall=60s
+  test_r=0.8542  wall=33s
+  test_r=-0.1783  wall=116s
+  test_r=0.5574  wall=39s
+  test_r=0.2626  wall=35s
+  test_r=0.1893  wall=127s
+  test_r=0.6749  wall=13s
+  test_r=0.6979  wall=61s
+  test_r=0.6631  wall=44s
+  test_r=0.7784  wall=41s
+  test_r=0.9512  wall=25s
+  test_r=0.3935  wall=68s
+  test_r=0.6177  wall=48s
+  test_r=0.2182  wall=73s
+  test_r=0.8413  wall=52s
+  test_r=0.3506  wall=79s
+  test_r=0.9299  wall=37s
+  test_r=0.4945  wall=36s
+  test_r=0.3797  wall=17s
+  test_r=0.6350  wall=13s
+  test_r=0.0319  wall=13s
+  test_r=0.2195  wall=70s
+  test_r=0.3215  wall=19s
+  test_r=0.4053  wall=25s
+  test_r=-0.1000  wall=141s
+  test_r=0.7938  wall=49s
+  test_r=-0.1005  wall=154s
+  test_r=0.3991  wall=54s
+  test_r=0.6877  wall=189s
+  test_r=0.3072  wall=77s
+  test_r=-0.1026  wall=178s
+  test_r=0.6333  wall=124s
+  test_r=0.1017  wall=133s
+  test_r=0.7370  wall=79s
+  test_r=0.1483  wall=32s
+  test_r=0.7137  wall=55s
+  test_r=0.8994  wall=56s
+  test_r=0.8186  wall=149s
+  test_r=0.7426  wall=113s
+  test_r=-0.0972  wall=95s
+  test_r=0.8073  wall=106s
+  test_r=0.4534  wall=152s
+  test_r=0.7868  wall=76s
+  test_r=-0.1714  wall=195s
+  test_r=0.4561  wall=149s
+  test_r=0.2097  wall=105s
+  test_r=0.0166  wall=146s
+  test_r=-0.1399  wall=94s
+  test_r=0.5012  wall=107s
+  test_r=0.6980  wall=149s
+  test_r=0.5919  wall=90s
+  test_r=0.8623  wall=203s
+  test_r=0.0927  wall=82s
+  test_r=0.4558  wall=107s
+  test_r=0.4284  wall=146s
+  test_r=0.8391  wall=139s
+  test_r=0.3153  wall=145s
+  test_r=0.7794  wall=138s
+  test_r=0.4538  wall=58s
+  test_r=-0.1490  wall=161s
+  test_r=-0.1626  wall=60s
+  test_r=0.0379  wall=47s
+  test_r=0.2048  wall=123s
+  test_r=0.4840  wall=117s
+  test_r=0.7274  wall=70s
+  test_r=0.4685  wall=39s
+  test_r=0.9555  wall=18s
+  test_r=0.0495  wall=42s
+  test_r=0.6806  wall=29s
+  test_r=0.7154  wall=37s
+  test_r=0.4816  wall=66s
+  test_r=0.3402  wall=30s
+  test_r=0.6561  wall=35s
+  test_r=0.0583  wall=89s
+  test_r=0.5251  wall=98s
+  test_r=0.7790  wall=45s
+  test_r=0.8461  wall=18s
+  test_r=0.9653  wall=42s
+  test_r=0.8470  wall=51s
+  test_r=0.7509  wall=40s
+  test_r=-0.0631  wall=48s
+  test_r=0.7282  wall=81s
+  test_r=0.6380  wall=83s
+  test_r=0.7430  wall=96s
+  test_r=0.0159  wall=73s
+  test_r=0.6907  wall=55s
+  test_r=0.3330  wall=50s
+  test_r=0.4634  wall=84s
+  test_r=0.6986  wall=36s
+  test_r=0.5362  wall=115s
+  test_r=0.7801  wall=89s
+  test_r=0.7420  wall=79s
+  test_r=0.9046  wall=19s
+  test_r=0.6240  wall=90s
+  test_r=0.4697  wall=62s
+  test_r=0.7944  wall=64s
+  test_r=0.8196  wall=69s
+  test_r=0.5089  wall=58s
+  test_r=0.6938  wall=64s
+  test_r=0.5565  wall=68s
+  test_r=0.0567  wall=13s
+  test_r=0.5444  wall=64s
+  test_r=0.2616  wall=20s
+  test_r=0.3037  wall=73s
+  test_r=0.2817  wall=74s
+  test_r=0.0990  wall=89s
+  test_r=0.3774  wall=99s
+  test_r=0.9589  wall=39s
+  test_r=0.1583  wall=148s
+  test_r=0.7466  wall=63s
+  test_r=0.5134  wall=102s
+  test_r=0.2105  wall=47s
+  test_r=0.4714  wall=134s
+  test_r=0.6727  wall=67s
+  test_r=0.1539  wall=127s
+  test_r=0.7523  wall=149s
+  test_r=-0.1755  wall=63s
+  test_r=0.8719  wall=43s
+  test_r=0.9462  wall=167s
+  test_r=0.7971  wall=150s
+  test_r=0.6285  wall=152s
+  test_r=-0.0926  wall=119s
+  test_r=0.6398  wall=76s
+  test_r=0.6475  wall=156s
+  test_r=0.7165  wall=136s
+  test_r=0.0611  wall=172s
+  test_r=0.7700  wall=92s
+  test_r=0.4423  wall=143s
+  test_r=0.3129  wall=182s
+  test_r=0.7546  wall=91s
+  test_r=0.5832  wall=111s
+  test_r=0.4622  wall=80s
+  test_r=0.2261  wall=141s
+  test_r=0.4039  wall=251s
+  test_r=0.5571  wall=203s
+  test_r=0.2860  wall=152s
+  test_r=-0.0562  wall=91s
+  test_r=0.9244  wall=167s
+  test_r=0.2202  wall=170s
+  test_r=0.9286  wall=67s
+  test_r=0.3819  wall=118s
+  test_r=-0.0763  wall=93s
+  test_r=0.2455  wall=66s
+  test_r=0.8353  wall=144s
+  test_r=0.4307  wall=225s
+  test_r=0.2739  wall=112s
+  test_r=-0.0375  wall=207s
+  test_r=0.5638  wall=59s
+  test_r=0.9593  wall=33s
+  test_r=0.2344  wall=47s
+  test_r=0.6830  wall=26s
+  test_r=0.8132  wall=42s
+  test_r=0.4965  wall=58s
+  test_r=0.6575  wall=41s
+  test_r=0.6850  wall=40s
+  test_r=0.5701  wall=105s
+  test_r=0.6453  wall=108s
+  test_r=0.8671  wall=55s
+  test_r=0.8624  wall=28s
+  test_r=0.9669  wall=42s
+  test_r=0.9311  wall=55s
+  test_r=0.8152  wall=60s
+  test_r=0.5469  wall=58s
+  test_r=0.7996  wall=97s
+  test_r=0.6992  wall=100s
+  test_r=0.8421  wall=84s
+  test_r=0.0275  wall=97s
+  test_r=0.7854  wall=48s
+  test_r=0.2793  wall=58s
+  test_r=0.4624  wall=113s
+  test_r=0.7024  wall=37s
+  test_r=0.6041  wall=57s
+  test_r=0.6846  wall=57s
+  test_r=0.1922  wall=105s
+  test_r=0.7070  wall=70s
+  test_r=0.7345  wall=80s
+  test_r=0.5769  wall=85s
+  test_r=0.8088  wall=47s
+  test_r=0.8768  wall=86s
+  test_r=0.5765  wall=58s
+  test_r=0.8641  wall=76s
+  test_r=0.6191  wall=79s
+  test_r=0.5391  wall=63s
+  test_r=0.5658  wall=62s
+  test_r=0.7257  wall=83s
+  test_r=0.5001  wall=107s
+  test_r=0.4419  wall=147s
+  test_r=0.1945  wall=68s
+  test_r=0.5120  wall=125s
+  test_r=0.9810  wall=56s
+  test_r=-0.0193  wall=172s
+  test_r=0.7226  wall=57s
+  test_r=0.5859  wall=186s
+  test_r=0.4408  wall=97s
+  test_r=0.6451  wall=233s
+  test_r=0.8198  wall=68s
+  test_r=0.5873  wall=134s
+  test_r=0.5097  wall=171s
+  test_r=0.6822  wall=119s
+  test_r=0.8815  wall=49s
+  test_r=0.9641  wall=84s
+  test_r=0.8468  wall=167s
+  test_r=0.6462  wall=126s
+  test_r=-0.0921  wall=154s
+  test_r=0.7799  wall=82s
+  test_r=0.6974  wall=177s
+  test_r=0.7665  wall=151s
+  test_r=0.0478  wall=213s
+  test_r=0.8047  wall=156s
+  test_r=0.4169  wall=101s
+  test_r=0.4581  wall=198s
+  test_r=0.0603  wall=67s
+  test_r=0.5131  wall=175s
+  test_r=0.7391  wall=68s
+  test_r=0.2190  wall=139s
+  test_r=0.7973  wall=250s
+  test_r=0.7274  wall=97s
+  test_r=0.5465  wall=152s
+  test_r=0.4491  wall=203s
+  test_r=0.9150  wall=135s
+  test_r=0.5613  wall=155s
+  test_r=0.9407  wall=123s
+  test_r=0.6339  wall=78s
+  test_r=0.3592  wall=174s
+  test_r=0.5475  wall=73s
+  test_r=0.7270  wall=208s
+  test_r=0.4788  wall=243s
+  test_r=0.5726  wall=126s
+  test_r=0.0217  wall=189s
+Exp C done. 246/246 in 377.0 min
+  Starting Exp A: NGD 108x108               (41 runs, ~4 h)
+  test_r=0.5004  Amp=1.030139684677124  wall=144s
+  test_r=0.9537  Amp=0.9885334968566895  wall=90s
+  test_r=0.5289  Amp=1.485180377960205  wall=327s
+  test_r=0.6671  Amp=0.9937320947647095  wall=85s
+  test_r=0.9121  Amp=1.0759831666946411  wall=129s
+  test_r=0.7634  Amp=1.2974915504455566  wall=208s
+  test_r=0.6976  Amp=1.4009029865264893  wall=243s
+  test_r=0.6433  Amp=1.0407330989837646  wall=132s
+  test_r=0.8514  Amp=1.008819341659546  wall=79s
+  test_r=0.8680  Amp=1.4073644876480103  wall=268s
+  test_r=0.8223  Amp=0.9987303614616394  wall=81s
+  test_r=0.8868  Amp=0.9725648164749146  wall=84s
+  test_r=0.9444  Amp=1.0190304517745972  wall=115s
+  test_r=0.9493  Amp=1.1858820915222168  wall=245s
+  test_r=0.8177  Amp=1.0316580533981323  wall=116s
+  test_r=0.3971  Amp=1.5168267488479614  wall=240s
+  test_r=0.9728  Amp=1.4234007596969604  wall=215s
+  test_r=0.8641  Amp=1.4001253843307495  wall=238s
+  test_r=0.9433  Amp=1.2432360649108887  wall=232s
+  test_r=0.6976  Amp=1.4807316064834595  wall=235s
+  test_r=0.8430  Amp=0.9874140024185181  wall=92s
+  test_r=0.3812  Amp=1.0204780101776123  wall=99s
+  test_r=0.5612  Amp=1.1888536214828491  wall=273s
+  test_r=0.7676  Amp=1.0219950675964355  wall=89s
+  test_r=0.9408  Amp=1.4806963205337524  wall=228s
+  test_r=0.9130  Amp=1.0188884735107422  wall=96s
+  test_r=0.8462  Amp=1.2414159774780273  wall=212s
+  test_r=0.9502  Amp=1.385545015335083  wall=275s
+  test_r=0.5929  Amp=0.9914429187774658  wall=73s
+  test_r=0.7231  Amp=1.3055614233016968  wall=203s
+  test_r=0.7564  Amp=1.132336139678955  wall=131s
+  test_r=0.9314  Amp=1.2178117036819458  wall=210s
+  test_r=0.7732  Amp=1.304319143295288  wall=188s
+  test_r=0.9685  Amp=1.101639747619629  wall=144s
+  test_r=0.8673  Amp=1.032427430152893  wall=93s
+  test_r=0.4657  Amp=1.0264536142349243  wall=115s
+  test_r=0.8683  Amp=1.0060367584228516  wall=84s
+  test_r=0.8564  Amp=1.633674144744873  wall=209s
+  test_r=0.7002  Amp=1.4212663173675537  wall=255s
+  test_r=0.4941  Amp=1.4525747299194336  wall=237s
+  test_r=0.7915  Amp=1.2594584226608276  wall=266s
+Exp A done. 41/41 in 118.0 min
+  All experiments done in 9.29 h
