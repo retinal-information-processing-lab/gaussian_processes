@@ -28,6 +28,11 @@ interpretable receptive-field-driven stimuli. Started from a natural image, the 
 > then be quantified by comparing different conditioning subsets). Nothing here has been run
 > with `sample_lambda = True` yet.
 
+> **Git:** this investigation lives on the submodule branch **`pietro/lucent-useful-images`**
+> (first commit `569570b`, branched from the pinned commit `75b207a`). The superproject
+> `analysis/april26` still pins `75b207a`; the branch is NOT merged into `pietro/workingbranch`
+> (which has diverged). Committed content is code + docs only — images/caches are gitignored.
+
 ---
 
 ## Why previous attempts failed, and why this works
