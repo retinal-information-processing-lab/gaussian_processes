@@ -1,0 +1,23 @@
+# Cloned third-party library (regenerable: git clone --depth 1 https://github.com/greentfrapp/lucent)
+lucent_repo/
+
+# Regenerable caches and exploratory outputs
+out/
+cache/
+__pycache__/
+*.pyc
+
+# Raw M=50 diagnostics (early exploration, regenerable)
+early_exploration_fixed_M50/diagnostics/
+
+# Trained models / data blobs (regenerable from scripts)
+*.pt
+*.npz
+*.pkl
+
+# Images are NOT committed (regenerable by rerunning the scripts) — commit code + docs only.
+*.png
+*.svg
+*.pdf
+*.jpg
+*.jpeg
