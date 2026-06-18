@@ -33,5 +33,7 @@ utility lives at `analysis/figures/utility_landscape/`, `LUT_README.md`); (2) wh
 utility IS valid, standard picks higher-contrast / different-content images (cell 3 @ n≥200:
 a high-contrast face vs DA's foliage). **Takeaway:** the DA conditioning term is essential —
 lucent bounds the pixels, DA keeps the firing/image sensible. See **`FINDINGS.md`** for the
-full handoff + the LUT/r_max detail + how a new session should make the comparison clean.
+full handoff + the LUT/r_max detail. The LUT backend that makes the comparison numerically
+clean (`utility_mode='standard_lut'`; cell 13 max utility 295,800 → 3.724 nats) is now
+**IMPLEMENTED** — see **`LUT_IMPLEMENTATION_REPORT.md`** and `../lut/`.
 

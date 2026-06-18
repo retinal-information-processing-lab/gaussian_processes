@@ -6,6 +6,14 @@ utility instead of the distribution-aware (DA) one, to see whether the optimized
 really different. Short answer: **yes, very** — and the standard utility hits a known
 numerical landmine that a new session must understand before trusting its numbers.
 
+> **UPDATE (2026-06-18): the LUT IS now implemented** — torch-differentiable, vendored,
+> standalone. See `LUT_IMPLEMENTATION_REPORT.md` and `../lut/`. The blow-up below is fixed
+> (cell 13 max utility **295,800 → 3.724 nats**). The "what a new session should do" section
+> at the bottom is therefore DONE (option a). The scientific conclusion is unchanged and now
+> confound-free: the standard utility no longer explodes, but it still drives to high-firing /
+> high-contrast images (cell 13 firing still ~17,000 at the bad-fit point) — the extreme-image
+> preference is REAL, so DA remains the right objective.
+
 ## TL;DR
 - Standard utility: `U = H_marg − E[H_noise]` — depends only on the marginal GP moments
   `(mu_g, sigma2_g)` at the candidate image; **no conditioning** on the natural-image pool.
@@ -41,7 +49,10 @@ A numerically-stable precomputed LUT exists for *exactly this standard utility*:
 - **The standard utility we used is `acquisition.standard_utility` → `utils.nd_utility_new`
   — i.e. the LIVE Laplace + fixed `r_max=100` utility, NOT the LUT.** The LUT is
   scipy/non-differentiable, and the lucent gradient-ascent needs a torch-differentiable
-  objective, so the LUT could not be dropped in directly.
+  objective, so the LUT could not be dropped in directly. (RESOLVED 2026-06-18: a
+  torch-differentiable LUT twin now exists — `lut/lut_utility.py`, backend
+  `utility_mode='standard_lut'`. The numbers in this doc are the original LIVE-Laplace run;
+  the LUT re-run is in `LUT_IMPLEMENTATION_REPORT.md`.)
 
 ## Findings
 1. **The blow-ups are the documented `r_max=100` trap, not a real utility.** Standard
@@ -61,17 +72,18 @@ A numerically-stable precomputed LUT exists for *exactly this standard utility*:
    bounds the **pixels**, but the DA conditioning is what keeps the **firing / image**
    sensible. Both are load-bearing.
 
-## Caveats / what a NEW session should do for a clean comparison
-- **Use a numerically-stable, DIFFERENTIABLE standard utility.** Options, best first:
-  (a) wrap the LUT as a torch `grid_sample` so it's differentiable AND matches the analysis
-  convention; (b) add an `f_max` / σ-gate guard to the optimizer so it never leaves the ~4σ
-  validity gate (`mu_g + 4·sqrt(sigma2_g) < log r_max`); (c) use the analytic high-rate
-  asymptote `0.5·log(1 + e^{mu_g}·sigma2_g)` past the gate. Until one of these is done, the
-  standard blow-up columns are confounded by the `r_max=100` instability.
-- The DA run this is compared against used **`sample_lambda=False`** (biased; see parent
-  README methods note). No warm-start, single seed (42), M = n_train — same as the DA run.
-- The qualitative conclusion (standard ≠ DA; DA conditioning matters) is robust; the
-  *quantitative* standard-utility values in the blow-up region are not.
+## Clean comparison — DONE (LUT implemented 2026-06-18)
+- **A numerically-stable, DIFFERENTIABLE standard utility is now implemented** (this was the
+  recommended option (a)): a torch twin of the LUT in `lut/lut_utility.py`, wired as
+  `optimize_image.py` `utility_mode='standard_lut'`, validated to machine precision vs the
+  vendored numpy `LUTUtility`. See `LUT_IMPLEMENTATION_REPORT.md`. (Alternatives not taken:
+  (b) an `f_max` / σ-gate guard; (c) the analytic high-rate asymptote.) The blow-up columns
+  are no longer confounded — the LUT re-run gives finite, true-entropy values (cell 13 max
+  **3.724 nats**, `oob=0%` so they are the table's true entropies, not the fallback proxy).
+- The DA run this is compared against STILL used **`sample_lambda=False`** (biased; see parent
+  README methods note) — NOT yet re-run unbiased. No warm-start, single seed (42), M = n_train.
+- The qualitative conclusion (standard ≠ DA; DA conditioning matters) is robust. The
+  Laplace-run's blow-up values are NOT trustworthy; the LUT re-run's values ARE (true entropies).
 
 ## Pointers
 - LUT + ground truth: `analysis/figures/utility_landscape/` (`LUT_README.md` first).

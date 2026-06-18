@@ -207,3 +207,35 @@ Explored 2D playground import chain (5+ levels deep), identified duplicated func
 **Status**: Handed off for implementation
 
 User implemented the 2D import cleanup plan. Fixed test_acquisition.py (updated imports from old utility.py/utility_2d_rbf_base to gpytorch_porting/utils.py via importlib.util pattern). All 6 tests pass. Deep audit confirmed 2D playground imports are clean. Found r_max hardcoded defaults in compute_H, nd_utility_new, standard_utility, distribution_aware_utility, compute_mc_diagnostics_2d. Planned enforcement: remove all silent defaults, require explicit r_max or adaptive_r_max=True.
+
+## 2026-06-17: Lucent useful-image generation (solved the overblow problem)
+**Folder**: `investigations/lucent_useful_images/`
+**Status**: Complete. COMMITTED on branch `pietro/lucent-useful-images` (off 75b207a, the
+superrepo-pinned submodule commit). Figures are gitignored (regenerable): current deliverable
+in `out/panels/`; early M=50 figures archived in `early_exploration_fixed_M50/`.
+
+Retried "most useful image" synthesis with the **lucent** library. Parameterize the image
+with lucent's Fourier 1/f prior + sigmoid, affine-mapped to the dataset range [-2.40,+2.48]
+→ **bounded by construction** (no clipping/rescaling). Maximize the **distribution-aware
+utility** (`acquisition.py`, default_gpy). Optimized images stay within the pixel range
+everywhere (saturation ≤7%, mostly <2%) — the long-standing contrast/border blow-up is
+gone. Key insight: the utility intrinsically favors UNnatural images; naturalness comes
+from the parameterization (+ natural-image start), not the objective. Headline science: as
+n_train ↑, the optimum shifts from a broad epistemic RF probe to a compact localized RF.
+Figures: 3 grids (5 cells × n_train: natural / preferred-stimulus / RF-difference) +
+per-cell heroes. Gotcha: default_gpy unstable at low n_train for most cells (memory
+`default-gpy-low-ntrain-unstable`); screened the full ladder → cells 13,3,1,11,12.
+
+## 2026-06-17: LUT-backed standard utility — handed off to a new session
+**Handoff**: `investigations/lucent_useful_images/standard_utility/HANDOFF_lut_standard_utility.md`
+**Plan**: `investigations/lucent_useful_images/standard_utility/PLAN_lut_standard_utility.md`
+**Status**: Handed off for continuation (new session)
+
+Make the precomputed utility LUT (`analysis/figures/utility_landscape/`) usable inside the
+lucent optimization as a torch-differentiable, **standalone (vendored)** module, to fix the
+standard-utility `r_max=100` blow-up (295,800 nats / firing 26,605 in the standard_utility
+control). Standard utility only, DA deferred. ADDITIVE files under
+`investigations/lucent_useful_images/` ONLY — no engine edits (keeps the submodule
+byte-identical to the superrepo-pinned 75b207a, which the `analysis/` pipeline uses).
+Promotion into `acquisition.py` deferred to a branch off `pietro/workingbranch`. See the
+handoff for the full rationale + the `*.npz` gitignore gotcha for the vendored `lut.npz`.
