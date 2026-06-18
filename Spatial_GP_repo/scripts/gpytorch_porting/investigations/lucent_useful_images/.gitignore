@@ -15,6 +15,11 @@ early_exploration_fixed_M50/diagnostics/
 *.npz
 *.pkl
 
+# EXCEPTION: the vendored utility LUT is THE standalone artifact for the LUT-backed
+# standard utility (lut/). It MUST be committed even though *.npz is ignored above,
+# otherwise a fresh clone imports a missing file. See lut/PROVENANCE.md.
+!lut/lut.npz
+
 # Images are NOT committed (regenerable by rerunning the scripts) — commit code + docs only.
 *.png
 *.svg

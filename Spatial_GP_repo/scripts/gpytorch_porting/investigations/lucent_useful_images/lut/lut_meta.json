@@ -1,0 +1,32 @@
+{
+  "domain": {
+    "mu": [
+      -6.0,
+      6.0
+    ],
+    "sigma2": [
+      0.0,
+      6.0
+    ]
+  },
+  "mu_step": 0.2,
+  "sigma2_grid": "0 + geomspace(0.001, 6, 40) (log-spaced)",
+  "shape": [
+    61,
+    41
+  ],
+  "max_terms": 150000,
+  "hmarg_window_std": 14.0,
+  "method_code_legend": {
+    "0": "quad",
+    "1": "quad_lowcov",
+    "2": "lognormal",
+    "3": "lognormal_window_exceeded",
+    "4": "sigma2_zero"
+  },
+  "ground_truth": "corrected U_exact: E_Hnoise via 1-D g-integral; H_marg quad if window<=max_terms else log-normal (feasibility rule; within sigma2<=6 log-normal only in the verified high-mu safe band, |dHm|<0.05)",
+  "git_commit": "851b49d",
+  "built": "2026-05-28 17:21",
+  "n_nodes": 2501,
+  "n_sanity_fail": 0
+}
