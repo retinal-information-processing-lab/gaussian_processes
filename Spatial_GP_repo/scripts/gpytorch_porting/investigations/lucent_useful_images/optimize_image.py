@@ -41,6 +41,7 @@ matplotlib.rcParams["svg.fonttype"] = "none"
 import gp_models
 import lucent_param
 import acquisition  # GP_PORT is on sys.path via gp_models
+from lut.lut_utility import lut_standard_utility  # LUT-backed standard utility (vendored)
 
 IMG_SIDE = 108
 R_MAX = 100  # Laplace truncation (default_params.json utility.r_max)
@@ -76,8 +77,11 @@ def optimize_image(model, likelihood, X_pool, gp_min, gp_max, *,
 
     start_image01: optional (W,W) array in (0,1) to initialize from (e.g. the
     most-useful natural image). None -> near-gray random Fourier init.
-    utility_mode: 'da' (distribution-aware, uses the x_samples conditioning set) or
-    'standard' (H_marg - E[H_noise], deterministic, ignores x_samples).
+    utility_mode: 'da' (distribution-aware, uses the x_samples conditioning set),
+    'standard' (H_marg - E[H_noise] via the live r_max=100 Laplace utility,
+    deterministic, ignores x_samples; blows up past the ~4-sigma gate), or
+    'standard_lut' (the SAME standard utility read from the numerically-stable LUT,
+    lut/lut_utility.py -- finite/monotone everywhere, no r_max=100 blow-up).
     NOTE: DA results so far use sample_lambda=False (biased; see why_sample_lambda.tex).
     """
     device = next(model.parameters()).device
@@ -106,6 +110,12 @@ def optimize_image(model, likelihood, X_pool, gp_min, gp_max, *,
         if utility_mode == "standard":
             out = acquisition.standard_utility(
                 model, likelihood, x_cand, r_max=r_max, adaptive_r_max=False)
+            util_val = out["utility"]
+            h_marg_val, h_cond_val = util_val, torch.zeros_like(util_val)
+        elif utility_mode == "standard_lut":
+            # Same standard utility, but read from the numerically-stable LUT (no r_max=100
+            # blow-up) in a torch-differentiable form. Marginal-only, like 'standard'.
+            out = lut_standard_utility(model, likelihood, x_cand)
             util_val = out["utility"]
             h_marg_val, h_cond_val = util_val, torch.zeros_like(util_val)
         else:
