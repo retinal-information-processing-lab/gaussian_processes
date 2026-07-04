@@ -239,3 +239,47 @@ control). Standard utility only, DA deferred. ADDITIVE files under
 byte-identical to the superrepo-pinned 75b207a, which the `analysis/` pipeline uses).
 Promotion into `acquisition.py` deferred to a branch off `pietro/workingbranch`. See the
 handoff for the full rationale + the `*.npz` gitignore gotcha for the vendored `lut.npz`.
+(DONE 2026-06-18 — see `investigations/lucent_useful_images/standard_utility/LUT_IMPLEMENTATION_REPORT.md`;
+verified independently: 295,800 -> 3.724 nats, no engine file touched.)
+
+## 2026-06-18: PNAS cell screening for image-pipeline testbed — handed off to a new session
+**Handoff**: `investigations/lucent_useful_images/cell_screening/HANDOFF_cell_screening.md`
+**Plan**: `investigations/lucent_useful_images/cell_screening/PLAN_cell_screening.md`
+**Status**: Handed off for continuation (new session)
+
+Screen the PNAS cells (0-40, default_gpy, M=n_train) for a few **testbed cells with an easy
+monotonic test_r increase vs dataset size**, so the lucent image pipeline can be demonstrated
+without the noisy-fit confound. Constraints: n_train = M = {50,100,150,200,250,300} (step 50),
+ONE seed (42). The new session must FIRST discuss the cell-quality scoring methodology with the
+user, then extend the existing `screen_ladder.py`. ADDITIVE files under `cell_screening/` ONLY,
+no engine edits (stay on the pinned 75b207a engine). NOT the closed-loop analysis cells — PNAS
+only. Known confound flagged in the handoff: 75b207a is 106 commits behind workingbranch's
+fit-stability fixes.
+(DONE 2026-06-18 — `cell_screening/FINDINGS.md`, commit `228418a`. Testbed cells: **3, 13, 36**
+(PNAS, default_gpy, M=n_train). Honest finding: no PNAS cell has an ideal gradual 0.3->0.9 climb.)
+
+## 2026-06-18: Lucent investigation — continuation handoff (next session, with testbed cells)
+**Handoff**: `investigations/lucent_useful_images/HANDOFF.md` (the top-level "start here" for the
+whole investigation; sub-handoffs in `standard_utility/` and `cell_screening/` are DONE)
+**Status**: Handed off for continuation (exploratory)
+
+Continue the lucent "most-useful image" investigation on the chosen testbed cells 3, 13, 36:
+re-run the DA-utility image optimization across the n_train ladder and look at whether the
+optimized image sharpens as the model improves, then explore the open knobs (DA vs standard_lut,
+sample_lambda=True, an STA-correlation "is-this-the-RF" metric, decay_power). Full journey +
+findings + what-to-read + what-NOT-to-try in HANDOFF.md. ADDITIVE files under the investigation
+folder ONLY; no engine edits (byte-identical to pinned 75b207a). Still exploratory.
+
+## 2026-07-04: Lucent gray-start crystallization on testbed cells 3, 13, 36
+**Findings**: `investigations/lucent_useful_images/FINDINGS_gray_start.md`
+**Status**: Continuing (exploratory) — next: `sample_lambda=True` robustness run
+
+Ran the DA-utility image optimization on the testbed trio (M=n_train, seed 42, sample_lambda=False).
+Gray-start view shows all three cells crystallize diffuse->compact center-surround RF as test_r
+climbs (cell 13 sharpest @0.96, cell 3 @0.83, cell 36 @0.73). The natural-start concentration
+metric is confounded by the scene background (corrected mid-session; gray-start is the clean view).
+fr~0 for cells 3/36 explained by small response gain A~0.087 (vs cell 13 A~0.24) — their optima are
+epistemic probes the cell barely fires to; cell 13's is a genuine high-response stimulus. lucent's
+FFT param changes the whole image (global ripple), so "only the RF changes" is too strong. New
+additive scripts: `diff_panels.py`, `rf_localization.py`, `gray_panels.py`, `firing_diagnostic.py`.
+No engine edits (pinned 75b207a). Next: rerun with `sample_lambda=True` (unbiased DA).
