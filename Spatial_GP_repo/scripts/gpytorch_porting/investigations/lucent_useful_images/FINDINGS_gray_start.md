@@ -95,5 +95,29 @@ $PY firing_diagnostic.py   --cells 3 13 36 --n-train 300   # A / lambda0 / pool 
 
 Caches: `cache/panels_results.pkl` (natural), `cache/gray_panels_results.pkl` (gray; stores
 per-(cell,n_train) final image, gray reference, σ²_g, concentration, contrast, and the full
-per-step optimization trajectory). Both gitignored/regenerable. Committed = the 5 scripts +
+per-step optimization trajectory). Both gitignored/regenerable. Committed = the scripts +
 this doc.
+
+## sample_lambda robustness (unbiased DA)
+
+Re-ran the gray-start ladder with `sample_lambda=True` (unbiased: draw λ at each conditioning
+image instead of using its posterior mean) and compared to the biased mean-λ result.
+Scripts: `gray_panels.py --sample-lambda` (→ `gray_panels_sl_results.pkl`, `cell{N}_gray_sl.png`),
+`compare_sl_panels.py` (Fig A: False/True/diff ladder + `sl_divergence.png`), `noise_probe.py`
+(Fig B: seed spread vs n_mc at n_train=300 → `cell{N}_sl_noise.png`, `sl_noise_summary.png`).
+
+- **Crystallization is robust.** All three cells still crystallize diffuse→compact RF and the
+  concentration-vs-test_r story holds. True ≈ False *in the mean*; at most n_train the two
+  optimized images are within 2–6% RMS.
+- **A single unbiased realization is noisier.** Material divergence (RMS up to 0.29, RF polarity
+  flips) at ~7 of 33 ladder points, concentrated on the low-gain cells 3 & 36 (flat utility
+  landscape). Cell 13 stays ≤0.14.
+- **n_mc=48 is cell-dependent, not blanket-too-small** (probe at n=300, seeds × n_mc {48,96,192}):
+  cell 36 cross-seed spread 0.14 → 0.02 raising n_mc 48→96 (48 too small); cell 3 already stable
+  (~0.018, flat in n_mc); cell 13 ~0.10 and does NOT shrink with n_mc (structural multi-optimum —
+  the sharp RF has near-equivalent placements). The **mean over 3 realizations** is a clean RF
+  matching the False image in every case.
+- **Takeaway.** The biased mean-λ (`sample_lambda=False`) used elsewhere in this doc is a fine
+  *deterministic proxy* (it matches the unbiased mean). If using the unbiased utility, n_mc≥96 is
+  a cheap default and averaging a few realizations tames the residual. Caveat: the probe covered
+  n_train=300 only (confident regime, best case); mid-ladder single realizations are noisier.

@@ -69,7 +69,7 @@ def localize(diff, R=R_DISK, smooth=SMOOTH):
     return conc, contrast
 
 
-def run_one(cell, nt, X_all, gp_min, gp_max):
+def run_one(cell, nt, X_all, gp_min, gp_max, sample_lambda=False):
     model, lik, idx_train, test_r = gp_models.train_default_gpy(
         cell_id=cell, n_train=nt, M=nt, seed=SEED)
     X_pool, _ = gp_models.pool_complement(X_all, idx_train)
@@ -77,7 +77,7 @@ def run_one(cell, nt, X_all, gp_min, gp_max):
     res = oi.optimize_image(model, lik, X_pool, gp_min, gp_max,
                             decay_power=DECAY_POWER, lr=LR, n_steps=N_STEPS,
                             n_mc=N_MC, pool_seed=POOL_SEED, start_image01=None,
-                            verbose=False)
+                            sample_lambda=sample_lambda, verbose=False)
     span = gp_max - gp_min
     gray_start_gp = res["img01_start"] * span + gp_min      # the near-gray init, GP space
     final_gp = res["img_gp_final"]
@@ -98,7 +98,7 @@ def run_one(cell, nt, X_all, gp_min, gp_max):
     return rec
 
 
-def build_figure(cell, cell_rec, gp_min, gp_max, out_path):
+def build_figure(cell, cell_rec, gp_min, gp_max, out_path, sample_lambda=False):
     span = gp_max - gp_min
     nts = sorted(cell_rec.keys())
     nc = len(nts)
@@ -130,8 +130,9 @@ def build_figure(cell, cell_rec, gp_min, gp_max, out_path):
     axes[0][0].set_ylabel("optimized\n(gray start)", fontsize=9)
     axes[1][0].set_ylabel("change\n(opt - gray)", fontsize=9)
     axes[2][0].set_ylabel("RF sharpness", fontsize=9)
+    sl_txt = "sample_lambda=True (unbiased)" if sample_lambda else "sample_lambda=False"
     fig.suptitle(f"cell {cell}: gray-start most-useful-image vs model quality "
-                 f"(M=n_train, DA utility; RF on flat gray)", fontsize=10.5, y=1.0)
+                 f"(M=n_train, DA utility, {sl_txt}; RF on flat gray)", fontsize=10.5, y=1.0)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(f"{out_path}.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -141,28 +142,34 @@ def build_figure(cell, cell_rec, gp_min, gp_max, out_path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cells", type=int, nargs="*", default=[3, 13, 36])
+    ap.add_argument("--sample-lambda", action="store_true",
+                    help="unbiased DA: sample lambda from the posterior at each conditioning "
+                         "image instead of using its mean (adds MC noise; separate cache/figures)")
     args = ap.parse_args()
+    sl = args.sample_lambda
+    suffix = "_sl" if sl else ""
     os.makedirs(CACHE, exist_ok=True); os.makedirs(OUTP, exist_ok=True)
-    cache_path = os.path.join(CACHE, "gray_panels_results.pkl")
+    cache_path = os.path.join(CACHE, f"gray_panels{suffix}_results.pkl")
 
     X_all, gp_min, gp_max = gp_models.load_pool()
-    print(f"pool {tuple(X_all.shape)}  GP_MIN={gp_min:.4f} GP_MAX={gp_max:.4f}")
+    print(f"pool {tuple(X_all.shape)}  GP_MIN={gp_min:.4f} GP_MAX={gp_max:.4f}  sample_lambda={sl}")
 
     if os.path.exists(cache_path):
         results = pickle.load(open(cache_path, "rb"))
     else:
         results = dict(meta=dict(gp_min=gp_min, gp_max=gp_max, M="n_train",
-                                 n_trains=N_TRAINS, n_steps=N_STEPS, start="gray"), cells={})
+                                 n_trains=N_TRAINS, n_steps=N_STEPS, start="gray",
+                                 sample_lambda=sl), cells={})
 
     t0 = time.time()
     for cell in args.cells:
-        print(f"\n===== cell {cell} (gray start) =====")
+        print(f"\n===== cell {cell} (gray start, sample_lambda={sl}) =====")
         cell_rec = results["cells"].get(cell, {})
         for nt in N_TRAINS:
             if nt in cell_rec:
                 print(f"  nt={nt}: cached, skipping"); continue
             tt = time.time()
-            rec = run_one(cell, nt, X_all, gp_min, gp_max)
+            rec = run_one(cell, nt, X_all, gp_min, gp_max, sample_lambda=sl)
             cell_rec[nt] = rec
             print(f"  nt={nt:3d}: test_r={rec['test_r']:+.2f} | Uopt={rec['U_opt']:+.4f} "
                   f"sig2={rec['sig2_final']:.3f} conc={rec['conc']:.3f} "
@@ -170,7 +177,8 @@ def main():
                   f"({time.time()-tt:.0f}s)")
             results["cells"][cell] = cell_rec
             pickle.dump(results, open(cache_path, "wb"))
-        build_figure(cell, cell_rec, gp_min, gp_max, os.path.join(OUTP, f"cell{cell}_gray"))
+        build_figure(cell, cell_rec, gp_min, gp_max,
+                     os.path.join(OUTP, f"cell{cell}_gray{suffix}"), sample_lambda=sl)
     print(f"\nDONE in {(time.time()-t0)/60:.1f} min")
 
 

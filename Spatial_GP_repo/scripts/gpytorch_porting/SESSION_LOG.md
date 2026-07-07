@@ -283,3 +283,11 @@ epistemic probes the cell barely fires to; cell 13's is a genuine high-response 
 FFT param changes the whole image (global ripple), so "only the RF changes" is too strong. New
 additive scripts: `diff_panels.py`, `rf_localization.py`, `gray_panels.py`, `firing_diagnostic.py`.
 No engine edits (pinned 75b207a). Next: rerun with `sample_lambda=True` (unbiased DA).
+
+**Update (same day):** `sample_lambda=True` DONE — crystallization is robust (True ≈ False in the
+mean; biased mean-λ is a fine deterministic proxy). Single unbiased realization is noisier on the
+low-gain cells 3 & 36. n_mc=48 cell-dependent: cell 36 needs ≥96 (spread 0.14→0.02), cell 3 already
+stable, cell 13's residual is structural (not fixed by n_mc). New additive scripts:
+`compare_sl_panels.py`, `noise_probe.py`, and a `--sample-lambda` flag on `gray_panels.py`. Figures:
+`cell{N}_gray_sl`, `cell{N}_sl_compare`, `sl_divergence`, `cell{N}_sl_noise`, `sl_noise_summary`.
+See `FINDINGS_gray_start.md` "sample_lambda robustness".
