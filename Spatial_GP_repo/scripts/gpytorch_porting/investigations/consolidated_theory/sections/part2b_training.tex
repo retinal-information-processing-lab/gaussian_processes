@@ -1,0 +1,531 @@
+% ============================================================================
+%  Part II (training) -- Section 6: The training algorithm
+%  \input-ready fragment. Uses only macros from preamble.tex.
+%  Cross-part refs (defined elsewhere): eq:elbo, eq:predmoments, eq:fbar
+%  (Part II inference); eq:dCtheta, eq:gradxK (Part I kernel).
+% ============================================================================
+
+\section{The training algorithm: EM-style coordinate ascent}\label{sec:training}
+% long code identifiers (file:function names in \texttt) cannot be hyphenated;
+% allow a little emergency stretch so they don't overrun the margin. Restored at
+% the end of this fragment so the setting does not leak into other sections.
+\emergencystretch=3em
+
+The model assembled in Parts~I--II has three groups of free parameters, and all
+three sit on the \emph{single} evidence lower bound $\ELBO$ of
+\eqref{eq:elbo}:
+
+\begin{enumerate}[label=(\alph*),leftmargin=2.2em,itemsep=1pt]
+  \item the \textbf{variational moments} $\mb,\Vb$ of the eigenspace posterior
+        $q(\latt)=\Gauss(\vm,\vV)$ (Part~II, \S\ref{sec:training} inputs);
+  \item the \textbf{firing-rate parameters} of the Poisson likelihood, the gain
+        $\gain$ and the offset $\latz$, defining
+        $\rate=\exp(\gain\lat+\latz)$;
+  \item the \textbf{kernel hyperparameters}
+        $\{\sigz,\Amp,\bwid,\smoo,\varepsilon_{0x},\varepsilon_{0y}\}$ of the
+        structured arc-cosine prior (Part~I).
+\end{enumerate}
+
+Training maximises the one bound $\ELBO$ by \textbf{block coordinate ascent}:
+each step improves one block while holding the other two fixed. The three steps
+are the E-step (variational moments), the F-step (firing-rate parameters), and
+the M-step (kernel hyperparameters), run once per outer iteration in a fixed
+order (\S\ref{subsec:training-overview}). Ground truth throughout is the current
+eigenspace implementation (\texttt{eigenspace\_*.py}); the deprecated
+\texttt{vargp\_old} engine is out of scope. We note only that the current E-step
+\emph{numerically reproduces} the legacy $\vm$-update (\S\ref{subsec:estep}), so
+no legacy code is needed to state the algorithm.
+
+% ---------------------------------------------------------------------------
+\subsection{Overview: three coordinate blocks, one ELBO, one loop}
+\label{subsec:training-overview}
+
+Each step optimises one block and freezes the rest:
+
+\begin{center}\small
+\begin{tabular}{@{}l l l >{\raggedright\arraybackslash}p{2.35in}@{}}
+\toprule
+Step & Free block & Held fixed & Method / file \\
+\midrule
+E & $\mb,\Vb$ & kernel; $\gain,\latz$; $\eb$ &
+    closed-form Newton, no autograd (\texttt{eigenspace\_estep.py}) \\
+F & $\gain$ ($\latz$ closed-form) & $\mb,\Vb$ (via $\pmean,\pvar$); kernel &
+    LBFGS on $\log\gain$ or damped Newton (\texttt{eigenspace\_fstep.py}) \\
+M & $\{\sigz,\Amp,\bwid,\smoo,\rfc\}$ & $\mb,\Vb$; $\gain,\latz$; $\eb$ &
+    LBFGS $+$ analytical grads (\texttt{eigenspace\_mstep.py}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent(In the M-row, the RF centre $\rfc=(\varepsilon_{0x},\varepsilon_{0y})$
+counts as the two coordinate hyperparameters, so the free block has six scalars.)
+
+\paragraph{Loop order (one outer iteration).}
+The driver \texttt{eigenspace\_training.py:train\_eigenspace} runs, per iteration:
+
+\begin{enumerate}[leftmargin=2.4em,itemsep=1pt]
+  \item \textbf{Re-sync the eigenspace} --- \texttt{recompute\_eigenspace()}
+        rebuilds the eigenbasis $\eb$ from the hyperparameters the \emph{previous}
+        M-step moved, then refreshes $\pmean,\pvar,\fbar$. (Guarded: only when
+        $n_{\mathrm{mstep}}>0$ and iteration $>1$; this is where the deferred
+        $\eb$ update from the last M-step lands.)
+  \item \textbf{E-step} --- $n_{\mathrm{estep}}$ closed-form Newton steps on
+        $\mb,\Vb$ (\S\ref{subsec:estep}).
+  \item \textbf{F-step} --- fit $\gain$ (and closed-form $\latz$), unless the
+        F-step is interleaved into the E-loop (\S\ref{subsec:fstep}).
+  \item \textbf{Metrics $+$ ELBO $+$ early stopping} --- computed
+        \emph{deliberately before} the M-step.
+  \item \textbf{M-step} --- update the kernel hyperparameters
+        (\S\ref{subsec:mstep}); the $\eb$ update is \emph{deferred} to step~1 of
+        the next iteration.
+\end{enumerate}
+
+\begin{remark}[Why metrics precede the M-step]
+The M-step changes the kernel parameters \emph{without} recomputing the
+eigenbasis $\eb$ (that is deferred, for cost and stability). Every logged
+quantity --- the ELBO, the early-stopping metric --- must therefore be read while
+the model state is still internally consistent, i.e.\ \emph{before} the M-step
+perturbs the kernel. Early stopping is on the ELBO (\texttt{es\_metric='elbo'},
+the only supported metric), with patience and best-restore.
+\end{remark}
+
+% ---------------------------------------------------------------------------
+\subsection{The E-step: a Newton update of the variational posterior}
+\label{subsec:estep}
+
+At \emph{fixed} kernel and fixed $\gain,\latz$, the E-step maximises the ELBO
+\eqref{eq:elbo} over the variational moments. Writing the inducing-space
+posterior $q(\latt)=\Gauss(\vm,\vV)$ against the prior $p(\latt)=\Gauss(0,\Ktil)$,
+
+\begin{equation}
+\ELBO(\vm,\vV)
+  = \underbrace{\sum_i \E_{q(\lat_i)}\!\big[\log\Poi(\spk_i\mid\lat_i)\big]}_{\ELBO_{\mathrm{data}}}
+    \;-\; \KLdiv\!\big(q(\latt)\,\|\,p(\latt)\big),
+\label{eq:estep-obj}
+\end{equation}
+with the projected posterior moments $\pmean_i,\pvar_i$ of \eqref{eq:predmoments}
+and the KL contributing, through the E-step variables,
+$-\tfrac12\vm\transpose\Ktil^{-1}\vm$ (couples to $\vm$) and
+$\tfrac12\log|\vV|-\tfrac12\Tr(\Ktil^{-1}\vV)$ (couples to $\vV$).
+
+\paragraph{Poisson expected log-likelihood and its moment derivatives.}
+The data term is closed-form via the Gaussian moment-generating function
+(\texttt{likelihoods.py:expected\_log\_prob}), with the expected firing rate
+$\fbar_i$ of \eqref{eq:fbar}:
+\begin{equation}
+\ELBO_{\mathrm{data}}
+  = \sum_i\big[\,\spk_i(\gain\pmean_i+\latz)-\fbar_i\,\big],
+\qquad
+\fbar_i=\exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big),
+\end{equation}
+(the $-\log\spk_i!$ constant is dropped). The three point-derivatives that
+assemble the Newton step follow by the chain rule on $\fbar_i$:
+\begin{equation}
+\frac{\partial\fbar_i}{\partial\pmean_i}=\gain\,\fbar_i,\qquad
+\frac{\partial\fbar_i}{\partial\pvar_i}=\tfrac12\gain^2\,\fbar_i,\qquad
+\frac{\partial}{\partial\pmean_i}\,\E_{q}[\log\Poi]=\gain(\spk_i-\fbar_i).
+\end{equation}
+
+\paragraph{The two Newton helpers.}
+Accumulating those derivatives through the projection $\pmean_i=\kvec_i\transpose\Ktil^{-1}\vm$
+defines the gradient helper $\gE$ and the (Poisson-Fisher) curvature $\GE$:
+\begin{equation}
+\gE \;=\; \gain\sum_i \kvec_i(\spk_i-\fbar_i)\ \in\Reals^{\Mind},
+\qquad
+\GE \;=\; \gain^2\sum_i \fbar_i\,\kvec_i\kvec_i\transpose\ \in\Reals^{\Mind\times\Mind}.
+\label{eq:estep-gG}
+\end{equation}
+$\gE$ is the kernel-projected mismatch between observed and expected counts;
+$\GE$ is the Poisson Fisher information and is PSD because every $\fbar_i>0$.
+(Note $\gE$ carries the subscript $\mathrm{E}$ specifically to keep it distinct
+from the log-firing rate $\lgr=\gain\lat+\latz$ of the utility part.)
+
+\paragraph{The $\vV$-update (closed form).}
+With $\pmean_i$ independent of $\vV$, setting $\nabla_{\vV}\ELBO=0$ gives
+$\vV^{-1}=\Ktil^{-1}(\Ktil+\GE)\Ktil^{-1}$, hence
+\begin{equation}
+\boxed{\;\vV \;=\; \Ktil\,(\Ktil+\GE)^{-1}\,\Ktil\;}
+\label{eq:estep-V}
+\end{equation}
+--- a \emph{symmetric} sandwich of two symmetric-PD factors, so $\vV$ is a valid
+covariance. This symmetry is the substance of the ``corrected'' E-step: the
+superseded form $\vV=(\Ktil+\GE)^{-1}\Ktil$ is a product of two non-commuting
+symmetric matrices and is therefore \emph{not} symmetric (Cholesky/PSD failures).
+
+\paragraph{The $\vm$-update (code form).}
+The exact Newton step $\vm\leftarrow\vm-H_{\vm}^{-1}\nabla_{\vm}\ELBO$, with
+$\nabla_{\vm}\ELBO=\Ktil^{-1}(\gE-\vm)$ and Hessian
+$H_{\vm}=-\Ktil^{-1}(\Ktil+\GE)\Ktil^{-1}$, gives the corrected form
+$\vm\leftarrow\vm+\Ktil(\Ktil+\GE)^{-1}(\gE-\vm)$. The \textbf{shipped code} does
+\emph{not} use this; it uses the algebraically older map
+\begin{equation}
+\boxed{\;\vm \;\leftarrow\; \Ktil\,(\Ktil+\GE)^{-1}\big(\GE\,\Ktil^{-1}\vm+\gE\big)\;}
+\qquad(\texttt{eigenspace\_estep.py})
+\label{eq:estep-m}
+\end{equation}
+(equal to $\vV_{\mathrm{new}}(\GE\Ktil^{-1}\vm+\gE)$ with $\vV_{\mathrm{new}}$ from
+\eqref{eq:estep-V}). The two maps differ only in the first term
+($\Ktil(\Ktil+\GE)^{-1}\GE\Ktil^{-1}\vm$ vs.\ $\GE(\Ktil+\GE)^{-1}\vm$); they
+coincide iff $\Ktil$ and $\GE$ commute.
+
+\caveat{The code m-update \eqref{eq:estep-m} is presented as \emph{the}
+algorithm (code is ground truth). It differs \emph{per iteration} from the
+corrected Newton step whenever $\Ktil$ and $\GE$ do not commute, but both maps
+share the same fixed point $\vm^\star=\gE$, so the \emph{converged} posterior is
+identical --- the discrepancy is a transient path difference, not a different
+solution. The code carries this as an open \texttt{TODO}; it is left as-is
+(works empirically). The $\vV$-update \eqref{eq:estep-V} is unambiguously
+correct, and it is $\vV$ that the active-learning variance estimates depend on.}
+
+\begin{remark}[Fixed-point equivalence]
+Let $T_{\mathrm N}(\vm)=\vm+\Ktil(\Ktil+\GE)^{-1}(\gE-\vm)$ (corrected) and
+$T_{\mathrm C}(\vm)=\Ktil(\Ktil+\GE)^{-1}(\GE\Ktil^{-1}\vm+\gE)$ (code). At
+$\vm=\gE$:
+$T_{\mathrm N}(\gE)=\gE$, and
+$T_{\mathrm C}(\gE)=\Ktil(\Ktil+\GE)^{-1}(\GE\Ktil^{-1}+I)\gE
+   =\Ktil(\Ktil+\GE)^{-1}(\GE+\Ktil)\Ktil^{-1}\gE=\Ktil\Ktil^{-1}\gE=\gE$.
+Both are valid fixed-point iterations onto the same stationary condition
+$\vm^\star=\gE=\gain\sum_i\kvec_i(\spk_i-\fbar_i)$.
+\end{remark}
+
+\subsubsection{Why the update is cheap: the eigenspace realisation}
+\label{subsubsec:estep-eigen}
+
+The E-step never touches the $\Mind$-dimensional inducing space directly. It works
+in the eigenbasis $\eb$ of $\Ktil$, keeping only the $\nb$ leading directions
+(eigenvalues above $\max(\lambda_{\max}\!\cdot\!\mathrm{tol},\,\mathrm{tol})$,
+$\mathrm{tol}=10^{-4}$; in practice $\nb\approx10\text{--}11$ while $\Mind$ may be
+large). With $\Ktil=\eb\evals\eb\transpose$ the projected gram
+$\Ktilb=\eb\transpose\Ktil\eb=\diago(\evals)$ is \emph{diagonal}, so $\Ktil^{-1}$
+is trivial. Using the eigenspace projection $\amat=K\Ktil^{-1}$
+(\texttt{KKtilde\_inv\_b}, shape $\Ntr\times\nb$), the code forms the
+\emph{transformed} helpers (\texttt{eigenspace\_estep.py}):
+\begin{align}
+g_{\mathrm E,b} &= \gain\,\amat\transpose(\spk-\fbar)\;=\;\Ktil^{-1}\gE
+   &&(\text{eigenbasis coords}),\\
+G_{\mathrm E,b} &= \gain^2\,\amat\transpose\big(\fbar\odot\amat\big)\;=\;\Ktil^{-1}\GE\Ktil^{-1},
+\end{align}
+and applies \eqref{eq:estep-V}--\eqref{eq:estep-m} entirely in the tiny
+$\nb$-space:
+\begin{equation}
+\Vb \leftarrow \big(I+\Ktilb\,G_{\mathrm E,b}\big)^{-1}\Ktilb,\qquad
+\mb \leftarrow \Vb\big(G_{\mathrm E,b}\,\mb+g_{\mathrm E,b}\big),\qquad
+\Vb \leftarrow \tfrac12(\Vb+\Vb\transpose).
+\end{equation}
+The first line equals \eqref{eq:estep-V} exactly, via the identity
+$(I+PQ^{-1})^{-1}=Q(Q+P)^{-1}$ with $P=\GE,Q=\Ktil$:
+$(I+\Ktilb G_{\mathrm E,b})^{-1}\Ktilb=(I+\GE\Ktil^{-1})^{-1}\Ktil
+=\Ktil(\Ktil+\GE)^{-1}\Ktil$. Prior initialisation is $\mb=0$,
+$\Vb=\Ktilb=\evals$. The dimensional collapse $\Mind\!\to\!\nb\approx10$ ---
+not any special-casing --- is what makes the Newton step cheap.
+
+\subsubsection{Iteration, damping, and the divergence guard}
+
+\texttt{estep\_eigenspace} performs a \emph{single, undamped, closed-form} Newton
+step. Iteration and stabilisation live in the driver:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \textbf{Coupling variable $\fbar$.} After each step the posterior is
+        recomputed and $\fbar=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$
+        refreshed, then fed into the next step's $g_{\mathrm E,b},G_{\mathrm E,b}$.
+        $\gain,\latz$ are detached (fixed) during the E-step.
+  \item \textbf{Revert-on-divergence guard (the effective damping).} Each iteration
+        snapshots $(\mb,\Vb)$; if the post-step $\fbar$ mean or max exceeds a
+        threshold, or $\fbar$ has NaNs, it \emph{reverts} $(\mb,\Vb)$ (and
+        $\gain,\latz$ if interleaved), recomputes $\fbar$, and breaks the loop.
+  \item \textbf{Optional interleaved F-step.} With \texttt{interleave\_fstep}, a
+        \emph{damped} Newton update of $(\gain,\latz)$ (\S\ref{subsec:fstep},
+        $\alpha=0.25$) runs after every E-iteration, so the firing-rate parameters
+        track $(\mb,\Vb)$ as they move.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\subsection{The F-step: fitting the firing-rate function}
+\label{subsec:fstep}
+
+Here ``F'' denotes the \textbf{firing-rate function} $\rate$: the F-step fits the
+Poisson-rate parameters $\gain,\latz$ that define
+$\fbar=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$, holding the variational
+moments (through frozen $\pmean,\pvar$) and the kernel fixed. In this codebase
+$\gain$ is the only searched variable; $\latz$ is solved in closed form for the
+current $\gain$.
+
+\caveat{The F-step is \emph{undocumented} in the LaTeX/handoff sources
+(they cover only the kernel/M-step gradients). Its definition rests entirely on
+the code (\texttt{eigenspace\_fstep.py}, \texttt{utils.py:lambda0\_given\_A}),
+which is ground truth.}
+
+\paragraph{Closed-form $\latz$ given $\gain$.}
+From $\partial\ELBO/\partial\latz=0$ on
+$\sum_i[\spk_i\latz-\exp(\latz)\exp(\gain\pmean_i+\tfrac12\gain^2\pvar_i)]$:
+\begin{equation}
+\boxed{\;
+\latz \;=\; \log\!\Big(\textstyle\sum_i\spk_i\Big)
+       \;-\; \log\!\Big(\textstyle\sum_i\exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i\big)\Big)
+\;}
+\label{eq:fstep}
+\end{equation}
+(requires $\sum_i\spk_i>0$; a zero-spike cell is a data problem). It is
+re-evaluated whenever $\gain$ changes.
+
+\paragraph{LBFGS on $\gain$ with an analytic gradient.}
+The standard F-step (\texttt{fstep\_eigenspace}) runs LBFGS over
+$\mathrm{raw}_A=\log\gain$, re-solving $\latz$ each closure and using the
+closed-form derivative (no autograd), with $\pmean,\pvar$ the frozen inputs:
+\begin{equation}
+\frac{\partial\ELBO}{\partial\gain}
+  = \sum_i\big[\spk_i\pmean_i-(\pmean_i+\gain\pvar_i)\,\fbar_i\big],
+\qquad
+\frac{\partial\ELBO}{\partial(\log\gain)}=\gain\frac{\partial\ELBO}{\partial\gain},
+\qquad
+\mathrm{raw}_A.\mathrm{grad}=-\gain\frac{\partial\ELBO}{\partial\gain}.
+\end{equation}
+(The sign is because LBFGS minimises $-\ELBO$.) Guards reject a trial step whose
+$\latz$ over/underflows or whose $\fbar$ blows past the mean/max thresholds, and
+revert $(\mathrm{raw}_A,\latz)$ if the final $\latz$ overflows.
+
+\paragraph{Interleaved joint damped Newton on $(\gain,\latz)$.}
+When \texttt{interleave\_fstep=True}, a joint damped Newton step (matching the
+reference paper's \texttt{updateA}) is called \emph{inside} the E-loop. With
+$\psi=[\gain,\latz]$ and per image
+$\rate_i=\exp(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz)$,
+$d_i=\pmean_i+\gain\pvar_i$:
+\begin{equation}
+R=\begin{bmatrix}\sum_i(\spk_i\pmean_i-d_i\rate_i)\\[2pt]\sum_i(\spk_i-\rate_i)\end{bmatrix},
+\quad
+H=-\begin{bmatrix}\sum_i(\pvar_i\rate_i+d_i^2\rate_i)&\sum_i d_i\rate_i\\[2pt]
+                  \sum_i d_i\rate_i&\sum_i\rate_i\end{bmatrix},
+\quad
+\psi\leftarrow\psi-\alpha\,H^{-1}R,\ \ \alpha=0.25.
+\end{equation}
+$H$ is negative-definite (the log-likelihood is concave in $\psi$); the damping
+$\alpha=0.25$ and the same $\fbar$-threshold rejections stabilise the step.
+
+% ---------------------------------------------------------------------------
+\subsection{The M-step: updating the kernel hyperparameters}
+\label{subsec:mstep}
+
+The M-step maximises the ELBO \eqref{eq:elbo} over the kernel/prior
+hyperparameters while $\mb,\Vb$, the firing-rate parameters $\gain,\latz$, and
+\emph{the eigenbasis $\eb$} are held fixed. The genuine free hyperparameters
+(all owned by the arc-cosine kernel) are the six
+\begin{equation}
+\theta\in\{\ \sigz,\ \Amp,\ \bwid,\ \smoo,\ \varepsilon_{0x},\ \varepsilon_{0y}\ \},
+\end{equation}
+carried in raw form as
+$\{\mathrm{raw\_sigma\_0},\ \mathrm{raw\_Amp},\ \mathrm{raw\_m2log2beta}=-2\log(2\bwid),\
+\mathrm{raw\_mlog2rho2}=-\log(2\smoo^2),\ \varepsilon_{0x},\varepsilon_{0y}\}$.
+$\eb$ is deliberately \emph{not} recomputed inside the M-step (an approximation
+for cost/stability); it is re-synced at step~1 of the next outer iteration.
+
+\begin{remark}[The amplitude $\Amp$ is optimized by default]
+The amplitude prefactor $\Amp$ of the structured prior
+($\Cmat=\Amp\,\loc\,\Csm\,\loc\transpose$, \eqref{eq:Cprior}) is a genuine sixth
+kernel hyperparameter, not a fixed constant: the analytical M-step computes and
+applies its gradient
+$\mathrm{raw\_Amp}.\mathrm{grad}=\partial_{\Amp}\mathcal{J}\cdot\mathrm{sigmoid}(\mathrm{raw\_Amp})$
+(the softplus Jacobian; \texttt{eigenspace\_mstep.py}), so $\Amp$ is optimized
+alongside the other kernel hyperparameters. The optional flag \texttt{fix\_Amp} (default
+\texttt{False}) instead pins $\Amp=1$ by calling
+\texttt{raw\_Amp.requires\_grad\_(False)} (\texttt{eigenspace\_training.py}),
+reproducing the reference paper's Amp-free kernel; left at its default, $\Amp$
+trains with the rest.
+\end{remark}
+
+\caveat{Constraint transforms. $\sigz=\exp(\mathrm{raw})$ and
+$\Amp=\mathrm{softplus}(\mathrm{raw})$ (\texttt{kernels.py}). The
+\texttt{MSTEP\_ANALYTICAL\_HANDOFF} claim of ``softplus for sigma\_0'' is
+\emph{wrong}: $\sigz$ uses $\exp$, only $\Amp$ uses softplus.}
+
+\subsubsection{The analytical gradient chain}
+
+The shipped M-step (\texttt{mstep\_eigenspace\_analytical}, run under
+\texttt{@torch.no\_grad()}) differentiates the eigenspace ELBO analytically and
+writes \texttt{param.grad} directly. Writing the minimised loss
+$\mathcal{J}\coloneqq-\ELBO$, the per-hyperparameter chain is
+\begin{equation}
+\begin{aligned}
+\partial_\theta\Cmat
+  &\;\rightarrow\;
+  \{\partial_\theta\Kf,\ \partial_\theta\Ktil,\ \partial_\theta\Kvec\}
+  \;\rightarrow\;
+  \{\partial_\theta K_b,\ \partial_\theta\Ktilb\}
+  \;\rightarrow\;
+  \{\partial_\theta\pmean,\ \partial_\theta\pvar\}\\
+  &\;\rightarrow\;
+  \{\partial_\theta\!\log\text{-lik},\ \partial_\theta\KLdiv\}
+  \;\rightarrow\;
+  \partial_\theta\mathcal{J}
+  \;\rightarrow\;
+  \texttt{param.grad}.
+\end{aligned}
+\label{eq:mstep-chain}
+\end{equation}
+
+\paragraph{Steps 1--3: kernel gradients and their projection.}
+Step~1 computes the masked spatial covariance $\Cmat$ and its six gradients
+$\partial_\theta\Cmat$ (Part~I, \eqref{eq:dCtheta}); $\sigz$ enters the
+arc-cosine kernel $\Kf$ directly, not through $\Cmat$. Step~2 evaluates the
+kernel three times to get $\Ktil=\Kf(\Ipt,\Ipt)$, $K=\Kf(X,\Ipt)$,
+$\Kvec=\diago\Kf(X,X)$ and their $\partial_\theta\Ktil,\partial_\theta K,
+\partial_\theta\Kvec$ from $\partial_\theta\Cmat$ by the arc-cosine forward chain
+(Part~I). Step~3 projects onto the fixed basis $\eb$:
+\begin{equation}
+\Ktilb=\eb\transpose\Ktil\,\eb,\quad K_b=K\eb,\qquad
+\partial_\theta\Ktilb=\eb\transpose(\partial_\theta\Ktil)\eb,\quad
+\partial_\theta K_b=(\partial_\theta K)\eb,\qquad
+\Ktilb^{-1}=\operatorname{solve}(\Ktilb,I),
+\end{equation}
+where $\Ktilb^{-1}$ is a \emph{full} linear solve (matching the reference
+engine), not an eigenvalue reciprocal.
+
+\begin{remark}[Two different kernel gradients]
+The M-step needs the \emph{hyperparameter} gradient $\partial_\theta\Kf$ (through
+$\partial_\theta\Cmat$, \eqref{eq:dCtheta}). This is distinct from the
+\emph{input} gradient $\nabla_x\Kf$ of \eqref{eq:gradxK}, which feeds the utility
+and the diffusion guidance (Parts~III--IV), not training.
+\end{remark}
+
+\paragraph{Step 4: posterior-moment gradients.}
+With the projection $\amat=K_b\Ktilb^{-1}$, the moments are
+$\pmean=\amat\,\mb$ (cf.\ \eqref{eq:predmoments}) and
+$\pvar=\Kvec+\diago\!\big(\amat(\Vb-\Ktilb)\amat\transpose\big)$ (clamped at a
+floor). Their hyperparameter derivatives
+(\texttt{compute\_lambda\_moments\_and\_gradients}) are
+\begin{align}
+\partial_\theta\amat &= \big(\partial_\theta K_b-\amat\,\partial_\theta\Ktilb\big)\Ktilb^{-1},\\
+\partial_\theta\pmean &= \partial_\theta\amat\,\cdot\mb,\\
+\partial_\theta\pvar &= \partial_\theta\Kvec
+   + 2\,\diago\!\big(\partial_\theta\amat\,\Vb\,\amat\transpose\big)
+   - \diago\!\big(\partial_\theta K_b\,\amat\transpose\big)
+   - \diago\!\big(K_b\,\partial_\theta\amat\transpose\big).
+\end{align}
+
+\paragraph{Steps 5--6: loss gradients and the constraint transform.}
+Splitting $\mathcal{J}=-\log\text{-lik}+\KLdiv$
+(\texttt{compute\_loss\_gradients}), and letting $\cdot$ denote the sum over
+images:
+\begin{align}
+\partial_\theta\!\log\text{-lik}
+  &= \gain\,(\spk\cdot\partial_\theta\pmean)
+    - \gain\,(\fbar\cdot\partial_\theta\pmean)
+    - \tfrac12\gain^2(\fbar\cdot\partial_\theta\pvar),\\
+\partial_\theta\KLdiv
+  &= \tfrac12\Tr(P_\theta)-\tfrac12\Tr(c\,P_\theta)-\tfrac12\,w\transpose(P_\theta\,\mb),
+    \qquad
+    \begin{aligned}[t]
+      c&=\Vb\,\Ktilb^{-1},\quad w=\Ktilb^{-1}\mb,\\
+      P_\theta&=\partial_\theta\Ktilb\,\Ktilb^{-1},
+    \end{aligned}\\
+\partial_\theta\mathcal{J}
+  &= -\,\partial_\theta\!\log\text{-lik}+\partial_\theta\KLdiv.
+\end{align}
+Step~6 applies the constraint Jacobian $d(\text{value})/d(\text{raw})$ to write
+each raw parameter's gradient (\texttt{eigenspace\_mstep.py}):
+\begin{equation}
+\texttt{raw\_sigma\_0.grad} = \partial_{\sigz}\mathcal{J}\cdot\sigz,
+\qquad
+\texttt{raw\_Amp.grad} = \partial_{\Amp}\mathcal{J}\cdot\mathrm{sigmoid}(\text{raw\_Amp}),
+\end{equation}
+with $\sigz=\exp(\mathrm{raw})\Rightarrow d\sigz/d\mathrm{raw}=\sigz$ and
+$\Amp=\mathrm{softplus}(\mathrm{raw})\Rightarrow d\Amp/d\mathrm{raw}=\mathrm{sigmoid}(\mathrm{raw})$.
+The remaining four raw parameters ---
+$\varepsilon_{0x},\varepsilon_{0y}$ and \texttt{raw\_m2log2beta},
+\texttt{raw\_mlog2rho2} --- take $\texttt{grad}=\partial_{(\cdot)}\mathcal{J}$
+\emph{directly}, with no transform factor. Both $\sigz$ (through $\exp$) and $\Amp$
+(through $\mathrm{softplus}$) carry a non-identity constraint Jacobian, because their
+$\partial\Cmat/\partial\Kf$ were taken w.r.t.\ the
+\emph{values}. The RF centre $\rfc$ \emph{is} its own raw value, and the two
+$\texttt{raw\_m}\ast$ gradients are already derivatives w.r.t.\ the raw
+log-parameter (the $\partial_\theta\Cmat$ formulas of \eqref{eq:dCtheta}
+differentiate the raw directly).
+
+\begin{remark}[Local symbols renamed from the source notes]
+The source code reuses $B$ for both the eigenbasis $\eb$ and the KL matrix
+$\partial_\theta\Ktilb\,\Ktilb^{-1}$, and $b$ for both the eigenbasis subscript
+and the vector $\Ktilb^{-1}\mb$. To keep $\eb$ unambiguous, this document renames
+the KL matrix to $P_\theta$ and the KL vector to $w$ (their values are unchanged).
+\end{remark}
+
+\subsubsection{Two gradient systems --- and why the VJP is not the M-step}
+
+The codebase carries \emph{two} analytical-gradient systems that share the
+$\partial_\theta\Cmat/\partial_\theta\Kf$ formulas but differ in API and caller:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \textbf{System 1 --- kernel-level}: the Jacobian
+        (\texttt{analytical\_\allowbreak gradients.py}) and VJP
+        (\texttt{analytical\_\allowbreak gradients\_\allowbreak vjp.py})
+        \texttt{autograd.Function} wrappers, selected by
+        \texttt{gradient\_mode}. Their backward takes $\mathrm{grad\_output}=
+        \partial\mathcal{J}/\partial\Kf$ and returns per-hyperparameter grads.
+        Used when the kernel is one node in a general autograd graph.
+  \item \textbf{System 2 --- M-step level} (\texttt{eigenspace\_gradients.py} $+$
+        \texttt{mstep\_eigenspace\_analytical}). \emph{Not} an autograd.Function;
+        runs under \texttt{no\_grad}, computes the entire chain \eqref{eq:mstep-chain}
+        analytically, writes \texttt{param.grad}. \textbf{This is the system that
+        actually differentiates the ELBO w.r.t.\ hyperparameters during training.}
+\end{itemize}
+
+\paragraph{The VJP formulation (System 1).}
+The VJP computes the \emph{same} $\partial\mathcal{J}/\partial\theta$ as the
+Jacobian version but never materialises the per-hyperparameter
+$\partial_\theta\Kf$ matrices. It forms $\partial\mathcal{J}/\partial\Cmat$
+\emph{once} (a single $n_x\times n_x$ matrix, from outer products of the masked
+stimuli) and contracts it against the cheap $\partial_\theta\Cmat$ structure:
+\begin{equation}
+\frac{\partial\mathcal{J}}{\partial\Amp}=\frac{(\partial_{\Cmat}\mathcal{J}\odot\Cmat)_{\Sigma}}{\Amp},\quad
+\frac{\partial\mathcal{J}}{\partial\loc}=2\big((\partial_{\Cmat}\mathcal{J}\odot\Amp\,\Csm)\loc\big),\quad
+\frac{\partial\mathcal{J}}{\partial\sigz}=2\sigz\Big(\textstyle\sum\!\tfrac{\partial\mathcal{J}}{\partial V_1}+\sum\!\tfrac{\partial\mathcal{J}}{\partial V_2}+\sum\!\tfrac{\partial\mathcal{J}}{\partial x_1\Cmat x_2}\Big),
+\end{equation}
+and chains $\partial\mathcal{J}/\partial\loc$ to $\bwid,\varepsilon_{0x},
+\varepsilon_{0y}$ and $\partial\mathcal{J}/\partial\Csm$ to $\smoo$. This is one
+backward sweep, $O(n_x^2 n)$, versus materialising six $\partial_\theta\Kf$
+matrices ($\sim\!15$ large matmuls) --- roughly $10\text{--}15\times$ cheaper.
+
+\caveat{The VJP is \emph{not} used for the LBFGS M-step. The M-step loss is not a
+plain function of $\Kf$: it flows
+$\Kf\rightarrow(\amat,\pmean,\pvar)\rightarrow\log\text{-lik}/\KLdiv$ with the
+eigenspace projection and the Poisson likelihood in between, and LBFGS's
+strong-Wolfe line search re-evaluates the loss many times per step (a
+\emph{different} $\partial\mathcal{J}/\partial\Kf$ each time). System~2 therefore
+recomputes $\Cmat/\partial\Cmat/\Kf/\partial\Kf$ \emph{inside} the closure on
+every evaluation and runs the full moment$\to\log$-lik/KL chain
+\eqref{eq:mstep-chain}; it never forms a single $\partial\mathcal{J}/\partial\Kf$
+contraction. The ``compute $\partial\Kf$ once / single
+$(\partial_{\Kf}\mathcal{J}\cdot\partial\Kf).\mathrm{sum}()$ reduction'' described
+in the handoff docs is System~1's kernel-level backward, which those docs
+conflated with the M-step.}
+
+\subsubsection{Numerical guardrails (M-step closure)}
+Inline in \texttt{mstep\_eigenspace\_analytical}: (1) out-of-bounds trial
+$\rightarrow+\infty$ reject; (2) $\cos\kang$ clamped to $[-1+\epsilon,1-\epsilon]$
+before $\arccos$, $\sin\kang=\sqrt{\max(1-\cos^2\kang,\epsilon)}$, and division by
+the magnitude $\Kmag$ jittered by $\epsilon=10^{-7}$; (3) $\Ktil,\Ktilb$
+symmetrised $(M+M\transpose)/2$; (4) $\Ktilb^{-1}$ via
+\texttt{torch.linalg.solve}; (5) $\fbar$ mean over threshold or any NaN
+$\rightarrow$ reject; (6) $\log|\Ktilb|$ via Cholesky
+($2\sum\log\diago\Lchol$), Cholesky failure $\rightarrow$ reject; (7) loss
+NaN/Inf or $\log|\Vb|$ sign $\le0$ $\rightarrow$ reject; (8) gradient NaN/Inf
+counted and warned. $\pvar$ floored at \texttt{lambda\_var\_clamp}; an LBFGS
+line-search crash keeps the pre-step parameters; float64 throughout (kernel
+values can reach $\sim\!10^4$).
+
+% ---------------------------------------------------------------------------
+\subsection*{Equation-to-code map}
+\begin{center}\small
+\begin{tabular}{@{}l l >{\raggedright\arraybackslash}p{2.7in}@{}}
+\toprule
+Object & Equation & Code (\texttt{gpytorch\_porting/}) \\
+\midrule
+E-step $\vV,\vm$ update & \eqref{eq:estep-V}, \eqref{eq:estep-m} & \texttt{eigenspace\_estep.py:}\allowbreak\texttt{estep\_eigenspace} \\
+E-step helpers $\gE,\GE$ & \eqref{eq:estep-gG} & \texttt{likelihoods.py:}\allowbreak\texttt{PoissonLikelihood} \\
+E/F/M loop order & \S\ref{subsec:training-overview} & \texttt{eigenspace\_training.py:}\allowbreak\texttt{train\_eigenspace} \\
+F-step $\latz$ closed form & \eqref{eq:fstep} & \texttt{utils.py:lambda0\_given\_A} \\
+F-step $\gain$ grad; damped Newton & \S\ref{subsec:fstep} & \texttt{eigenspace\_fstep.py} \\
+M-step gradient chain & \eqref{eq:mstep-chain} & \texttt{eigenspace\_mstep.py} $+$\allowbreak{} \texttt{eigenspace\_gradients.py} \\
+Kernel-level Jacobian / VJP & \S\ref{subsec:mstep} & \texttt{analytical\_gradients.py} /\allowbreak{} \texttt{analytical\_gradients\_vjp.py} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\emergencystretch=0pt % restore default; keep this fragment's setting from leaking

@@ -1,0 +1,139 @@
+% ============================================================================
+%  preamble.tex -- shared preamble for unified_theory.tex
+%  Packages, theorem environments, and the UNIFIED NOTATION MACROS.
+%  Every section fragment in sections/ uses these macros so the notation is
+%  mechanically uniform across the whole document. Do not redefine here.
+% ============================================================================
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{graphicx}
+\usepackage[colorlinks=true,linkcolor=blue!55!black,citecolor=blue!55!black,%
+            urlcolor=blue!55!black]{hyperref}
+\usepackage{microtype}
+
+% ---- theorem environments --------------------------------------------------
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+% ---- a light box for "open caveat / code-vs-doc" flags ---------------------
+\newcommand{\caveat}[1]{\par\noindent\textbf{\textcolor{red!60!black}{Caveat.}}\ #1\par}
+
+% ---- listings style for short code references ------------------------------
+\lstset{basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,
+        keepspaces=true,frame=none,xleftmargin=1em}
+
+% ============================================================================
+%  UNIFIED NOTATION MACROS  (bind: symbol -> concept, one per concept)
+% ============================================================================
+
+% -- generic operators --
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Reals}{\mathbb{R}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\diago}{\operatorname{diag}}
+\newcommand{\KLdiv}{\mathrm{KL}}
+\newcommand{\GProc}{\mathcal{GP}}
+\newcommand{\Poi}{\mathrm{Poisson}}
+\newcommand{\Gauss}{\mathcal{N}}
+\newcommand{\ELBO}{\mathcal{L}}          % ELBO  (script L; NOT the Cholesky factor)
+\newcommand{\transpose}{^{\mathsf{T}}}
+
+% -- model, kernel, structured prior --
+\newcommand{\lat}{\lambda}               % latent GP function lambda(x)
+\newcommand{\latz}{\lambda_{0}}          % firing-rate offset
+\newcommand{\rate}{f}                    % firing rate f = exp(A lambda + lambda_0)
+\newcommand{\lgr}{g}                     % log-firing rate g = A lambda + lambda_0
+\newcommand{\gain}{A}                    % Poisson gain (NOT projection a)
+\newcommand{\spk}{y}                     % spike count (synonyms r,n,target)
+\newcommand{\Kf}{K}                      % prior kernel function K(x,x')
+\newcommand{\Ktil}{\widetilde{K}}        % inducing gram  K(Ztil,Ztil)
+\newcommand{\Cmat}{C}                    % structured spatial prior covariance
+\newcommand{\Csm}{C_{\mathrm{smooth}}}   % RBF smoothing factor
+\newcommand{\Kmag}{\mathcal{M}}          % kernel magnitude sqrt(v_x v_x')  (NOT M)
+\newcommand{\kang}{\theta}               % kernel angle
+\newcommand{\Jang}{J}                    % angular term J(theta)  (never a Jacobian)
+\newcommand{\vmag}{v}                    % self-magnitude v_x = x^T C x + sigma_0^2
+\newcommand{\loc}{\alpha}                % locality mask alpha_i (GP; NOT diffusion alpha_t)
+\newcommand{\bwid}{\beta}                % RF half-width (GP prior; NOT diffusion beta_t)
+\newcommand{\smoo}{\rho}                 % smoothness SD (GP prior; NOT correlation)
+\newcommand{\sigz}{\sigma_{0}}           % bias std (sigma_0 = exp(raw_sigma_0))
+\newcommand{\rfc}{\bm{\xi}_{0}}          % RF center (eps0x, eps0y)
+\newcommand{\pixc}{\bm{\xi}}             % pixel coordinate
+\newcommand{\Amp}{\mathrm{Amp}}          % amplitude: 6th kernel hyperparameter (softplus, default 1.0, optimized)
+
+% -- variational inference & eigenspace --
+\newcommand{\ipt}{\widetilde{z}}         % inducing point (NOT subspace coord)
+\newcommand{\Ipt}{\widetilde{Z}}         % inducing-point matrix
+\newcommand{\latt}{\widetilde{\lambda}}  % inducing values (= u)
+\newcommand{\Mind}{M}                    % number of inducing points (NOT magnitude)
+\newcommand{\Ntr}{N}                     % number of training images
+\newcommand{\kvec}{k}                    % cross-covariance vector k(x)=K(Ztil,x)
+\newcommand{\pv}{u}                      % projection vector u(x)=Ktil^{-1} k(x)
+\newcommand{\vm}{m}                      % variational mean (inducing space)
+\newcommand{\vV}{V}                      % variational covariance
+\newcommand{\pmean}{\mu}                 % posterior mean mu(x) of the latent
+\newcommand{\pvar}{\sigma^{2}}           % posterior variance sigma^2(x)
+\newcommand{\Lchol}{L_{\Ktil}}           % Cholesky factor of Ktil (upright L)
+\newcommand{\eb}{B}                      % eigenbasis of Ktil
+\newcommand{\evals}{\Lambda}             % eigenvalues (diagonal; NOT lambda)
+\newcommand{\nb}{n_{b}}                  % kept eigen-dimension
+\newcommand{\mb}{m_{b}}                  % eigenspace mean
+\newcommand{\Vb}{V_{b}}                  % eigenspace covariance (dense)
+\newcommand{\Ktilb}{\Ktil_{b}}           % diagonal inducing gram in eigenspace
+\newcommand{\amat}{a}                    % projection a = K Ktil^{-1} (KKtilde_inv_b)
+\newcommand{\Kvec}{\mathrm{Kvec}}        % diagonal prior variance vector
+\newcommand{\fbar}{\bar{f}}              % expected firing rate (code f_mean)
+
+% -- training-step helpers --
+\newcommand{\gE}{g_{\mathrm{E}}}         % E-step gradient helper (NOT log-rate g)
+\newcommand{\GE}{G_{\mathrm{E}}}         % E-step Fisher curvature
+
+% -- utility & information --
+\newcommand{\Ustd}{U_{\mathrm{std}}}     % standard (production) utility
+\newcommand{\Uda}{U_{\mathrm{DA}}}       % distribution-aware (research) utility
+\newcommand{\Hmarg}{H_{\mathrm{marg}}}   % marginal spike-count entropy
+\newcommand{\Hnoise}{H_{\mathrm{noise}}} % aleatoric Poisson noise entropy
+\newcommand{\Hcond}{H_{\mathrm{cond}}}   % conditional entropy over p(x)
+\newcommand{\px}{p(x)}                   % natural-image distribution
+\newcommand{\mug}{\mu_{g}}               % log-rate mean = A mu + lambda_0
+\newcommand{\varg}{\sigma_{g}^{2}}       % log-rate variance = A^2 sigma^2
+\newcommand{\corr}{\rho_{\lambda}}       % posterior latent correlation (NOT smoothness)
+\newcommand{\ccond}{c}                   % prior conditional covariance
+\newcommand{\scal}{\kappa}               % input scaling factor (x* = kappa x_t)
+\newcommand{\varr}{\sigma_{r}^{2}}       % residual/aleatoric variance
+\newcommand{\subc}{\zeta}                % subspace coordinate
+\newcommand{\LW}{W_{0}}                  % Lambert-W principal branch
+\newcommand{\gmode}{\bar{g}_{r}}         % Laplace mode
+\newcommand{\rmax}{r_{\max}}             % count-truncation bound
+\newcommand{\satf}{\sigma_{f}^{2}}       % saturation-kernel amplitude
+
+% -- diffusion (Part IV only) --
+\newcommand{\dt}{t}                      % diffusion timestep (NO temporal RF)
+\newcommand{\xz}{x_{0}}                  % clean image
+\newcommand{\xt}{x_{t}}                  % noisy image
+\newcommand{\xhat}{\widehat{x}_{0}}      % Tweedie estimate
+\newcommand{\bsched}{\beta_{t}}          % noise-schedule variance (NOT GP beta)
+\newcommand{\aret}{\alpha_{t}}           % signal retention (NOT GP mask alpha)
+\newcommand{\abar}{\bar{\alpha}_{t}}     % cumulative signal retention
+\newcommand{\epsth}{\epsilon_{\theta}}   % U-Net noise predictor
+\newcommand{\score}{s_{\theta}}          % score function
+\newcommand{\gw}{w}                      % guidance scale
+\newcommand{\ggrad}{g_{t}}               % guidance gradient (GP utility gradient)
+\newcommand{\greg}{\gamma_{\mathrm{reg}}}% approach-A regularization weight

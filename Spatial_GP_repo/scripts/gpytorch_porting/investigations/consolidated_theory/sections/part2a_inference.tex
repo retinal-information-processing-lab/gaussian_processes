@@ -1,0 +1,653 @@
+% ============================================================================
+%  part2a_inference.tex  --  Part II, sections 4-5.
+%  Sparse variational GP inference + the eigenspace representation and the two
+%  current implementations (vargp_direct / default_gpy).
+%  Self-contained \input-ready fragment; uses ONLY the shared preamble macros.
+%  Ground truth = current code; where a doc disagreed, the code wins (memo 4).
+% ============================================================================
+
+% Scoped \sloppy so long code identifiers (file.py:function) wrap instead of
+% bleeding into the margin; the \begingroup/\endgroup confines it to this
+% fragment so no global typesetting state leaks into neighbouring sections.
+\begingroup\sloppy
+
+\section{Sparse variational Gaussian-process inference}\label{sec:varinf}
+
+Part~I fixed the generative model: a zero-mean latent Gaussian process
+$\lat \sim \GProc(0,\Kf)$ over image space, an exponential link to the firing
+rate $\rate(x)=\exp\!\big(\gain\,\lat(x)+\latz\big)$, and Poisson spike counts
+$\spk_i \sim \Poi\!\big(\rate(x_i)\big)$, where $\Kf$ is the first-order
+arc-cosine kernel of \eqref{eq:acoskernel} built on the structured spatial
+prior covariance $\Cmat$ of \eqref{eq:Cprior}. Here we turn that model into a
+trainable posterior. Two current implementations realise \emph{the same}
+inference; both are introduced abstractly in this section and made concrete in
+\S\ref{sec:eigenspace}.
+
+\subsection{Poisson breaks conjugacy}\label{sec:conjugacy}
+
+Given a batch of images $X=(x_1,\dots,x_{\Ntr})$ and spike counts
+$\spk=(\spk_1,\dots,\spk_{\Ntr})$, the exact posterior over the latent and the
+marginal likelihood,
+\begin{align}
+  p(\lat\mid\spk,X,\theta)&\;\propto\;
+    \Big[\textstyle\prod_i \Poi\!\big(\spk_i\mid e^{\gain\lat_i+\latz}\big)\Big]\,
+    \Gauss(\lat\mid 0,\Kf_\theta), \notag\\
+  p(\spk\mid X,\theta)&=\!\int\! \prod_i \Poi\!\big(\spk_i\mid e^{\gain\lat_i+\latz}\big)\,
+    \Gauss(\lat\mid 0,\Kf_\theta)\,d\lat ,
+\end{align}
+have no closed form: the exponential-Poisson likelihood is not conjugate to the
+Gaussian prior, so the integral over $\lat$ is intractable. We therefore
+approximate the posterior by a tractable Gaussian and maximise a variational
+lower bound (\S\ref{sec:elbo}).
+
+\begin{remark}[The conjugate contrast]
+For a \emph{Gaussian} observation $\spk=\lat+\varepsilon$,
+$\varepsilon\sim\Gauss(0,\pvar_r I)$, everything would be closed-form: the
+marginal is $\spk\mid X\sim\Gauss(0,\Kf+\pvar_r I)$, the predictive at a test
+image $x_\ast$ is Gaussian with mean $\kvec_\ast\transpose(\Kf+\pvar_r I)^{-1}\spk$
+and variance $\Kf(x_\ast,x_\ast)-\kvec_\ast\transpose(\Kf+\pvar_r I)^{-1}\kvec_\ast$,
+and the log-evidence is
+$-\tfrac12\spk\transpose(\Kf+\pvar_r I)^{-1}\spk-\tfrac12\log\lvert\Kf+\pvar_r I\rvert-\tfrac{\Ntr}{2}\log 2\pi$.
+None of these survive the Poisson link; the variational route below recovers a
+usable posterior in its place.
+\end{remark}
+
+\subsection{Inducing points and the variational posterior}\label{sec:inducing}
+
+\begin{definition}[Sparse variational posterior]
+Introduce $\Mind$ \emph{inducing points} $\Ipt=\{\ipt_1,\dots,\ipt_{\Mind}\}$
+with latent values $\latt=\lat(\Ipt)$ (the code's inducing values $u$), and place a
+Gaussian variational posterior on them,
+\begin{equation}
+  q(\latt)=\Gauss(\latt\mid\vm,\vV),\qquad
+  \vm\in\Reals^{\Mind},\quad \vV\in\mathbb{S}_{++}^{\Mind}.
+  \label{eq:qdef}
+\end{equation}
+The posterior at \emph{any} image $x$ is recovered by marginalising the
+conditional prior $p(\lat(x)\mid\latt)$ against $q(\latt)$.
+\end{definition}
+
+Exact inference would need the $\Ntr\!\times\!\Ntr$ kernel over all training
+images, an $O(\Ntr^3)$ cost; the inducing construction reduces it to
+$O(\Ntr\Mind^2)$.
+
+\begin{remark}[Closed-loop invariant $\Mind=\Ntr$]\label{rem:MeqN}
+In the active-learning loop the inducing set is taken equal to the training set,
+$X=\Ipt$ (code \texttt{X\_train == X\_tilde}), so $\Mind=\Ntr$ and $\Kf=\Ktil$.
+The ``sparse'' posterior is then \emph{exact}. The SVGP formalism is retained not
+for sparsity but for two other reasons: (i)~it supplies the closed-form
+variational machinery of \S\ref{sec:predmoments}--\S\ref{sec:fbar}, and (ii)~its
+inducing structure admits the $O(\Mind)$ rank-one online growth
+(\S\ref{sec:rank1}) that appends one image per active step.
+\end{remark}
+
+\subsection{Projected posterior moments}\label{sec:predmoments}
+
+Marginalising $p(\lat(x)\mid\latt)\,q(\latt)$ yields a Gaussian
+$q(\lat(x))=\Gauss\!\big(\pmean(x),\pvar(x)\big)$ whose moments are the
+inducing-point moments projected through the kernel:
+\begin{align}
+  \pmean(x)  &= \kvec(x)\transpose\,\Ktil^{-1}\,\vm , \notag\\
+  \pvar(x)   &= \Kf(x,x) + \kvec(x)\transpose\,\Ktil^{-1}\big(\vV-\Ktil\big)\Ktil^{-1}\,\kvec(x),
+  \label{eq:predmoments}
+\end{align}
+with the cross-covariance vector $\kvec(x)=\Kf(\Ipt,x)\in\Reals^{\Mind}$, the
+inducing gram $\Ktil=\Kf(\Ipt,\Ipt)\in\Reals^{\Mind\times\Mind}$, and the prior
+self-variance $\Kf(x,x)$ given by the self-kernel identity \eqref{eq:selfkernel}.
+Introducing the \emph{projection vector} $\pv(x)=\Ktil^{-1}\kvec(x)$ and the
+Schur complement $s(x)=\Kf(x,x)-\kvec(x)\transpose\Ktil^{-1}\kvec(x)$, the
+variance splits into a data-independent residual and an epistemic term,
+\begin{equation}
+  \pvar(x)=\underbrace{\big[\Kf(x,x)-\kvec(x)\transpose\Ktil^{-1}\kvec(x)\big]}_{\text{residual (Nystr\"om/Schur) }s(x)}
+    \;+\;\underbrace{\kvec(x)\transpose\Ktil^{-1}\vV\Ktil^{-1}\kvec(x)}_{\text{epistemic}}
+    \;=\; s(x)+\pv(x)\transpose\vV\,\pv(x),
+  \label{eq:varsplit}
+\end{equation}
+and the mean reads $\pmean(x)=\pv(x)\transpose\vm$. The two forms of $\pvar$ are
+algebraically identical since
+$\kvec\transpose\Ktil^{-1}(\vV-\Ktil)\Ktil^{-1}\kvec=\kvec\transpose\Ktil^{-1}\vV\Ktil^{-1}\kvec-\kvec\transpose\Ktil^{-1}\kvec$.
+
+\begin{remark}[Prior sanity check]
+At the prior $\vV=\Ktil$ the correction in \eqref{eq:predmoments} vanishes and
+$\pvar(x)=\Kf(x,x)$ (the prior variance); as data drive $\vV$ below $\Ktil$,
+$\pvar(x)<\Kf(x,x)$.
+\end{remark}
+
+Both code paths compute exactly \eqref{eq:predmoments}:
+\texttt{vargp\_direct} in the eigenbasis of $\Ktil$
+(\texttt{eigenspace\_model.py:\allowbreak \_lambda\_moments\_eigenspace}, \S\ref{sec:eig-moments}),
+\texttt{default\_gpy} through GPyTorch's \texttt{VariationalStrategy} internals.
+
+\subsection{The ELBO}\label{sec:elbo}
+
+All parameters are learned by maximising the evidence lower bound on
+$\log p(\spk)$,
+\begin{equation}
+  \ELBO \;=\; \sum_i \E_{q(\lat_i)}\!\big[\log \Poi(\spk_i\mid\lat_i)\big]
+    \;-\; \KLdiv\!\big(q(\latt)\,\big\|\,p(\latt)\big),
+  \label{eq:elbo}
+\end{equation}
+which is tight when $q$ equals the true posterior. Because the likelihood
+factorises over images and $q(\lat_i)=\Gauss(\pmean_i,\pvar_i)$ is Gaussian, each
+expected log-likelihood term is closed-form:
+\begin{equation}
+  \E_{q(\lat_i)}\!\big[\log \Poi(\spk_i\mid\lat_i)\big]
+    \;=\; \spk_i\big(\gain\pmean_i+\latz\big)
+      \;-\; \exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big)
+      \;+\; \text{const},
+  \label{eq:ell}
+\end{equation}
+with $\text{const}=-\log(\spk_i!)$ independent of all parameters (dropped in
+code). \texttt{likelihoods.py:\allowbreak expected\_log\_prob} returns, summed over images,
+\begin{lstlisting}
+log_prob = target*(A*mu + lambda0) \
+           - exp(A*mu + 0.5*A**2*var + lambda0)
+\end{lstlisting}
+matching \eqref{eq:ell} term by term. The KL term is the standard
+Gaussian--Gaussian divergence between $q(\latt)=\Gauss(\vm,\vV)$ and the prior
+$p(\latt)=\Gauss(0,\Ktil)$,
+\begin{equation}
+  \KLdiv(q\,\|\,p) \;=\; \tfrac12\Big[\,
+    \log\frac{\lvert\Ktil\rvert}{\lvert\vV\rvert}
+    \;+\; \Tr\!\big(\Ktil^{-1}\vV\big)
+    \;+\; \vm\transpose\Ktil^{-1}\vm
+    \;-\; \Mind \,\Big].
+  \label{eq:kl}
+\end{equation}
+
+\begin{remark}[The $-\Mind$ constant]
+The $-\Mind$ in \eqref{eq:kl} is parameter-independent (it is the dimension of
+the inducing Gaussian) and carries zero gradient, so it affects only the reported
+loss magnitude, never the optimum or the predictions. The eigenspace evaluation
+of \S\ref{sec:eig-kl} carries the analogous $-\nb$ for the same reason.
+\end{remark}
+
+The full objective is maximised by EM-style coordinate ascent
+(E-step on $(\vm,\vV)$, F-step on $(\gain,\latz)$, M-step on the kernel
+hyperparameters); the update equations are derived in the training-algorithm
+section. Equation~\eqref{eq:elbo} is the single objective all three blocks share.
+
+\subsection{Expected firing rate via the Gaussian MGF}\label{sec:fbar}
+
+The exponential term in \eqref{eq:ell} is the \emph{expected firing rate} under
+$q$,
+\begin{equation}
+  \fbar_i \;=\; \E_{q(\lat_i)}\!\big[\exp(\gain\lat_i+\latz)\big]
+    \;=\; \exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big).
+  \label{eq:fbar}
+\end{equation}
+This is the Gaussian moment-generating function
+$\E[e^{tZ}]=\exp(t\mu+\tfrac12 t^2\sigma^2)$ applied to $Z=\gain\lat_i+\latz$ at
+$t=1$ (code \texttt{likelihoods.py:\allowbreak expected\_firing\_rate}, identical to the
+loop's \texttt{compute\_f\_mean}).
+
+\begin{remark}[Jensen inflation]
+The term $\tfrac12\gain^2\pvar_i$ is strictly positive whenever $\pvar_i>0$, so
+posterior \emph{uncertainty raises} the predicted rate above the point estimate
+$\exp(\gain\pmean_i+\latz)$ --- a direct consequence of Jensen's inequality for
+the convex map $\exp$. Confidence and rate are thus coupled: a poorly-constrained
+image is predicted to fire \emph{more}, not less.
+\end{remark}
+
+\subsection{Prediction: expected spike count}\label{sec:prediction}
+
+The moments \eqref{eq:predmoments} do not depend on the observed $\spk$, so the
+same formulas serve as the predictive distribution at any novel image $x_\ast$.
+The expected spike count is the expected firing rate \eqref{eq:fbar} evaluated
+there,
+\begin{equation}
+  \langle \spk_\ast\rangle=\langle\rate(x_\ast)\rangle
+    =\exp\!\big(\gain\pmean(x_\ast)+\tfrac12\gain^2\pvar(x_\ast)+\latz\big),
+\end{equation}
+with $\pmean(x_\ast),\pvar(x_\ast)$ from \eqref{eq:predmoments} using freshly
+evaluated $\kvec(x_\ast)$ and $\Kf(x_\ast,x_\ast)$. The firing rate is
+log-normal, so its variance is
+\begin{equation}
+  \operatorname{Var}\!\big(\rate(x)\big)
+    =\langle\rate(x)\rangle^2\big(e^{\gain^2\pvar(x)}-1\big).
+  \label{eq:fvar}
+\end{equation}
+
+\subsection{The posterior cross-covariance pitfall}\label{sec:crosscov}
+
+The self-variance of \eqref{eq:predmoments} extends formally to the
+\emph{cross-covariance} between two distinct images $x$ (a candidate sample
+location) and $x_\ast$ (a query location):
+\begin{equation}
+  \Sigma_{x,x_\ast}=\operatorname{Cov}\!\big[\lat(x),\lat(x_\ast)\mid \mathcal D\big]
+    =\Kf(x,x_\ast)+\pv(x)\transpose\big(\vV-\Ktil\big)\pv(x_\ast),
+  \qquad \pv(\cdot)=\Ktil^{-1}\kvec(\cdot),
+  \label{eq:crosscov}
+\end{equation}
+which reduces to $\pvar(x)$ at $x=x_\ast$.
+
+\begin{remark}[Failure outside the inducing hull]
+For a query $x_\ast$ \emph{outside} the inducing region, \eqref{eq:crosscov}
+produces cross-covariances that violate the Cauchy--Schwarz bound
+$\lvert\Sigma_{x,x_\ast}\rvert\le\sqrt{\Sigma_{x,x}\,\Sigma_{x_\ast,x_\ast}}$.
+Measured example (RBF, $\ell=0.2$, $20$ inducing points in $[-1,1]$, sample
+$x=0$): at $x_\ast=\pm1.5$ the manual formula gives $\Sigma\approx-4$ while
+GPyTorch's covariance gives $\approx 0$; with self-variances $\sim0.04$ the valid
+maximum is $\sim0.04$, so $-4$ is two orders of magnitude out of range. Root
+cause: in the residual $\Kf(x,x_\ast)-\pv(x)\transpose\Ktil\,\pv(x_\ast)$ the
+direct kernel $\Kf(x,x_\ast)\!\to\!0$ (finite lengthscale) outside the hull, but
+$\pv(x_\ast)=\Ktil^{-1}\kvec(x_\ast)$ can have large entries through $\Ktil^{-1}$,
+and the two pieces fail to cancel.
+\end{remark}
+
+Left unchecked, a value like $\Sigma_{x,x_\ast}\approx-4$ feeds the conditional
+moments
+$\pmean_{\mathrm{cond}}(x_\ast)=\pmean(x_\ast)+(\Sigma_{x,x_\ast}/\Sigma_{x,x})(\lat_{\mathrm{obs}}-\pmean(x))$
+and $\pvar_{\mathrm{cond}}(x_\ast)=\Sigma_{x_\ast,x_\ast}-\Sigma_{x,x_\ast}^2/\Sigma_{x,x}$
+of the distribution-aware utility (Part~III) with a regression coefficient
+$\approx-100$, giving nonsensical conditional means and spurious utility peaks at
+the edges of the inducing region. The fix is to never assemble the cross-block by
+hand: form the joint covariance with GPyTorch and slice it,
+\begin{lstlisting}
+full_covar = model(torch.cat([x_samples, x_star])).covariance_matrix
+Sigma      = full_covar[:N, N:]        # correct cross-block, Nystrom-consistent
+\end{lstlisting}
+
+\caveat{The shipped predict path already reads GPyTorch's joint
+\texttt{covariance\_matrix} (which internally includes the conditional
+correction term), so the pathology of \eqref{eq:crosscov} is confined to
+\emph{hand-assembled} cross-covariances, not the production path. Any new code
+that forms a cross-covariance from the manual formula outside the inducing hull
+will nonetheless reintroduce it --- use the slice above.}
+
+\subsection{Whitening}\label{sec:whitening}
+
+The alternative reparameterisation (used by \texttt{default\_gpy},
+\S\ref{sec:defaultgpy}) is \emph{Cholesky whitening}, which makes the prior a
+standard normal. With the Cholesky factor $\Ktil=\Lchol\Lchol\transpose$, define
+the whitened inducing values
+\begin{equation}
+  \widetilde{\latt}=\Lchol^{-1}(\latt-\mu_z)\;\sim\;\Gauss(0,I)\quad\text{under the prior},
+\end{equation}
+where $\mu_z$ is the prior mean at the inducing points. Optimisation conditions
+much better in these coordinates. GPyTorch then stores the \emph{whitened}
+variational parameters $(\widetilde{\vm},\widetilde{\vV})$, related to the actual
+ones by
+\begin{equation}
+  \vm-\mu_z=\Lchol\,\widetilde{\vm},\quad \vV=\Lchol\,\widetilde{\vV}\,\Lchol\transpose;
+  \qquad
+  \widetilde{\vm}=\Lchol^{-1}(\vm-\mu_z),\quad \widetilde{\vV}=\Lchol^{-1}\vV\,\Lchol^{-\mathsf{T}}.
+  \label{eq:whiten}
+\end{equation}
+The whitened mean thus encodes the \emph{deviation} from the prior mean function,
+not absolute function values. Reading these stored params inside a manual moment
+formula therefore requires three corrections: unwhiten the covariance
+($\vV=\Lchol\widetilde{\vV}\Lchol\transpose$), unwhiten the mean
+($\vm-\mu_z=\Lchol\widetilde{\vm}$), and add the mean function back,
+$\pmean_\ast=\pmean(x_\ast)+\pv(x_\ast)\transpose\Lchol\widetilde{\vm}$ and
+$\pvar_\ast=s(x_\ast)+\pv(x_\ast)\transpose\Lchol\widetilde{\vV}\Lchol\transpose\pv(x_\ast)$.
+
+\begin{remark}[Zero mean in production]
+Both production paths use \texttt{ZeroMean} (\texttt{gpy\_model.py}; the
+eigenspace path carries no mean module), so $\mu_z=0$ and the ``add the mean
+function'' step is trivially zero. The whitening maps \eqref{eq:whiten}
+themselves still apply whenever the whitened \texttt{VariationalStrategy} is
+selected; the mean-function machinery is retained only to guard a future non-zero
+mean.
+\end{remark}
+
+
+\section{The eigenspace representation and the two implementations}\label{sec:eigenspace}
+
+The two current code paths realise the \emph{same} variational GP of
+\S\ref{sec:varinf} --- same prior $\Gauss(0,\Ktil)$, same arc-cosine RF kernel,
+same $\Poi(\gain,\latz)$ likelihood, same expected rate \eqref{eq:fbar}, same
+ELBO \eqref{eq:elbo}. They differ only in \emph{how} $q(\latt)$ is represented
+and optimised:
+\begin{itemize}[nosep]
+  \item \texttt{vargp\_direct} (\texttt{DirectVGPModel}) projects $q$ into the
+    eigenbasis of $\Ktil$ and runs a custom EM loop, using GPyTorch as a kernel
+    calculator only;
+  \item \texttt{default\_gpy} (\texttt{VariationalGPModel}) keeps $q$ in the full
+    $\Mind$-dimensional inducing space via a stock GPyTorch
+    \texttt{CholeskyVariationalDistribution} and optimises one joint ELBO.
+\end{itemize}
+
+\subsection{Eigendecomposition of the inducing gram}\label{sec:eigdecomp}
+
+The inducing gram $\Ktil$ ($\Mind\times\Mind$) has effective rank far below
+$\Mind$ (typically $\sim10$--$50$). \texttt{vargp\_direct} eigendecomposes it and
+keeps only the well-conditioned directions
+(\texttt{eigenspace\_utils.py:\allowbreak eigendecompose\_K\_tilde}):
+\begin{equation}
+\begin{gathered}
+  \Ktil=\eb\,\evals\,\eb\transpose,\qquad
+  \evals=\diago(\text{eigvals}_b), \\
+  \eb\in\Reals^{\Mind\times\nb},\qquad \eb\transpose\eb=I_{\nb},
+\end{gathered}
+  \label{eq:eigdecomp}
+\end{equation}
+where the kept set is chosen by a \emph{relative} threshold with an absolute
+floor,
+\begin{equation}
+  \text{keep eigenpair }j \iff \evals_j > \max\!\big(\evals_{\max}\cdot\texttt{tol},\ \texttt{tol}\big),
+  \qquad \texttt{tol}=\texttt{EIGVAL\_TOL}=10^{-4}.
+  \label{eq:eigthresh}
+\end{equation}
+\texttt{torch.linalg.eigh} returns eigenvalues in ascending order; $\eb$ collects
+the kept eigenvectors as columns and $\evals$ the kept eigenvalues. The kept
+count $\nb$ is \emph{dynamic}: it shifts across training iterations as the kernel
+hyperparameters move, and grows by $\sim1$ when a point is appended
+(\S\ref{sec:rank1}). Typical $\nb\approx10$--$11$ for the closed-loop cells, up
+to $\sim50$ elsewhere. Reprojection (\S\ref{sec:recompute}) absorbs the dimension
+change.
+
+Three payoffs motivate the projection: (i)~dimensionality drops $\Mind\to\nb$, so
+per-step cost falls $O(\Mind^3)\to O(\nb^3)$; (ii)~$\Ktil$ becomes
+\emph{diagonal} in the new basis, $\Ktilb=\evals$, so $\Ktil^{-1}$ is the
+element-wise reciprocal $\diago(1/\evals)$ --- no matrix solve; (iii)~dropping the
+small eigenvalues gives implicit regularisation.
+
+\subsection{The eigenspace state}\label{sec:eigstate}
+
+The \texttt{DirectVariationalState} dataclass (\texttt{eigenspace\_model.py}) is
+the eigenspace posterior together with all precomputed kernel projections:
+
+\begin{center}\small
+\begin{tabular}{@{}l l >{\raggedright\arraybackslash}p{8.6cm}@{}}
+\toprule
+field & shape & meaning \\
+\midrule
+\texttt{m\_b} $=\mb$ & $(\nb)$ & variational mean in eigenspace, $\mb=\eb\transpose\vm$ \\
+\texttt{V\_b} $=\Vb$ & $(\nb,\nb)$ & variational covariance in eigenspace, $\Vb=\eb\transpose\vV\eb$ --- \textbf{dense} \\
+\texttt{B} $=\eb$ & $(\Mind,\nb)$ & eigenvector matrix of $\Ktil$ (the basis) \\
+\texttt{eigvals\_b} $=\evals$ & $(\nb)$ & kept eigenvalues of $\Ktil$ (ascending) \\
+\texttt{K\_tilde\_b} $=\Ktilb$ & $(\nb,\nb)$ & inducing gram in eigenspace $=\diago(\evals)$ --- \textbf{diagonal} \\
+\texttt{K\_b} & $(\Ntr,\nb)$ & cross-kernel in eigenspace $=\Kf(X,\Ipt)\,\eb$ \\
+\texttt{KKtilde\_inv\_b} $=\amat$ & $(\Ntr,\nb)$ & projection $\Kf\Ktil^{-1}$ in eigenspace $=\texttt{K\_b}/\evals$ (element-wise) \\
+\texttt{Kvec} $=\Kvec$ & $(\Ntr)$ & diagonal self-kernel $\Kf(x_i,x_i)$, the per-point prior variance \\
+\texttt{K\_tilde} $=\Ktil$ & $(\Mind,\Mind)$ & the full inducing gram, kept only to enable the $O(\Mind)$ column-append (\S\ref{sec:rank1}) \\
+\texttt{mask} & $(n_{\text{pix}})$ & RF-support pixel mask from the kernel (if \texttt{use\_mask}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}[Only $\Ktilb$ is diagonal]
+$\Vb$ is a \emph{dense} $\nb\times\nb$ matrix even though $\Ktilb$ is diagonal;
+never assume a diagonal $\Vb$. The projection row $\amat_i=(\texttt{K\_b}/\evals)_i$
+is exactly the eigenspace image of $\kvec(x_i)\transpose\Ktil^{-1}$, computed by
+element-wise division rather than a solve.
+\end{remark}
+
+The state is built in one pass by
+\texttt{\_compute\_eigenspace\_quantities} (under \texttt{torch.no\_grad}), which
+is shared by initialisation and the post-M-step recompute. Initialisation sets
+the variational params to the prior:
+\begin{equation}
+  \mb=0,\qquad \Vb=\Ktilb \quad(\text{i.e.\ }\vm=0,\ \vV=\Ktil,\ \text{so } \KLdiv=0\text{ at start}).
+\end{equation}
+
+\subsection{Posterior moments in the eigenbasis}\label{sec:eig-moments}
+
+With $\amat=\texttt{KKtilde\_inv\_b}=\texttt{K\_b}/\evals$, the projected moments
+\eqref{eq:predmoments} at the training points become
+(\texttt{eigenspace\_model.py:\allowbreak \_lambda\_moments\_eigenspace}):
+\begin{align}
+  \pmean &= \amat\,\mb, \notag\\
+  \pvar  &= \Kvec + \diago\!\big(\amat\,(\Vb-\Ktilb)\,\amat\transpose\big)
+          = \Kvec + \operatorname{rowsum}\!\big(\amat\odot(\amat\,(\Vb-\Ktilb))\big), \notag\\
+  \pvar  &\leftarrow \max\!\big(\pvar,\ \texttt{LAMBDA\_VAR\_CLAMP}=10^{-6}\big),
+  \label{eq:eigmoments}
+\end{align}
+where $\pmean,\pvar$ are the per-training-point vectors $\lambda_m,\lambda_{\mathrm{var}}$
+and $\odot$ is the element-wise product; the two variance expressions coincide
+because $\operatorname{rowsum}(\amat\odot(\amat M))=\diago(\amat M\amat\transpose)$
+for any $M$. Term by term this equals \eqref{eq:predmoments}: $\Kvec_i=\Kf(x_i,x_i)$
+(the self-kernel identity \eqref{eq:selfkernel}) and
+$\amat_i(\Vb-\Ktilb)\amat_i\transpose=\kvec(x_i)\transpose\Ktil^{-1}(\vV-\Ktil)\Ktil^{-1}\kvec(x_i)$.
+For \textbf{test} points the same two lines run on a freshly projected
+$\amat=\Kf(x_\ast,\Ipt)\eb/\evals$ with $\Kvec=\Kf(x_\ast,x_\ast)$, so no kernel
+is recomputed for training points (\texttt{predict\_eigenspace} returns
+$\{\texttt{f\_pred},\texttt{lambda\_m},\texttt{lambda\_var}\}$ with
+$\texttt{f\_pred}=\exp(\gain\,\lambda_m+\tfrac12\gain^2\lambda_{\mathrm{var}}+\latz)$).
+
+\begin{remark}[Real method names]
+The expected firing rate lives on
+\texttt{PoissonLikelihood.\allowbreak expected\_firing\_rate(posterior)}; the
+\texttt{Eigenspace\-Posterior} object exposes only \texttt{.mean} and
+\texttt{.variance} (computed once at construction). Older reference docs that
+place an \texttt{expected\_firing\_rate()} method on the posterior, or that name
+files \texttt{estep.py}/\texttt{mstep.py}, are stale --- the live files are
+\texttt{eigenspace\_estep.py}, \texttt{eigenspace\_fstep.py},
+\texttt{eigenspace\_mstep.py}, \texttt{eigenspace\_training.py}.
+\end{remark}
+
+\subsection{ELBO and KL in the eigenbasis}\label{sec:eig-kl}
+
+The eigenspace ELBO (\texttt{compute\_elbo\_eigenspace}) uses the log-likelihood
+\eqref{eq:ell} and, because $\Ktilb=\diago(\evals)$, the KL \eqref{eq:kl} collapses
+to sums over the kept dimensions:
+\begin{align}
+  \KLdiv(q\,\|\,p)
+    &= \tfrac12\Big[\Tr(\Ktil^{-1}\vV)+\vm\transpose\Ktil^{-1}\vm-\nb
+        +\log\lvert\Ktil\rvert-\log\lvert\vV\rvert\Big] \notag\\
+    &= \tfrac12\Big[\ \textstyle\sum_j \dfrac{\Vb[j,j]}{\evals_j}
+        \;+\; \sum_j \dfrac{\mb[j]^2}{\evals_j}
+        \;-\; \nb
+        \;+\; \sum_j \log\evals_j
+        \;-\; \log\det\Vb\ \Big].
+  \label{eq:eigkl}
+\end{align}
+
+\begin{remark}[Diagonal-trace assumption]
+The trace term uses only $\diago(\Vb)$, which is valid \emph{only because}
+$\Ktilb$ is diagonal when the ELBO is evaluated --- i.e.\ on a consistent
+(kernel, basis, params) triple right after initialisation, recompute, or the
+E/F-step, and before the M-step. \texttt{log\_det}$\,\Vb$ uses the full
+\texttt{slogdet}; a non-positive-definite $\Vb$ warns and sets $\log\lvert\vV\rvert\!\to\!0$.
+The $-\nb$ is a zero-gradient constant (cf.\ the $-\Mind$ remark after
+\eqref{eq:kl}): it shifts only the reported loss magnitude.
+\end{remark}
+
+\subsection{The recompute seam after the M-step}\label{sec:recompute}
+
+An M-step changes the kernel hyperparameters, so $\Ktil$ --- and therefore its
+eigenbasis $\eb$ and eigenvalues $\evals$ --- go stale.
+\texttt{DirectVGPModel.recompute\_eigenspace()} restores consistency in two steps:
+\begin{enumerate}[nosep]
+  \item recompute all eigenspace quantities from the \emph{new} kernel
+    (\texttt{\_compute\_eigenspace\_quantities});
+  \item \emph{reproject} the variational params from the old basis to the new one
+    by round-tripping through full $\Mind$-space
+    (\texttt{eigenspace\_utils.py:\allowbreak reproject\_variational\_params}):
+    \begin{equation}
+      \mb^{\text{new}}=\eb_{\text{new}}\transpose\,\eb_{\text{old}}\,\mb^{\text{old}},
+      \qquad
+      \Vb^{\text{new}}=\eb_{\text{new}}\transpose\big(\eb_{\text{old}}\,\Vb^{\text{old}}\,\eb_{\text{old}}\transpose\big)\eb_{\text{new}}.
+      \label{eq:reproject}
+    \end{equation}
+\end{enumerate}
+In \texttt{train\_eigenspace} this runs at the \emph{start} of every iteration
+$>1$ (guarded by \texttt{n\_mstep>0 and iteration>1}), so metrics and the ELBO
+\eqref{eq:eigkl} are always evaluated on a consistent triple. If $\nb$ grows, the
+new dimensions carry no prior information and $\Vb^{\text{new}}$ may have tiny
+eigenvalues; the subsequent E-step restores positive-definiteness.
+
+\caveat{$\Ktilb$ is diagonal \emph{only} right after init/recompute and during
+the E/F-step. Inside the M-step closure, after a hyperparameter step but before
+the next recompute, the kernel has moved while the basis $\eb$ is still the
+\emph{old} one, so $\Ktilb=\eb\transpose\Ktil_{\text{new}}\eb$ is \emph{not}
+diagonal --- code there must use \texttt{torch.linalg.solve}, not
+$\diago(1/\evals)$. Treating it as diagonal in that window is the diagonal-KL
+trap (a bug fixed Jan~2025).}
+
+\subsection{The \texttt{default\_gpy} path}\label{sec:defaultgpy}
+
+\texttt{VariationalGPModel} (\texttt{gpy\_model.py}) realises the same model
+through stock GPyTorch, keeping $q(\latt)$ in full $\Mind$-space and never
+touching the eigenbasis:
+\begin{itemize}[nosep]
+  \item \texttt{CholeskyVariationalDistribution($\Mind$)} stores
+    $q(\latt)=\Gauss(\vm,\Lchol\Lchol\transpose)$ via the Cholesky factor
+    (numerically stable);
+  \item \texttt{VariationalStrategy} (whitened, the default) or
+    \texttt{UnwhitenedVariationalStrategy} (natural params), both with
+    \texttt{jitter\_val=JITTER}$=10^{-4}$;
+  \item \texttt{mean\_module=ZeroMean()}, \texttt{covar\_module=} the arc-cosine
+    kernel; \texttt{forward(x)} returns the GP \emph{prior}
+    $\Gauss(\text{ZeroMean}(x),\Kf(x))$, and the strategy turns that plus
+    $q(\latt)$ into $q(\lat)$ at $x$.
+\end{itemize}
+It \emph{is} an \texttt{nn.Module}, so kernel, likelihood, and variational params
+all live in one \texttt{state\_dict}. Training (\texttt{gpy\_training.py:\allowbreak train\_gpy\_default})
+is a single joint ELBO maximisation over all parameters --- no EM decomposition:
+\begin{equation}
+\begin{aligned}
+  \text{loss}=-\,&\texttt{likelihood.expected\_log\_prob}(\spk,\text{model}(X)) \\
+    &+\;\texttt{model.variational\_strategy.kl\_divergence()},
+\end{aligned}
+\end{equation}
+minimised by LBFGS (\texttt{strong\_wolfe}, \texttt{GPY\_LBFGS\_MAX\_ITER}$=20$) or
+Adam. The LBFGS closure rejects a step (returns $\infty$) on out-of-bounds
+kernel/likelihood params, a NaN gram, or firing-rate divergence
+($\fbar$ mean$>100$ or max$>500$); after each accepted step the kernel and
+likelihood are clamped (projected gradient descent). Cholesky stability comes from
+\texttt{cholesky\_jitter($10^{-4}$)} with \texttt{cholesky\_max\_tries=3} (retries
+at $10^{-4},10^{-3},10^{-2}$). Prediction (\texttt{gpy\_training.py:\allowbreak predict})
+computes $\pmean=\texttt{posterior.mean}$, $\pvar=\max(\texttt{posterior.variance},10^{-6})$,
+and $\texttt{f\_pred}=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$ --- the same
+\eqref{eq:fbar}, but returned under the key \texttt{lambda\_mean} rather than
+\texttt{predict\_eigenspace}'s \texttt{lambda\_m}.
+
+\subsection{Why \texttt{vargp\_direct} manages parameters directly}\label{sec:whymanage}
+
+The whitened \texttt{VariationalStrategy} stores params relative to $\Lchol$ (the
+Cholesky of $\Ktil$), making the prior $\Gauss(0,I)$; it \emph{assumes joint
+autograd} optimisation, in which autograd differentiates through $\Lchol$ and
+keeps the whitened coupling consistent. A closed-form Newton E-step combined with
+a kernel-changing M-step (EM style) breaks that assumption. Write $L_{\text{old}}$
+and $L_{\text{new}}$ for the Cholesky factor $\Lchol$ before and after such a step.
+Params stored as $\vm_{\text{stored}}=L_{\text{old}}^{-1}\vm_{\text{natural}}$
+become stale the moment the M-step moves $L_{\text{old}}\!\to\!L_{\text{new}}$, so
+the next E-step reads $L_{\text{new}}\vm_{\text{stored}}\neq\vm_{\text{natural}}$
+(empirically $\sim8\times$ errors in $\pmean$ --- the ``$L$ mismatch'',
+DECISION\_LOG Q26/Q27). There are two escapes:
+\begin{enumerate}[nosep]
+  \item \texttt{UnwhitenedVariationalStrategy} stores natural params
+    ($\Lchol$-independent), so EM is safe --- but it is slower and empirically
+    less accurate (KL-gradient instability, Q29);
+  \item \texttt{vargp\_direct}'s own eigenbasis whitens through $\eb/\evals$ but
+    \emph{recomputes and reprojects the basis explicitly} after every M-step
+    (\S\ref{sec:recompute}) instead of relying on autograd.
+\end{enumerate}
+This is exactly why \texttt{vargp\_direct} owns its basis and runs a custom EM
+loop, while \texttt{default\_gpy} stays in the whitened single-joint-ELBO regime
+that whitening was designed for. The eigenbasis $\eb$ and GPyTorch's $\Lchol$ play
+analogous roles (both diagonalise/whiten the prior); the difference is who keeps
+them in sync --- \texttt{vargp\_direct} does so explicitly, GPyTorch does so
+implicitly via autograd (which EM defeats).
+
+\subsection{Shared math, divergent representation}\label{sec:contrast}
+
+\begin{table}[htbp]\centering\footnotesize
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{5.6cm} >{\raggedright\arraybackslash}p{5.6cm}@{}}
+\toprule
+aspect & \texttt{vargp\_direct} (\texttt{DirectVGPModel}) & \texttt{default\_gpy} (\texttt{VariationalGPModel}) \\
+\midrule
+posterior rep.\ of $q(\latt)$ & eigenspace: $\mb$ $(\nb)$, dense $\Vb$ $(\nb\!\times\!\nb)$ in basis $\eb$ of $\Ktil$ & full $\Mind$-space: \texttt{CholeskyVariational\allowbreak Distribution}, $q=\Gauss(\vm,\Lchol\Lchol\transpose)$ \\
+$\Ktil^{-1}$ & trivial $\diago(1/\evals)$ & GPyTorch Cholesky of $\Ktil$ + jitter \\
+whitening & own eigenbasis, \textbf{explicit reproject} after each M-step & whitened $\Gauss(0,I)$ (default) or unwhitened \\
+optimiser & custom \textbf{EM}: E (Newton), F ($\gain,\latz$), M (LBFGS) $+$ recompute & single \textbf{joint ELBO} over all params (LBFGS/Adam) \\
+GPyTorch role & kernel calculator only (\texttt{kernel(...).to\_dense()}) & full \texttt{ApproximateGP} $+$ \texttt{VariationalStrategy} \\
+\texttt{nn.Module}? & no (plain class; dataclass state) & yes \\
+KL & manual eigenspace \eqref{eq:eigkl} & \texttt{variational\_strategy.\allowbreak kl\_divergence()} \\
+dim.\ reduction & $\Mind\to\nb$ eigenspace & none (full $\Mind$) \\
+online rank-1 update & \texttt{extend\_model\_with\allowbreak\_new\_point} (\S\ref{sec:rank1}) & none provided \\
+checkpoint & \texttt{eigenspace\_checkpoint.py} ($\mb,\Vb$; no $\eb$) & \texttt{checkpoint.py} (\texttt{state\_dict}) \\
+predict return key & \texttt{f\_pred, lambda\_m, lambda\_var} & \texttt{f\_pred, lambda\_mean, lambda\_var} \\
+\bottomrule
+\end{tabular}
+\caption{The two implementations of the identical model
+(\S\ref{sec:varinf}): the ELBO, moments, likelihood, and firing rate are shared;
+only the representation of $q(\latt)$ and the optimiser differ.}
+\label{tab:impl-contrast}
+\end{table}
+
+Table~\ref{tab:impl-contrast} contrasts the two. Everything above the
+representation line is shared: the GP prior, the arc-cosine RF kernel, the
+$\Poi(\gain,\latz)$ likelihood, $\fbar$ of \eqref{eq:fbar}, the ELBO
+decomposition \eqref{eq:elbo}, the divergence guards ($\fbar$ mean/max $100/500$),
+the ELBO early-stopping logic, $\texttt{JITTER}=10^{-4}$, and the
+inducing-points-are-training-points invariant (Remark~\ref{rem:MeqN}).
+
+\subsection{Online growth and the checkpoint seam}\label{sec:rank1}
+
+\paragraph{Rank-one update.}
+Phase-2 active learning grows the model by one image per step
+(\texttt{rank1\_update.py:\allowbreak extend\_model\_with\_new\_point}), producing a
+\emph{new} \texttt{DirectVGPModel} with $\Mind{+}1$ points warm-started from the
+$\Mind$-point model:
+\begin{enumerate}[nosep]
+  \item \textbf{Column-append to $\Ktil$.} Compute only the new column
+    $\Kf(\Ipt_{\text{new}},x_{\text{new}})$ ($O(\Mind)$ kernel evals) and stitch
+    it as a new row/column onto the stored \texttt{state.K\_tilde} --- this is
+    \emph{why} the full $\Ktil$ is retained (\S\ref{sec:eigstate}) --- avoiding
+    the $O(\Mind^2)$ full recompute. (The $(\Mind{+}1)$-eigendecomposition is
+    $O(\Mind^3)$ either way.)
+  \item \textbf{Eigendecompose} the new $\Ktil$ $\to$ $\eb_{\text{new}},\evals$
+    ($\nb^{\text{new}}$).
+  \item \textbf{Derived quantities} using the active-loop invariant $X=\Ipt$
+    (so $\Kf=\Ktil$): $\texttt{K\_b}=\Ktil_{\text{new}}\eb_{\text{new}}$,
+    $\Ktilb=\diago(\evals)$, $\amat=\texttt{K\_b}/\evals$; $\Kvec$ extended by the
+    single new diagonal $\Kf(x_{\text{new}},x_{\text{new}})$.
+  \item \textbf{Warm-start} the variational params (the legacy three-move):
+    expand to full space
+    $\vm_{\text{full}}=\eb_{\text{old}}\mb^{\text{old}}$,
+    $\vV_{\text{full}}=\eb_{\text{old}}\Vb^{\text{old}}\eb_{\text{old}}\transpose$
+    (symmetrised); pad to $\Mind{+}1$ with a new mean entry
+    $\operatorname{mean}(\vm_{\text{full}})$ and a covariance
+    $\vV_{\text{ext}}=I_{\Mind+1}$ with $\vV_{\text{ext}}[{:}\Mind,{:}\Mind]=\vV_{\text{full}}$
+    (the new dimension gets \emph{unit variance, zero cross-covariance} --- an
+    identity placeholder for the yet-unseen point); reproject into the new basis
+    $\mb^{\text{new}}=\eb_{\text{new}}\transpose\vm_{\text{ext}}$,
+    $\Vb^{\text{new}}=\eb_{\text{new}}\transpose\vV_{\text{ext}}\eb_{\text{new}}$.
+  \item Hand the precomputed state to
+    \texttt{DirectVGPModel(..., \_precomputed\_state=state)} (skipping the
+    constructor's own eigenspace build). The kernel and likelihood must be
+    deep-copied by the caller, since \texttt{train\_eigenspace} mutates the kernel
+    in place.
+\end{enumerate}
+Net: one active image appends one column to $\Ktil$, bumps $\nb$ by $\sim1$, and
+re-warm-starts $(\mb,\Vb)$ --- the online counterpart of the batch
+initialisation.
+
+\paragraph{Checkpoint seam.}
+\texttt{eigenspace\_checkpoint.py} persists a \texttt{DirectVGPModel} (a plain
+class, hence a bespoke checkpoint). It \emph{saves}
+\texttt{kernel.state\_dict()}, \texttt{likelihood.state\_dict()}, the variational
+params $\mb,\Vb$, \texttt{pool\_indices} (indices into the shared image pool),
+pool integrity tags, and the RF-centre box. It does \emph{not} save $X$
+(reconstructed as \texttt{X\_pool[pool\_indices]}, keeping checkpoints $\sim$1~KB)
+nor the entire derived eigenspace $(\eb,\evals,\Ktilb,\texttt{K\_b},\amat,\Kvec)$
+--- on load, \texttt{DirectVGPModel.\_\_init\_\_} recomputes the eigenspace fresh
+from the loaded kernel, and the saved $\mb,\Vb$ are re-injected via
+\texttt{update\_variational\_params}.
+
+\caveat{The saved $\mb,\Vb$ are expressed in the \emph{save-time} eigenbasis
+$\eb$, but are injected into a \emph{freshly recomputed} $\eb$ with \textbf{no}
+reprojection --- the code assumes the recomputed eigendecomposition equals the
+save-time one (``deterministic on the same hardware''). This is the documented
+basis-drift fragility: under a different torch version the load-time
+eigendecomposition of $\Ktil$ differs subtly (sign flips, near-threshold
+eigenvectors dropping in or out of the kept set, near-degenerate subspace
+rotation), so the reloaded posterior can drift by $\sim5\%$. Note the asymmetry
+with the \emph{in-memory} \texttt{restore\_best} path, which \emph{does} save
+$\eb$ and reprojects \eqref{eq:reproject}; only the \emph{on-disk} checkpoint
+omits the basis. Integrity is guarded for the data pool (shape exact, dtype warn,
+sum within tolerance), not for the basis.}
+
+\begin{remark}[E/F/M objects only]
+The custom EM loop mutates this eigenspace state --- the E-step Newton update of
+$(\mb,\Vb)$ (which \texttt{detach}es both, to stop the autograd graph chaining
+across iterations through $\gain$ and blowing up memory, and symmetrises $\Vb$),
+the F-step on $(\gain,\latz)$, and the M-step LBFGS on the kernel
+hyperparameters. The update \emph{equations} belong to the training-algorithm
+section; this section fixes only the objects each step reads and writes.
+\end{remark}
+
+\endgroup  % end scoped \sloppy (see \begingroup at the top of this fragment)

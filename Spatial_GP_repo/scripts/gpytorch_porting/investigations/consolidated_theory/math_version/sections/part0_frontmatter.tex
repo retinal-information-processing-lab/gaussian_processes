@@ -1,0 +1,61 @@
+% ==== front matter: scope, conventions, the open problem (unnumbered) ====
+\section*{Scope, conventions, and the open problem}
+\addcontentsline{toc}{section}{Scope, conventions, and the open problem}
+
+This is a self-contained mathematical reference for a sequential
+\emph{active-learning} problem built on a Poisson--Gaussian-process model. A
+latent function $\lat(x)$ over an input space is modeled by a Gaussian process
+(GP) with an arc-cosine kernel over a structured prior covariance $\Cmat$. Each
+input $x\in\Reals^{d}$ is a real-valued signal on a two-dimensional grid of $d$
+grid points (e.g.\ a $108\times108$ grid, $d=11664$) confined to a bounded box.
+Observations are nonnegative integer counts with a Poisson likelihood whose rate
+is an exponential link of the latent, $\rate=\exp(\gain\lat+\latz)$. At each round
+the active-learning rule chooses the next input so as to maximize the expected
+information gain about $\lat$. Part~\ref{sec:diffusion} extends the loop from
+\emph{selecting} the next input out of a fixed pool to \emph{synthesizing} it with
+a guided diffusion model.
+
+\paragraph{The open problem (the purpose of this document).} The arc-cosine kernel
+is positively homogeneous in the input: its self-value $\Kf(x,x)=x\transpose\Cmat
+x+\sigz^{2}$ grows with $\lVert x\rVert$. Under utility maximization the posterior
+variance therefore grows like the \emph{square} of the input scale, the
+acquisition utility diverges, and --- because inputs are confined to a bounded box
+--- the optimizer drives them to the boundary of the box (saturation). Two remedies
+are presented and analyzed: a normalized arc-cosine kernel and a saturating arc-sin
+kernel (\S\ref{subsec:kernelfixes}). Neither is satisfactory in practice: the
+normalized kernel is scale-invariant but fits poorly. It is an \textbf{open
+problem} to find a kernel that simultaneously (i) keeps the acquisition utility
+bounded on the bounded input domain and (ii) retains good predictive fit. The
+divergence is proved in Part~\ref{sec:deeplayer} (\S\ref{subsec:divergence}); the
+attempted fixes are \S\ref{subsec:kernelfixes}.
+
+\paragraph{Conventions.}
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+  \item \textbf{One symbol, one concept} throughout; the full table is
+        Appendix~\ref{app:notation}. A few symbols that collide across the
+        literature are disambiguated there (the kernel smoothness $\smoo$ vs.\ the
+        posterior correlation $\corr$; the prior width $\bwid$ vs.\ the diffusion
+        noise schedule $\bsched$; the three entropies $\Hmarg,\Hnoise,\Hcond$).
+  \item \textbf{Counts.} The count observation is written $\spk$; where the count
+        index appears (as in the marginal entropy sum and its truncation
+        $\rmax$) it is written $r$, denoting the same quantity, $\spk\equiv r$.
+  \item \textbf{Scope of this rendering.} Content that is purely
+        implementation-specific (automatic-vs-analytic differentiation machinery,
+        the vector--Jacobian-product derivation, the low-level representation and
+        online-update bookkeeping, and run/status details) has been omitted; the
+        mathematics of the model, inference, utility, and the divergence problem is
+        complete.
+\end{itemize}
+
+\paragraph{How to read this document.} The four parts are logically ordered.
+Part~\ref{sec:genmodel}--\ref{sec:kernel} sets up the generative model and the
+arc-cosine kernel with its structured prior. Part~II
+(\ref{sec:varinf}--\ref{sec:training}) develops sparse variational inference, the
+eigenspace representation of the posterior, and the coordinate-ascent training of
+the model parameters. Part~III (\ref{sec:utility}--\ref{sec:deeplayer}) is the
+active-learning core: the information utility and the proofs, subspace theory, and
+numerical analysis beneath it --- including the divergence result and the attempted
+kernel fixes that define the open problem. Part~IV (\ref{sec:diffusion}) is guided
+diffusion for input synthesis. Cross-references connect the utility gradient in
+Parts~III and IV back to the kernel input-gradient of Part~I, and the training
+back to the ELBO of Part~II.

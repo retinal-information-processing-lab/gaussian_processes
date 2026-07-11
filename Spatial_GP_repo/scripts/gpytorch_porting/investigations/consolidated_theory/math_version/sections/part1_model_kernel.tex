@@ -1,0 +1,493 @@
+% ============================================================================
+%  Part I -- The model and its prior
+%  sections/part1_model_kernel.tex   (\input-ready fragment; no preamble)
+%  Covers: (1) Introduction, (2) Generative model, (3) Arc-cosine kernel +
+%  structured spatial prior.
+% ============================================================================
+
+\section{Introduction: the sequential active-learning problem}
+\label{sec:intro}
+
+\subsection{Setup}
+
+We study a sequential active-learning problem for a Poisson--Gaussian-process
+model of a latent function $\lat(x)$ over inputs $x$. An input
+$x\in\Reals^{d}$ is a real-valued signal on a 2-D grid of $d$ grid points (e.g. a
+$108\times108$ grid, so $d=108^2=11664$); grid point $i$ sits at grid coordinate
+$\pixc_i$, and the input domain is a bounded box (e.g. $[0,1]^{d}$). For a single
+input $x$ the model produces a scalar latent value $\lat(x)$, an exponential-link
+rate $\rate(x)=\exp(\gain\,\lat(x)+\latz)$, and a Poisson count observation
+$\spk\sim\Poi(\rate(x))$ (\S\ref{sec:genmodel}). None of the formulas below assume
+the particular dimension $d=11664$.
+
+The latent function $\lat$ is unknown a priori and must be inferred from the
+counts. We place a Gaussian-process (GP) prior on $\lat$ and update its posterior
+online as counts arrive. The setting is \emph{sequential}: after each observation
+the model is refit and used to choose the next input, so the inputs presented
+depend on the observations already collected.
+
+\subsection{The active-learning goal}
+
+The inputs are not presented in a fixed order. At each round the next input is
+chosen to be maximally informative about $\lat$ --- this is \emph{active
+learning}. A candidate input $x^{*}$ is scored by an information \emph{utility}
+$\Ustd(x^{*})$ (Part~III) measuring the expected reduction in uncertainty about
+$\lat$ if $x^{*}$ were observed next; the input maximizing the utility over the
+available pool is chosen. A second variant $\Uda$ scores information about the rate
+over the input (data) distribution $\px$. Because scoring and selecting from a
+fixed pool is limited by the pool, a final stage (Part~IV) instead
+\emph{synthesizes} an input that maximizes the utility, using a diffusion prior
+over inputs steered by the utility gradient. All three stages consume two
+derivatives of the GP prior kernel that are established in this part: the input
+gradient $\nabla_x\Kf$~\eqref{eq:gradxK} (utility and diffusion guidance) and the
+hyperparameter gradients $\partial\Cmat/\partial\theta$~\eqref{eq:dCtheta} (model
+fitting).
+
+\subsection{Roadmap of the document}
+
+The document proceeds in the order the pipeline runs.
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Part~I (this part) --- the model and its prior.} The generative model
+  (\S\ref{sec:genmodel}): a latent GP over input space, an exponential link, and
+  Poisson counts. The prior kernel (\S\ref{sec:kernel}): the order-1
+  arc-cosine (ReLU) kernel built on a structured spatial prior covariance
+  $\Cmat(\Amp,\bwid,\smoo,\rfc)$ that encodes a local, smooth weighting centred on
+  the localized region, together with the two kernel gradients the rest of the
+  pipeline needs.
+\item \textbf{Part~II --- inference.} The Poisson likelihood breaks conjugacy, so
+  the posterior over the latent is approximated by a sparse variational GP on $\Mind$
+  inducing points with Gaussian posterior $q(\latt)=\Gauss(\vm,\vV)$, optimized
+  against the evidence lower bound (ELBO); the model is trained by an EM-style
+  coordinate-ascent loop (E-, F-, M-steps).
+\item \textbf{Part~III --- active learning.} The information utility: the marginal
+  count entropy $\Hmarg$, the production utility
+  $\Ustd=\Hmarg-\E[\Hnoise]$, and the distribution-aware research variant
+  $\Uda=\Hmarg-\E_{x\sim\px}[\Hcond]$; a deep layer of conditioning, subspace, and
+  divergence results grounded in the kernel of this part.
+\item \textbf{Part~IV --- synthesis.} Guided diffusion: a denoising diffusion prior
+  whose reverse process is steered by $\nabla_x\Ustd$ (which flows through
+  $\nabla_x\Kf$) to synthesize high-utility inputs.
+\end{itemize}
+
+\emph{The central open problem.} A single thread runs from the prior of this part
+to the analysis of Part~III. The arc-cosine kernel is positively homogeneous in
+the input: its self-value $\Kf(x,x)=x\transpose\Cmat x+\sigz^2$
+(\S\ref{subsec:selfkernel}) grows with the input norm. Under utility maximization
+the posterior variance then grows with the square of the input scale, so the
+utility \emph{diverges} and the optimizer drives inputs to the boundary of the
+bounded box (saturation). Whether a kernel exists that both (i) keeps the utility
+bounded on the bounded input domain and (ii) fits well is the central \emph{open
+problem}; it is set up here and analyzed in Part~III (with two candidate fixes, a
+normalized arc-cosine kernel and a saturating arc-sin kernel).
+
+
+\section{The generative model}
+\label{sec:genmodel}
+
+\subsection{Latent Gaussian process, exponential link, Poisson counts}
+
+The count observation $\spk_i$ (also written $r_i$, or $n$ for a novel test input)
+for input $x_i$ is a Poisson draw whose rate is an exponential link applied to a
+latent Gaussian-process function $\lat$.
+
+\begin{definition}[Generative model]
+\label{eq:genmodel}
+With a zero-mean GP prior over input space,
+\begin{equation}
+\lat(\cdot)\ \sim\ \GProc\!\left(0,\ \Kf\right),
+\qquad
+\rate(x)\ =\ \exp\!\big(\gain\,\lat(x)+\latz\big),
+\qquad
+\spk_i\ \sim\ \Poi\!\big(\rate(x_i)\big).
+\end{equation}
+Here $\lat(x)\in\Reals$ is the \emph{latent function} (what the GP learns;
+\emph{not} the rate); $\rate(x)>0$ is the \emph{rate} (the Poisson rate
+parameter); $\gain>0$ is the \emph{gain}, scaling how strongly the latent
+modulates the rate; and $\latz\in\Reals$ is the \emph{bias} / log-baseline
+rate, so that $\rate=e^{\latz}$ when $\lat=0$. The log-rate is
+$\lgr(x)=\gain\,\lat(x)+\latz$, giving $\rate=e^{\lgr}$.
+\end{definition}
+
+For numerical stability the gain is constrained positive and bounded,
+$\gain\in(0,10]$, and the bias to $\latz\in[-50,50]$.
+
+The GP prior is defined by the property that any finite set of latent values
+$\{\lat(x_1),\dots,\lat(x_n)\}$ is jointly Gaussian, $\lat(X)\sim\Gauss(0,\Kf)$
+with $[\Kf]_{ij}=\Kf(x_i,x_j)=\mathrm{Cov}[\lat(x_i),\lat(x_j)]$. The mean is
+zero. The kernel $\Kf$ is fixed in \emph{form} before seeing data but its entries
+depend on the inputs through evaluation; its full definition is
+\S\ref{sec:kernel}.
+
+\subsection{Why the GP models the latent, not the rate}
+
+Modelling $\lat$ as Gaussian and pushing it through $\rate=\exp(\gain\lat+\latz)$
+means the rate is \emph{log-normally} distributed: we learn a scaled, shifted log
+of the Poisson rate rather than the rate itself. Two properties make this the
+right choice for count data.
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Positivity for free.} The exponential link guarantees $\rate>0$ for any
+  real latent value. A Gaussian prior placed \emph{directly} on the rate would
+  assign mass to negative (invalid) rates.
+\item \emph{Smoothness where it belongs.} The GP prior imposes spatial structure
+  (locality and smoothness, \S\ref{sec:kernel}) on the unconstrained latent
+  $\lat$, not on the constrained rate. The prior belief --- that $\lat$ is a
+  spatially local, smooth function of the input --- is naturally expressed on the
+  unconstrained log-rate, which is where the structure lives.
+\end{itemize}
+
+\begin{remark}[Poisson breaks conjugacy]
+For a Gaussian likelihood the posterior and predictive would be closed-form. With
+the Poisson likelihood the marginal
+$p(\spk\mid X,\theta)=\int \Poi(\spk\mid\rate(x))\,\Gauss(\lat\mid0,\Kf_\theta)\,d\lat$
+has no closed form, so neither the exact posterior $p(\lat\mid\spk,X,\theta)$ nor
+the exact predictive can be computed directly. This is what forces the variational
+treatment of Part~II; here we fix only the model and its prior.
+\end{remark}
+
+
+\section{The arc-cosine kernel and the structured spatial prior}
+\label{sec:kernel}
+
+The prior covariance $\Kf$ is a first-order arc-cosine (ReLU) kernel built on a
+structured input-covariance matrix $\Cmat$. This section owns the definitions of
+both $\Kf$ and $\Cmat$, their parameterization and constraints, and the two
+gradients ($\nabla_x\Kf$, $\partial\Cmat/\partial\theta$) that the utility, the
+diffusion guidance, and the M-step consume.
+
+\subsection{The order-1 arc-cosine kernel}
+\label{subsec:acos}
+
+\begin{definition}[Order-1 arc-cosine kernel]
+For two input vectors $x,x'\in\Reals^{d}$,
+\begin{equation}
+\Kf(x,x')\ =\ \frac{1}{\pi}\,\Kmag\,\Jang(\kang),
+\qquad
+\Kmag=\sqrt{\vmag_x\,\vmag_{x'}},
+\qquad
+\cos\kang=\frac{x\transpose\Cmat x'+\sigz^2}{\Kmag},
+\qquad
+\Jang(\kang)=\sin\kang+(\pi-\kang)\cos\kang,
+\label{eq:acoskernel}
+\end{equation}
+with self-magnitudes (prior variances) $\vmag_x=x\transpose\Cmat x+\sigz^2$ and
+$\vmag_{x'}={x'}\transpose\Cmat x'+\sigz^2$, cross-term
+$x\transpose\Cmat x'+\sigz^2$, magnitude $\Kmag$, angle $\kang$, and order-1
+angular term $\Jang$. Equivalently, expanding the angle,
+\begin{equation}
+\kang=\arccos\!\left(
+\frac{x\transpose\Cmat x'+\sigz^2}
+     {\sqrt{x\transpose\Cmat x+\sigz^2}\ \sqrt{{x'}\transpose\Cmat x'+\sigz^2}}
+\right).
+\end{equation}
+Here $\sigz^2$ is a constant \emph{bias variance} and $\Cmat\in\Reals^{d\times d}$
+is the structured spatial prior covariance (\S\ref{subsec:Cprior}).
+\end{definition}
+
+\begin{remark}[Order and ReLU-network interpretation]
+This is the order-$n=1$ member of the Cho--Saul (2009) arc-cosine family
+($n=0$ is Heaviside/step, $n=1$ is ReLU); the angular term
+$\Jang(\kang)=\sin\kang+(\pi-\kang)\cos\kang$ is exactly the ReLU case. The kernel
+is the covariance of the output of an infinite-width, single-hidden-layer ReLU
+network whose input-to-hidden weights are drawn $w\sim\Gauss(0,\Cmat)$, with the
+bias contributing $\sigz^2$:
+\begin{equation}
+\Kf(x,x')\ =\ \E_{w\sim\Gauss(0,\Cmat)}\!\big[\,\mathrm{ReLU}(w\transpose x)\,\mathrm{ReLU}(w\transpose x')\,\big]
+\quad\text{(up to the $1/\pi$ constant, with bias $\sigz^2$).}
+\end{equation}
+Thus $\Cmat$ is literally the prior covariance of the network weights across grid
+points. Shaping $\Cmat$ (\S\ref{subsec:Cprior}) injects the prior belief that
+$\lat$ depends on the input through a spatially \emph{local} and \emph{smooth}
+region of grid points.
+\end{remark}
+
+\subsection{Non-stationarity and the self-kernel identity}
+\label{subsec:selfkernel}
+
+\begin{proposition}[Self-kernel identity]
+The prior variance at any input is the $\Cmat$-quadratic form plus the bias
+variance:
+\begin{equation}
+\Kf(x,x)\ =\ \vmag_x\ =\ x\transpose\Cmat x+\sigz^2.
+\label{eq:selfkernel}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+At $x'=x$ the cross-term equals $\vmag_x=\Kmag$, so $\cos\kang=1$, $\kang=0$, and
+$\Jang(0)=\sin0+(\pi-0)\cos0=\pi$. Hence
+$\Kf(x,x)=\Kmag\,\Jang(0)/\pi=\Kmag=\sqrt{\vmag_x\,\vmag_x}=\vmag_x$.
+\end{proof}
+
+\begin{remark}[Non-stationarity and its consequence for active learning]
+Equation~\eqref{eq:selfkernel} shows $\Kf$ depends on the actual input values
+through $x\transpose\Cmat x$, not only on $x-x'$: the kernel is \emph{non-stationary}
+and the prior variance $\vmag_x$ grows with the input norm (in the $\Cmat$-metric).
+This has a direct downstream effect: the active-learning utility is driven by
+posterior variance, so utility maximization is biased toward high-norm inputs
+unless the kernel is normalized. For exactly this reason there are normalized and
+saturating siblings of the base kernel --- a normalized arc-cosine kernel
+($\bar{\Kf}=\Jang(\kang)/\pi$, constant $\bar{\Kf}(x,x)=1$) and a saturating
+arc-sin kernel (bounded diagonal) --- analyzed in Part~III as fixes to the
+norm-scaling divergence. This part keeps the focus on the base arc-cosine kernel.
+\end{remark}
+
+\subsection{The structured spatial prior covariance $\Cmat$}
+\label{subsec:Cprior}
+
+$\Cmat$ encodes that the localized support of the prior is spatially local and
+smooth. It is \emph{constant with respect to the input} $x$ --- it depends only on
+the hyperparameters $(\Amp,\bwid,\smoo,\rfc)$. Grid point $i$ sits at grid
+coordinate $\pixc_i$ on a normalized $[-1,1]\times[-1,1]$ grid, and
+$\rfc=(\varepsilon_{0x},\varepsilon_{0y})$ is the center of the localized region.
+
+\begin{definition}[Structured spatial prior]
+With an amplitude $\Amp$, a per-grid-point locality weight $\loc_i$, and a pairwise
+smoothing factor $\Csm$,
+\begin{equation}
+\Cmat_{ij}
+\ =\ \Amp\,\loc_i\,[\Csm]_{ij}\,\loc_j
+\ =\ \Amp\,\exp\!\left(-\frac{\lVert\pixc_i-\rfc\rVert^2}{4\bwid^2}\right)\,
+      \exp\!\left(-\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}\right)\,
+      \exp\!\left(-\frac{\lVert\pixc_j-\rfc\rVert^2}{4\bwid^2}\right),
+\label{eq:Cprior}
+\end{equation}
+where
+\begin{equation}
+\begin{aligned}
+\loc_i&=\exp\!\left(-\frac{\lVert\pixc_i-\rfc\rVert^2}{4\bwid^2}\right)
+&&\text{(locality weight)},\\
+[\Csm]_{ij}&=\exp\!\left(-\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}\right)
+&&\text{(smoothness kernel)},
+\end{aligned}
+\end{equation}
+followed by a symmetrization $\Cmat\leftarrow(\Cmat+\Cmat\transpose)/2$.
+\end{definition}
+
+\emph{Interpretation of the natural parameters} (defaults $\Amp=1.0$,
+$\bwid=\smoo=0.1$ on the $[-1,1]$ grid):
+\begin{itemize}[leftmargin=1.4em]
+\item $\Amp$ --- overall \emph{amplitude}: a positive gain (default $1.0$) on the
+  structured covariance $\Cmat$, scaling the prior variance of the latent. It
+  multiplies the $\Cmat$-quadratic part of the self-magnitude
+  $\vmag_x=x\transpose\Cmat x+\sigz^2$ (not the bias $\sigz^2$); because it enters
+  the kernel inside $\Kmag=\sqrt{\vmag_x\vmag_{x'}}$ and $\cos\kang$, it rescales
+  $\Kf$ non-linearly rather than as a plain output scale. Unlike $\bwid,\smoo,\rfc$
+  it sets the magnitude, not the spatial shape, of the localized weighting.
+\item $\bwid$ --- \emph{half-width} of the localized region: the locality weight
+  $\loc$ is a Gaussian of standard deviation $\sqrt{2}\,\bwid$ in grid-distance,
+  reaching $e^{-1}$ at $\text{dist}=2\bwid$; for $\bwid=0.1$ the localized region
+  spans roughly $\pm0.2$ ($\approx20\%$ of the axis).
+\item $\smoo$ --- smoothness \emph{standard deviation} (correlation length) of the
+  RBF-like $\Csm$ (variance $\smoo^2$): grid points closer than $\smoo$ are
+  strongly correlated, grid points beyond $3\smoo$ nearly uncorrelated.
+\item $\rfc$ --- the 2-D center of the localized region on $[-1,1]^2$.
+\end{itemize}
+Together, $\loc$ localizes weight around $\rfc$ and $\Csm$ correlates nearby grid
+points --- a localized, smooth weight prior.
+
+\subsection{Raw parameterization and constraints}
+\label{subsec:rawparam}
+
+For optimizer stability the model is parameterized by unconstrained log-space
+\emph{raw} parameters rather than $\bwid$ and $\smoo$ directly:
+\begin{equation}
+\begin{aligned}
+\text{raw\_m2log2beta}&=-2\log(2\bwid)&&\Rightarrow&&\exp(\text{raw\_m2log2beta})=\frac{1}{4\bwid^2},\\
+\text{raw\_mlog2rho2}&=-\log(2\smoo^2)&&\Rightarrow&&\exp(\text{raw\_mlog2rho2})=\frac{1}{2\smoo^2},
+\end{aligned}
+\end{equation}
+and $\sigz=\exp(\text{raw\_sigma\_0})$ under a positivity constraint (so the bias
+variance added in~\eqref{eq:acoskernel} is $\sigz^2=(\exp(\text{raw\_sigma\_0}))^2$).
+The exponentials of the raw parameters are used \emph{directly} as the exponent
+coefficients, so that
+$\loc_i=\exp(-\tfrac{1}{4\bwid^2}\lVert\pixc_i-\rfc\rVert^2)$ and
+$[\Csm]_{ij}=\exp(-\tfrac{1}{2\smoo^2}\lVert\pixc_i-\pixc_j\rVert^2)$ reproduce
+exactly the natural-parameter form~\eqref{eq:Cprior} (numerically,
+$\bwid=\smoo=0.1\Rightarrow 1/(4\bwid^2)=25$, $1/(2\smoo^2)=50$). The raw
+parameters invert back to the natural values,
+$\bwid=\tfrac12\exp(-\text{raw\_m2log2beta}/2)$,
+$\smoo=\tfrac{1}{\sqrt2}\exp(-\text{raw\_mlog2rho2}/2)$, and round-trip cleanly.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+Param & Constraint mechanism & Bounds (natural) & Bounds (raw) \\
+\midrule
+$\sigz$ & $\sigz=\exp(\text{raw\_sigma\_0})$, positive & $\sigz>0$ & --- \\
+$\bwid$ & via $\text{raw\_m2log2beta}$, clamped & $[0.01,\,0.3]$ & $[1.02,\,7.82]$ \\
+$\smoo$ & via $\text{raw\_mlog2rho2}$, clamped & $[0.01,\,0.5]$ & $[0.69,\,8.52]$ \\
+$\rfc$ & direct clamp & $[-1,1]$ per axis & --- \\
+$\Amp$ & $\Amp=\mathrm{softplus}(\text{raw\_Amp})$, clamp & $(0,\,1000]$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{sloppypar}
+Bounds are enforced two ways: by read-only rejection of an out-of-bounds trial
+step during optimization, and by a projected clamp applied after each optimizer
+step.
+\end{sloppypar}
+
+\begin{remark}[Restricting $\Cmat$ to its effective support]
+The locality weight $\loc_i=\exp(-\lVert\pixc_i-\rfc\rVert^2/(4\bwid^2))$ decays as
+a Gaussian away from $\rfc$, so grid points whose weight $\loc_i$ falls below a
+small threshold (e.g. $10^{-3}$) contribute negligibly to $x\transpose\Cmat x$ and
+may be dropped, shrinking $\Cmat$ from $(d,d)$ to $(d',d')$ with $d'\ll d$ (the
+same restriction is applied to the input so only the retained grid points enter
+$x\transpose\Cmat x$). With threshold $10^{-3}$ the retained support is the disk
+$\lVert\pixc_i-\rfc\rVert\le2\bwid\sqrt{\ln1000}\approx5.25\,\bwid$ around $\rfc$;
+the retained entries of $\Cmat$ still carry gradients, while the support itself is
+computed from detached parameters and is therefore held fixed
+(non-differentiable) and stable.
+\end{remark}
+
+\subsection{Kernel gradient with respect to the input, $\nabla_x\Kf$}
+\label{subsec:gradxK}
+
+Choosing the next input (and steering diffusion, Part~IV) requires the derivative
+of the kernel with respect to the input. Treating $\Cmat$ as symmetric and
+constant, $\sigz^2$ constant, and $x'$ (hence $\vmag_{x'}$) constant, the useful
+intermediate gradients are
+\begin{equation}
+\nabla_x\,\vmag_x=2\,\Cmat x,
+\qquad
+\nabla_x\,(x\transpose\Cmat x'+\sigz^2)=\Cmat x',
+\qquad
+\nabla_x\,\Kmag=\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\,\Cmat x,
+\end{equation}
+and the angular derivative $d\Jang/d\kang=-(\pi-\kang)\sin\kang$.
+
+\begin{proposition}[Input gradient of the arc-cosine kernel]
+\begin{equation}
+\nabla_x\Kf(x,x')
+\ =\ \frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x'
+\ +\ \sin\kang\,\sqrt{\frac{\vmag_{x'}}{\vmag_x}}\,\Cmat x\right]
+\ =\ \frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x'
+\ +\ \sin\kang\,\sqrt{\frac{{x'}\transpose\Cmat x'+\sigz^2}{x\transpose\Cmat x+\sigz^2}}\,\Cmat x\right].
+\label{eq:gradxK}
+\end{equation}
+By symmetry ($x\leftrightarrow x'$),
+\begin{equation}
+\nabla_{x'}\Kf(x,x')
+=\frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x
++\sin\kang\,\sqrt{\frac{x\transpose\Cmat x+\sigz^2}{{x'}\transpose\Cmat x'+\sigz^2}}\,\Cmat x'\right].
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Write $\Kf=\tfrac1\pi\Kmag\,\Jang(\kang)$ and apply the product rule
+$\nabla_x\Kf\propto(\nabla_x\Kmag)\Jang+\Kmag(\nabla_x\Jang)$. Using
+$\nabla_x\Jang=(d\Jang/d\kang)\nabla_x\kang$ with
+$\nabla_x\kang=-(1/\sin\kang)\,\nabla_x(\cos\kang)$ and
+$d\Jang/d\kang=-(\pi-\kang)\sin\kang$, the $\sin\kang$ cancels and
+$\nabla_x\Jang=(\pi-\kang)\,\nabla_x(\cos\kang)$ with
+$\nabla_x(\cos\kang)=\tfrac1\Kmag\Cmat x'-\tfrac{\cos\kang}{\Kmag}\sqrt{\vmag_{x'}/\vmag_x}\,\Cmat x$
+(recall $\cos\kang=(x\transpose\Cmat x'+\sigz^2)/\Kmag$). Collecting terms,
+\[
+\pi\,\nabla_x\Kf
+=\underbrace{\sin\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[A]}
++\underbrace{(\pi-\kang)\cos\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[B]}
++\underbrace{(\pi-\kang)\Cmat x'}_{[C]}
+-\underbrace{(\pi-\kang)\cos\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[D]} .
+\]
+Terms $[B]$ and $[D]$ are identical with opposite sign and cancel, leaving
+$[A]+[C]$, which is~\eqref{eq:gradxK}.
+\end{proof}
+
+Every term carries a factor $\Cmat$, so $\nabla_x\Kf$ lives in the column space of
+$\Cmat$; this is the algebraic root of the subspace analysis in Part~III (gradient
+ascent on the utility already concentrates on the top $\Cmat$-eigenvectors).
+
+\subsection{Kernel gradients with respect to the hyperparameters, $\partial\Cmat/\partial\theta$}
+\label{subsec:dCtheta}
+
+The M-step (Part~II training) maximizes the ELBO over the kernel hyperparameters and
+needs $\partial\Cmat/\partial\theta$, which then chains through
+$\vmag_x=x\transpose\Cmat x$ and the cross-term into $\partial\Kf/\partial\theta$
+using the same quadratic-form structure as~\S\ref{subsec:gradxK} with $\Cmat$
+replaced by $\partial\Cmat/\partial\theta$.
+
+\begin{proposition}[Structured-prior hyperparameter gradients (natural parameters)]
+Writing $\Cmat=\Amp\,\loc\,\Csm\,\loc\transpose$, the amplitude enters linearly and
+the shape parameters through their Gaussian exponents. Each shape-parameter
+derivative is $\Cmat_{ij}$ --- which already carries the $\Amp$ factor --- times the
+derivative of its log-argument, while the amplitude derivative strips one factor of
+$\Amp$:
+\begin{equation}
+\label{eq:dCtheta}
+\begin{aligned}
+\frac{\partial\Cmat_{ij}}{\partial\Amp}
+&=\loc_i\,[\Csm]_{ij}\,\loc_j=\frac{\Cmat_{ij}}{\Amp},\\[2pt]
+\frac{\partial\Cmat_{ij}}{\partial\bwid}
+&=\Cmat_{ij}\,\frac{\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2}{2\bwid^3},\\[2pt]
+\frac{\partial\Cmat_{ij}}{\partial\smoo}
+&=\Cmat_{ij}\,\frac{\lVert\pixc_i-\pixc_j\rVert^2}{\smoo^3},\\[2pt]
+\nabla_{\rfc}\Cmat_{ij}
+&=\frac{\Cmat_{ij}}{2\bwid^2}\big[(\pixc_i-\rfc)+(\pixc_j-\rfc)\big]\qquad(\text{2D vector}).
+\end{aligned}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+For $\Amp$: $\Cmat=\Amp\,(\loc\,\Csm\,\loc\transpose)$ is linear in $\Amp$, so
+$\partial\Cmat_{ij}/\partial\Amp=\loc_i[\Csm]_{ij}\loc_j=\Cmat_{ij}/\Amp$. For $\bwid$:
+$\partial_\bwid\big[-(\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2)/(4\bwid^2)\big]
+=+(\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2)/(2\bwid^3)$. For $\smoo$:
+$\partial_\smoo\big[-\lVert\pixc_i-\pixc_j\rVert^2/(2\smoo^2)\big]=+\lVert\pixc_i-\pixc_j\rVert^2/\smoo^3$.
+For $\rfc$: $\nabla_{\rfc}\lVert\pixc-\rfc\rVert^2=2(\rfc-\pixc)$, giving
+$\nabla_{\rfc}\log\Cmat_{ij}=(1/(2\bwid^2))[(\pixc_i-\rfc)+(\pixc_j-\rfc)]$.
+\end{proof}
+
+\begin{remark}[Gradients in the raw parameterization]
+Because the model optimizes the raw parameters (\S\ref{subsec:rawparam}), the
+corresponding \emph{raw}-parameter gradients follow from~\eqref{eq:dCtheta} by the
+chain rule:
+\begin{equation}
+\begin{aligned}
+\frac{\partial\Cmat_{ij}}{\partial(\text{raw\_m2log2beta})}
+&=\Cmat_{ij}\,(\log\loc_i+\log\loc_j)
+=-\Cmat_{ij}\,\frac{\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2}{4\bwid^2},\\
+\frac{\partial\Cmat_{ij}}{\partial(\text{raw\_mlog2rho2})}
+&=\Cmat_{ij}\,\log[\Csm]_{ij}
+=-\Cmat_{ij}\,\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}.
+\end{aligned}
+\end{equation}
+and, since $\rfc$ is a direct parameter,
+$\partial\Cmat_{ij}/\partial\rfc=(\Cmat_{ij}/(2\bwid^2))[(\pixc_i-\rfc)+(\pixc_j-\rfc)]$
+coincides with the natural form in~\eqref{eq:dCtheta}. The raw and natural
+gradients are related by the constraint-transform Jacobian
+$d(\text{raw})/d\bwid=-2/\bwid$, etc.
+\end{remark}
+
+\subsection{Numerical stability}
+\label{subsec:numstab}
+
+Three stability mechanisms act at three distinct levels; they must not be conflated.
+
+\begin{enumerate}[leftmargin=1.6em]
+\item \textbf{$\Cmat$ matrix --- symmetrization only.}
+  $\Cmat\leftarrow(\Cmat+\Cmat\transpose)/2$ cancels the floating-point rounding
+  asymmetry from the outer product. \emph{No diagonal jitter is added to $\Cmat$.}
+\item \textbf{Kernel evaluation --- domain clamps.} With
+  $\text{eps}=10^{-7}$, $\cos\kang$ is clamped into $(-1,1)$ so $\arccos$ is finite,
+  and $1-\cos^2\kang$ is clamped at $\min=\text{eps}$ so $\sin\kang=\sqrt{1-\cos^2\kang}$
+  never takes the square root of a negative rounding result. These keep the
+  transcendental operations in-domain and are unrelated to Cholesky jitter.
+\item \textbf{GP covariance / Cholesky --- jitter on the gram matrices, not on
+  $\Cmat$.} Jitter is added to the \emph{output} gram matrices of the arc-cosine
+  kernel --- the inducing gram $\Ktil=\Kf(\Ipt,\Ipt)$ and the predictive gram
+  $\Kf(X,X)$ --- \emph{not} to $\Cmat$. A pre-Cholesky jitter (default $10^{-4}$) is
+  added to $\Ktil$ and $\Kf(X,X)$; the kernel evaluation itself adds none (that
+  would double-jitter). On a failed factorization the gram matrix is promoted to
+  double precision (sequential Cholesky subtractions are prone to catastrophic loss
+  of accuracy in single precision) and the factorization is retried with escalating
+  jitter $10^{-4},10^{-3},10^{-2}$ (up to three tries).
+\end{enumerate}
+
+\caveat{Some intuition expects diagonal jitter on the prior $\Cmat$; there is none.
+$\Cmat$ receives only symmetrization. Jitter lives exclusively on the GP gram
+matrices $\Ktil$/$\Kf(X,X)$. Do not ``add jitter to $\Cmat$'' thinking it is
+missing.}

@@ -1,0 +1,425 @@
+% ============================================================================
+%  Part IV -- From selection to synthesis: guided diffusion  (section fragment)
+%  \input-ready; uses ONLY macros from preamble.tex. No preamble here.
+%  Cross-part refs used: \eqref{eq:gradxK} (Part I kernel input-gradient),
+%  \eqref{eq:Ustd} \eqref{eq:Uda} (Part III utilities),
+%  \ref{subsec:numerics} (Part III utility numerics / truncation ceiling).
+%  Notation clash discipline (preamble): the diffusion schedule \bsched/\aret/\abar
+%  and timestep \dt are DISTINCT from the prior half-width \bwid of the localized
+%  region and the locality mask \loc; \dt is a scalar diffusion-time index, NOT a
+%  grid coordinate -- the prior is over the 2-D grid only.
+% ============================================================================
+
+\section{Guided diffusion for input synthesis}\label{sec:diffusion}
+
+Parts I--III chose the next input by \emph{selecting} the highest-utility member
+of a fixed pool. This part develops the natural extension: \emph{synthesize} a new
+input, drawn from the input (data) distribution $\px$, that maximizes the same
+Gaussian-process (GP) utility for a given target model. A denoising diffusion model
+supplies a learned prior over $\px$, and the GP utility gradient---the very object
+of Part~III---steers generation toward high-utility inputs. The two ingredients
+divide the labor cleanly: the utility gradient (smooth, low-pass;
+\S\ref{sec:diff-motiv}) fixes \emph{where} in input space to move, and the
+diffusion score supplies the high-frequency structure of $\px$ that a utility
+gradient can never produce on its own.
+
+% ----------------------------------------------------------------------------
+\subsection{Motivation: synthesize rather than select}\label{sec:diff-motiv}
+
+\paragraph{Why direct gradient ascent on the utility fails.}
+Suppose we optimize an input $x^{*}$ directly to maximize a GP utility $U(x^{*})$
+by gradient ascent. The gradient flows through the arc-cosine kernel's
+input-gradient $\nabla_{x}\Kf$ (Part~I, \eqref{eq:gradxK}), which carries the
+structured (grid) prior $\Cmat$ and hence its Gaussian smoothing block
+$\Csm$---a convolution with a Gaussian kernel, i.e.\ a \emph{low-pass filter}. Two
+consequences follow, independent of the inducing points, the training data, or
+which utility is used:
+\begin{enumerate}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+  \item the utility gradient is \emph{inherently smooth}, so ascent iterates lack
+        the high-frequency structure (sharp transitions, fine texture, local
+        contrast) that characterizes draws from $\px$; and
+  \item ascent pushes grid points outside the bounded input box. The arc-cosine
+        self-kernel is positively homogeneous, $\Kf(x,x)=x\transpose
+        \Cmat x+\sigz^{2}=\lVert x\rVert_{\Cmat}^{2}+\sigz^{2}$, so larger norms
+        are rewarded and the utility diverges under input scaling (the
+        norm-scaling divergence of Part~III).
+\end{enumerate}
+Such iterates are not admissible inputs: to lie in the support of $\px$ they must
+be indistinguishable from genuine draws from the input distribution.
+
+\paragraph{Why a subspace constraint is not enough.}
+Restricting the optimization to a low-dimensional subspace (PCA space, or the
+$\Cmat$-eigenspace of Part~III) does not cure this. PCA space fixes only the
+\emph{second-order} statistics; under approximate stationarity of $\px$ its
+eigenvectors tend to Fourier modes (Szeg\H{o}'s theorem), so PCA-space ascent is
+essentially Fourier low-pass filtering. Neither PCA space nor the
+$\Cmat$-eigenspace enforces the higher-order structure (phase coherence, sparse
+gradients) that places a sample in the support of $\px$: a subspace constraint is a
+convergence aid, not a $\px$-fidelity constraint.
+
+\paragraph{The decomposition, and why diffusion.}
+The synthesis task has two objectives that pull apart cleanly:
+(i)~\emph{informativeness}---$x^{*}$ maximizes the utility (reduces output
+uncertainty); and (ii)~\emph{fidelity}---$x^{*}$ is a plausible draw from the input
+distribution $\px$. Gradient ascent handles (i) but not (ii). A diffusion model
+trained on samples from $\px$ learns the \emph{score}
+$\nabla_{x}\log p_{\dt}(x)$ at every noise level $\dt$; at low noise this encodes
+the full statistical structure of $\px$. Guided generation adds the two:
+\begin{equation}
+\underbrace{\score(\xt,\dt)}_{\text{high-freq.\ structure}}
+\;+\;
+\underbrace{\gw\,\nabla_{\xt}U(\xhat)}_{\text{low-freq.\ utility bias}} .
+\label{eq:diff-decomp}
+\end{equation}
+
+\begin{remark}[Division of labor]
+The smoothness that ruined direct optimization becomes acceptable under
+\eqref{eq:diff-decomp}: the utility only has to \emph{bias} generation toward
+informative regions, not prescribe individual grid points. The score model supplies
+all orders of the statistics of $\px$ (trained once, reused across targets and
+utilities); the utility gradient supplies the target-specific, low-frequency
+direction. They act at complementary spatial-frequency scales.
+\end{remark}
+
+\paragraph{Connection to the selection setting.}
+In the fixed-pool active-learning loop, one \emph{selects} the pool input of
+highest expected information gain about the latent function. Diffusion-guided
+synthesis is the extension: \emph{manufacture} an input of even higher utility that
+still lies in the support of $\px$---closing the gap between ``best available pool
+input'' and ``best attainable informative input.'' This part is framed by three
+questions: (1)~can we generate inputs that are simultaneously plausible under $\px$
+and high-utility?  (2)~how does that input change as the GP sharpens from
+$\Ntr=50$ to $300$ training inputs?  (3)~how much utility does the $\px$-fidelity
+constraint cost---the gap between the unconstrained pure-utility optimum and the
+diffusion-guided one, as a function of guidance strength $\gw$?
+
+% ----------------------------------------------------------------------------
+\subsection{Diffusion fundamentals}\label{sec:diff-fund}
+
+\subsubsection{Forward (noising) process}
+Let $\xz\in\Reals^{d}$ be a clean input ($d=64\times64=4096$ here). Fix a variance
+schedule $\bsched\in(0,1)$, $\dt=1,\dots,T$, and define the per-step signal
+retention $\aret=1-\bsched$ and its cumulative product
+$\abar=\prod_{s=1}^{\dt}\alpha_{s}=\prod_{s=1}^{\dt}(1-\beta_{s})$. The forward
+process adds Gaussian noise one step at a time,
+\begin{equation}
+q(\xt\mid x_{\dt-1})=\Gauss\!\big(\xt;\ \sqrt{1-\bsched}\,x_{\dt-1},\ \bsched\,I\big),
+\label{eq:forward-step}
+\end{equation}
+and admits a closed-form marginal at arbitrary $\dt$ (the key property---no
+intermediate steps are needed):
+\begin{equation}
+q(\xt\mid\xz)=\Gauss\!\big(\xt;\ \sqrt{\abar}\,\xz,\ (1-\abar)\,I\big).
+\label{eq:forward-diff}
+\end{equation}
+Equivalently, by the reparameterization
+\begin{equation}
+\xt=\sqrt{\abar}\,\xz+\sqrt{1-\abar}\,\epsilon,\qquad \epsilon\sim\Gauss(0,I).
+\label{eq:reparam}
+\end{equation}
+The schedule is chosen so that $\bar\alpha_{T}\approx0$, hence
+$q(x_{T}\mid\xz)\approx\Gauss(0,I)$: at the end of the forward process all
+information about $\xz$ is destroyed.
+
+\subsubsection{Score $\leftrightarrow$ noise, and the training objective}
+Differentiating the log of the forward marginal \eqref{eq:forward-diff} gives the
+score in closed form, which identifies it with the added noise:
+\begin{equation}
+\nabla_{\xt}\log q(\xt\mid\xz)
+   =-\frac{\xt-\sqrt{\abar}\,\xz}{1-\abar}
+   =-\frac{\epsilon}{\sqrt{1-\abar}}
+\quad\Longrightarrow\quad
+\nabla_{\xt}\log p_{\dt}(\xt)\approx\score(\xt,\dt)=-\frac{\epsth(\xt,\dt)}{\sqrt{1-\abar}}.
+\label{eq:score-noise}
+\end{equation}
+A network trained to predict the noise therefore approximates the score. Training
+minimizes the simplified denoising-score-matching (DSM) $L_{2}$ loss
+\begin{equation}
+\mathcal{L}_{\mathrm{DSM}}
+  =\E_{\dt\sim U(1,T)}\,\E_{\xz\sim\px}\,\E_{\epsilon\sim\Gauss(0,I)}
+   \Big[\big\lVert\epsth(\xt,\dt)-\epsilon\big\rVert^{2}\Big],
+\label{eq:dsm}
+\end{equation}
+with $\xt$ formed by \eqref{eq:reparam}. Each mini-batch draws a fresh
+$(\xz,\dt,\epsilon)$; the network learns all noise levels though it sees each
+infrequently.
+
+\subsubsection{Reverse (denoising) process and the Tweedie estimate}
+The generative reverse process is Gaussian,
+$p_{\theta}(x_{\dt-1}\mid\xt)=\Gauss(x_{\dt-1};\mu_{\theta}(\xt,\dt),\sigma_{\dt}^{2}I)$,
+with mean read off from the noise predictor
+\begin{equation}
+\mu_{\theta}(\xt,\dt)=\frac{1}{\sqrt{1-\bsched}}
+   \Big[\,\xt-\frac{\bsched}{\sqrt{1-\abar}}\,\epsth(\xt,\dt)\Big],
+\label{eq:reverse-mean}
+\end{equation}
+and fixed variance $\sigma_{\dt}^{2}$, either the simple choice
+$\sigma_{\dt}^{2}=\bsched$ or the posterior form
+$\tilde\beta_{\dt}=\bsched(1-\bar\alpha_{\dt-1})/(1-\abar)$; in practice
+$\sigma_{\dt}^{2}=\bsched$ works well. Sampling runs $\dt=T,\dots,1$ from
+$x_{T}\sim\Gauss(0,I)$, drawing $x_{\dt-1}=\mu_{\theta}+\sigma_{\dt}z$ with
+$z\sim\Gauss(0,I)$ ($z=0$ at $\dt=1$). At any $\dt$ the noise prediction yields the
+\emph{Tweedie estimate} of the clean input---the model's posterior mean
+$\E[\xz\mid\xt]$:
+\begin{equation}
+\xhat=\frac{\xt-\sqrt{1-\abar}\,\epsth(\xt,\dt)}{\sqrt{\abar}}.
+\label{eq:tweedie}
+\end{equation}
+It is coarse at high noise and increasingly detailed as $\dt\downarrow$. The
+Tweedie estimate \eqref{eq:tweedie} is the workhorse of guidance
+(\S\ref{sec:diff-guide}): it maps a noisy intermediate to a clean input on which
+the GP utility can be evaluated, and it is a differentiable function of $\xt$.
+
+\begin{remark}[$T-1$ start]
+At $\dt=T$ the schedules used here have $\bar\alpha_{T}\!\sim\!10^{-3}$, so
+$1/\sqrt{\bar\alpha_{T}}\!\sim\!31$ and the first reverse step amplifies any
+prediction error $\sim\!31\times$, causing divergence. Sampling therefore starts
+the loop at $\dt=T-1$ (where $1/\sqrt{\alpha}\!\approx\!2$, stable).
+\end{remark}
+
+\subsubsection{The U-Net noise predictor and DDIM acceleration}
+Because $\epsth(\xt,\dt)$ maps a noisy input to a same-size tensor, it is
+parameterized by an encoder--decoder with \emph{skip connections} (a U-Net): a
+plain bottleneck would discard exactly the fine detail that distinguishes a draw
+from $\px$ from noise, whereas skip connections carry per-resolution detail
+directly to the decoder. The scalar timestep $\dt$ enters through a sinusoidal
+embedding (Transformer-style),
+\[
+\mathrm{emb}(\dt)_{2k}=\sin\!\big(\dt/10000^{2k/d_{\mathrm{emb}}}\big),
+\qquad
+\mathrm{emb}(\dt)_{2k+1}=\cos\!\big(\dt/10000^{2k/d_{\mathrm{emb}}}\big),
+\]
+passed through a small MLP and \emph{added} (broadcast over space) to each block's
+feature map---a global ``how much to activate at this noise level'' modulation.
+
+Full DDPM sampling needs $T-1=999$ sequential U-Net passes. \emph{DDIM} replaces
+the stochastic reverse chain by a deterministic one over a subsequence of $S$
+timesteps $\tau_{S}>\dots>\tau_{1}$ (e.g.\ $S=50$). Going from $\dt=\tau_{i}$ to
+$t'=\tau_{i-1}$,
+\begin{equation}
+x_{t'}=\sqrt{\bar\alpha_{t'}}\,\xhat
+   +\sqrt{1-\bar\alpha_{t'}-\sigma^{2}}\;
+     \frac{\xt-\sqrt{\abar}\,\xhat}{\sqrt{1-\abar}}
+   +\sigma\,z,
+\label{eq:ddim}
+\end{equation}
+with $\xhat$ from \eqref{eq:tweedie}. Here $\sigma=0$ gives a fully deterministic,
+reproducible sampler; the DDPM choice of $\sigma$ recovers stochastic sampling.
+Quality degrades below $S\!\approx\!20$; $S=50$ is the default.
+
+% ----------------------------------------------------------------------------
+\subsection{Guidance: steering the reverse process with the GP utility gradient}
+\label{sec:diff-guide}
+
+\subsubsection{Classifier-style guidance}
+Model ``high utility'' as a label $y$ with $p(y\mid\xz)\propto\exp\!\big(\gw\,
+U(\xz)\big)$, $\gw>0$. Bayes' rule splits the \emph{conditional} score into a
+$\px$-fidelity term and a guidance term:
+\begin{equation}
+\nabla_{\xt}\log p(\xt\mid y)
+  =\underbrace{\score(\xt,\dt)}_{\text{unconditional score, \eqref{eq:score-noise}}}
+  +\;\gw\,\nabla_{\xt}\Ustd(\xhat(\xt,\dt)).
+\label{eq:guidance}
+\end{equation}
+The utility is defined on \emph{clean} inputs, so it is evaluated on the Tweedie
+estimate \eqref{eq:tweedie} (the standard Dhariwal--Nichol trick). Any of the
+Part~III utilities may play the role of $U$ in \eqref{eq:guidance}: the standard
+utility $\Ustd$ (\eqref{eq:Ustd}), shown here, or the distribution-aware utility
+$\Uda$ (\eqref{eq:Uda}). Define the \emph{guidance gradient}
+\begin{equation}
+\ggrad=\nabla_{\xt}\Ustd\big(\xhat(\xt,\dt)\big).
+\label{eq:ggrad}
+\end{equation}
+
+\subsubsection{The guided reverse update (two equivalent forms)}
+Converting the guided score \eqref{eq:guidance} back to a noise prediction, and
+substituting into the Tweedie map \eqref{eq:tweedie}, yields two algebraically
+identical updates:
+\begin{align}
+\epsilon_{\mathrm{guided}} &= \epsth(\xt,\dt)-\gw\,\sqrt{1-\abar}\,\ggrad,
+   \label{eq:guided-noise}\\[2pt]
+\xhat^{\mathrm{guided}} &= \xhat+\frac{\gw\,(1-\abar)}{\sqrt{\abar}}\,\ggrad.
+   \label{eq:guided-tweedie}
+\end{align}
+Form \eqref{eq:guided-noise} feeds the DDPM mean \eqref{eq:reverse-mean} in place
+of $\epsth$; form \eqref{eq:guided-tweedie} feeds the DDIM update \eqref{eq:ddim}
+in place of $\xhat$. The \emph{ramp factor} $(1-\abar)/\sqrt{\abar}$ in
+\eqref{eq:guided-tweedie} is large at high noise ($\dt\!\approx\!T$, $\sim\!158$),
+giving bold utility steering while global structure is still being decided, and
+small at low noise ($\dt\!\approx\!1$, $\sim\!0.3$), preserving fine detail.
+
+\subsubsection{The GP link: what the guidance signal is}\label{sec:diff-gplink}
+The guidance gradient \eqref{eq:ggrad} is the gradient of the GP information
+utility of Part~III, back-propagated through Tweedie. Both utilities are
+differentiable in the input, and the gradient flows through the arc-cosine
+kernel's input-gradient $\nabla_{x}\Kf$ (Part~I, \eqref{eq:gradxK}). Because
+$\nabla_{x}\Kf$ carries the factor $\Cmat$---and thus the Gaussian spatial
+smoother $\Csm$---the utility gradient is exactly the smooth, low-pass signal of
+\S\ref{sec:diff-motiv}. This is precisely why guidance works: the utility supplies
+a \emph{low-frequency} informative direction, and the score model supplies the
+\emph{high-frequency} structure of $\px$ the smooth utility gradient can never
+produce.
+
+\paragraph{The locality mask $\Rightarrow$ guidance touches only the
+localized-region grid points.}
+The structured prior applies a Gaussian locality envelope to each grid point $j$,
+\begin{equation}
+\loc_{j}=\exp\!\Big(-\frac{\lVert\pixc_{j}-\rfc\rVert^{2}}{4\,\bwid^{2}}\Big),
+\label{eq:rfmask}
+\end{equation}
+where $\pixc_{j}$ is grid point $j$'s coordinate, $\rfc$ the center of the
+localized region, and $\bwid$ the \emph{kernel's localized-region half-width}.
+Grid points with $\loc_{j}<10^{-3}$ are masked out (zero contribution), so
+$\nabla_{x}U$ is nonzero \emph{only at localized-region grid points}. The mask area
+scales as $\bwid^{2}$: at the default $\bwid=0.1$ the localized region covers
+$\approx21\%$ of the $64\times64$ grid ($\approx869$ grid points), versus $5.4\%$
+at $\bwid=0.05$ and $1.7\%$ at $\bwid=0.03$. The utility therefore guides only the
+localized region, and \emph{the diffusion model freely generates every remaining
+grid point} for $\px$-fidelity---an advantage over the L$_{2}$ approach
+(\S\ref{sec:diff-approaches}), whose non-localized-region grid points are frozen at
+a start input. Because $\bwid$ is a learnable kernel parameter, it must be frozen
+during GP training for synthesis, or the intended mask size drifts.
+
+\caveat{The symbol $\bwid$ in \eqref{eq:rfmask} is the \emph{kernel}
+localized-region half-width (Part~I), \textbf{not} the diffusion noise-schedule
+variance $\bsched$ of \eqref{eq:forward-step}; likewise the locality envelope
+$\loc_{j}$ is the kernel locality mask, not the diffusion signal-retention $\aret$.
+These collisions ($\beta$, $\alpha$) are the most dangerous in the whole document;
+the macros keep them apart.}
+
+\subsubsection{Full versus approximate guidance gradient}\label{sec:diff-approx}
+By the chain rule $\ggrad$ factors through the utility gradient in clean-input
+space and the Tweedie Jacobian,
+\begin{equation}
+\frac{\partial\xhat}{\partial\xt}
+   =\frac{1}{\sqrt{\abar}}\Big(I-\sqrt{1-\abar}\,\frac{\partial\epsth}{\partial\xt}\Big),
+\label{eq:tweedie-jac}
+\end{equation}
+where $\partial\epsth/\partial\xt$ is the $d\times d$ U-Net Jacobian, which is
+never formed explicitly.
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Full gradient:} retains $\partial\epsth/\partial\xt$ in
+        \eqref{eq:tweedie-jac}; one U-Net forward \emph{and} one backward pass,
+        $\approx2\times$ the cost of a plain step.
+  \item \textbf{Approximate gradient} (default): treat the U-Net Jacobian as
+        negligible. Then $\xhat$ depends on $\xt$ only through the direct
+        $\xt/\sqrt{\abar}$ term, so
+        \begin{equation}
+        \ggrad^{\mathrm{approx}}=\frac{1}{\sqrt{\abar}}\,\nabla_{\xhat}\Ustd(\xhat).
+        \label{eq:approx-grad}
+        \end{equation}
+        No U-Net backward pass ($\approx\tfrac12$ the cost). It is justified when
+        $\epsth$ is a ``local correction'' whose Jacobian is roughly zero-mean
+        (does not systematically align with or oppose the utility gradient), which
+        holds best at \emph{low} noise (small $\sqrt{1-\abar}$); a hybrid
+        (approximate for early $\dt>200$, full for late $\dt<200$) captures most
+        of the benefit cheaply.
+\end{itemize}
+
+\subsubsection{The four approaches (A--D) and the adopted method}
+\label{sec:diff-approaches}
+Four guidance paradigms were catalogued; all attempt to add a fidelity term
+counteracting the utility gradient's drift off the data manifold $\mathcal{M}$ (the
+support of $\px$). Let $x_{c}$ denote a current input being optimized.
+
+\begin{description}[leftmargin=1.6em,itemsep=2pt,topsep=2pt]
+  \item[A --- L$_2$ penalty toward the Tweedie estimate.] Corrupt $x_{c}$ at a
+        \emph{fixed} noise level $\dt^{*}$, predict $\hat\epsilon$, form $\xhat$
+        (\eqref{eq:tweedie}), hold it fixed (no gradient through it), and penalize
+        the distance to it:
+        \begin{equation}
+        \mathcal{L}_{\mathrm{A}}=-\Uda(x_{c})+\frac{\greg}{2}\,
+           \big\lVert x_{c}-\xhat\big\rVert^{2},
+        \qquad
+        x_{c}\leftarrow x_{c}+\eta\,\nabla\Uda+\eta\,\greg\,(\xhat-x_{c}).
+        \label{eq:approachA}
+        \end{equation}
+        Here $\greg$ is the approach-A regularization weight. Since
+        $x_{c}-\xhat\propto(\hat\epsilon-\epsilon)$, \eqref{eq:approachA} is a
+        Score-Distillation-Sampling gradient with a different time weighting.
+        \emph{Weaknesses:} no signal near $\mathcal{M}$ (for $x_{c}$ already on
+        $\mathcal{M}$, $\xhat\!\approx\!x_{c}$ so $\hat\epsilon-\epsilon$ is just
+        reconstruction noise---the penalty is reactive, not preventive); the
+        Tweedie estimate of an amplified input is itself amplified, so norm growth
+        is not prevented; $\dt^{*}$ is arbitrary; a single fixed noise sample is
+        biased.
+  \item[B --- direct score.] Use $\score(\xt,\dt^{*})=-\hat\epsilon/\sqrt{1-
+        \bar\alpha_{\dt^{*}}}$ directly, chain-ruled to $x_{c}$-space. Uses
+        $\hat\epsilon$ alone (not $\hat\epsilon-\epsilon$), so it has signal on
+        $\mathcal{M}$ but high variance, and estimates the score of the
+        \emph{blurred} $p_{\dt^{*}}$, not $p_{0}$.
+  \item[C --- score without added noise.] Feed $x_{c}$ at $\dt=1$ directly.
+        Appealing ($p_{1}\!\approx\!p_{0}$) but fails: a utility-distorted $x_{c}$
+        is far out-of-distribution for a network expecting ``a draw from $\px$ plus
+        $\sigma\!\approx\!0.01$ noise,'' and dividing by
+        $\sqrt{1-\bar\alpha_{1}}\!\approx\!0.01$ amplifies the unreliable
+        prediction $\sim\!100\times$.
+  \item[D --- full guided reverse diffusion (\emph{adopted}).] Do not optimize an
+        existing input---\emph{generate} from noise, nudging each denoising step
+        by the utility gradient via \eqref{eq:guidance}--\eqref{eq:guided-tweedie}.
+        The U-Net is \emph{always} in-distribution ($\xt$ is genuinely at noise
+        level $\dt$ because it came from the reverse process); generation
+        traverses coarse$\to$fine over all noise levels; there is no $\dt^{*}$ to
+        choose; the output is a proper sample from the guided distribution. Costs:
+        the U-Net forward (with gradients in full mode), $T$ (or $\sim\!50$ DDIM)
+        sequential steps, utility evaluated on rough early Tweedie estimates,
+        stochastic output (best-of-$K$), and no start-point control.
+\end{description}
+
+\begin{remark}[Why the score is a genuine restoring force]
+Naive per-coordinate clipping $\Pi_{\mathcal{B}}$ (each $x_{i}$ clamped to
+$[x_{\min},x_{\max}]$) acts on each grid point independently and ignores the joint
+distribution $\px$: it lands on the boundary of the input box but far from
+$\mathcal{M}$. In the guided score \eqref{eq:guidance} the score term is instead a
+\emph{structured} restoring force on the joint distribution---if a region saturates
+and loses its characteristic spectrum, $p_{\dt}(\xt)$ drops sharply and the score
+rearranges grid points to restore the correlations of $\px$ while accommodating the
+utility bias. The limitation is out-of-distribution failure: $\epsth$ was trained
+only on the forward trajectory (samples from $\px$ plus Gaussian noise), so too
+large a $\gw$ drives $\xt$ where $\epsth$ extrapolates and the restoring force
+becomes unreliable. Thus $\gw$ must be large enough to explore high-utility regions
+yet small enough to keep $\xt$ where the score approximation is valid.
+\end{remark}
+
+\subsubsection{The rate guard}
+At high noise the Tweedie estimate is coarse and can produce extreme grid points,
+hence extreme rates that fall in the regime where the truncated utility is
+inaccurate (Part~III, \S\ref{subsec:numerics}). The generator therefore zeroes the
+guidance gradient whenever the predicted log-rate is too high:
+\begin{equation}
+\ggrad\leftarrow 0
+\quad\text{whenever}\quad
+\exp(\mug)\ge f_{\max},
+\qquad
+\mug=\gain\,\pmean+\latz,
+\label{eq:fmax}
+\end{equation}
+with $f_{\max}=100$ and $\mug$ the predicted log-rate mean (gain $\gain$ times the
+posterior latent mean $\pmean$ plus the offset $\latz$). This guard activates mostly in
+the first $\sim\!10$ steps (high $\dt$) and keeps generation in the low-rate regime
+where the (truncated) utility matches a Monte-Carlo evaluation. Because the utility
+landscape over random seeds is sparse (most seeds land at $U\!\approx\!0$),
+generation is run best-of-$K$: retain the highest-utility input over $K$ random
+seeds.
+
+% ----------------------------------------------------------------------------
+\subsection{Open issues}\label{sec:diff-status}
+
+Two remaining questions are mathematical rather than procedural.
+
+\paragraph{Utility-accuracy ceiling at high rate.}
+Both utilities inherit the Poisson-sum truncation at $\rmax$ analyzed in Part~III
+(\S\ref{subsec:numerics}): above rate $\approx\!50$ the standard utility $\Ustd$
+overflows to $+\infty$ (its analytic noise-entropy term is unbounded), while the
+distribution-aware utility $\Uda$ stays finite but is silently wrong (its marginal
+entropy collapses toward $0$). Guidance is therefore reliable only in the low-rate
+regime, rate $\approx\!0.01$--$1$, where both utilities agree with a Monte-Carlo
+evaluation to within $\sim\!3\%$; the rate guard \eqref{eq:fmax} is exactly what
+confines generation to that regime. Extending accurate utility evaluation above the
+truncation bound---so that guidance remains valid at high rate---is open.
+
+\paragraph{Single-sample distribution-aware estimator.}
+In the guided reverse path the distribution-aware utility \eqref{eq:Uda} is
+evaluated with a single conditioning sample ($n_{\mathrm{mc}}=1$, the current
+input) rather than a Monte-Carlo average over $\px$; enlarging $n_{\mathrm{mc}}$ is
+a straightforward but untested refinement.

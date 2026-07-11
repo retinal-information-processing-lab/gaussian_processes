@@ -1,0 +1,60 @@
+\documentclass[11pt]{article}
+\input{preamble.tex}
+
+\title{Active Learning with a Poisson--Gaussian-Process Model:\\[2pt]
+\large Variational Inference, Information Utility, and the Diverging-Utility Problem}
+\author{Mathematical reference (domain-neutral)}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This is a self-contained mathematical reference for a sequential active-learning
+problem built on a Poisson--Gaussian-process model. A latent function $\lat$ over
+an input space (inputs are real-valued signals on a bounded two-dimensional grid)
+is modeled by a Gaussian process with an arc-cosine kernel over a structured prior
+covariance $\Cmat$; observations are counts with a Poisson likelihood whose rate is
+an exponential link of the latent; the model is fit by sparse variational
+inference; and active learning chooses the next input to maximize expected
+information gain about $\lat$. The document develops, in one uniform notation: the
+generative model and the arc-cosine kernel with its structured prior
+$\Cmat(\Amp,\bwid,\smoo,\rfc)$ (Part~I); sparse variational inference, the
+eigenspace representation of the posterior, and coordinate-ascent training
+(Part~II); the information utility for active learning together with the
+predictive-conditioning, subspace, divergence, and numerical results beneath it
+(Part~III); and guided diffusion, which extends the loop from selecting inputs out
+of a pool to synthesizing them by steering a diffusion model with the utility
+gradient (Part~IV). The central object is the \emph{diverging-utility problem}: the
+arc-cosine kernel is positively homogeneous in the input, so the acquisition
+utility grows without bound as the input scale grows and drives the optimizer to
+the boundary of the bounded input box. The divergence is proved and the attempted
+kernel fixes (a normalized arc-cosine kernel, a saturating arc-sin kernel) are
+analyzed; finding a kernel that keeps the utility bounded on the bounded domain
+while retaining good fit is left as an open problem.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\input{sections/part0_frontmatter.tex}
+
+\part{Foundations: the generative model and its prior}
+\input{sections/part1_model_kernel.tex}
+
+\part{Inference: variational learning of the latent}
+\input{sections/part2a_inference.tex}
+\input{sections/part2b_training.tex}
+
+\part{Active learning: the information utility}
+\input{sections/part3a_utility_core.tex}
+\input{sections/part3b_deep_layer.tex}
+
+\part{From selection to synthesis: guided diffusion}
+\input{sections/part4_diffusion.tex}
+
+\appendix
+\input{sections/appendix.tex}
+
+\end{document}

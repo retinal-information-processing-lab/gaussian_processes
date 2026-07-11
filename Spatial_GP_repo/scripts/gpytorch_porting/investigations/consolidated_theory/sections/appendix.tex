@@ -1,0 +1,159 @@
+% ============================ APPENDICES ============================
+
+\section{Notation reference}\label{app:notation}
+
+One symbol denotes one concept throughout. Entries marked \textbf{[clash]} are
+symbols that collide across the source literature and are disambiguated here.
+
+\renewcommand{\arraystretch}{1.15}
+\begin{longtable}{@{}p{0.42\textwidth} p{0.52\textwidth}@{}}
+\toprule
+\textbf{Symbol} & \textbf{Concept} \\
+\midrule
+\endhead
+\multicolumn{2}{@{}l}{\textit{Model, kernel, structured prior}}\\
+\midrule
+$x$, $x^{*}$ & stimulus image (vectorized natural image); candidate image \\
+$\pixc_i$, $\rfc$ & pixel coordinate; RF center $(\varepsilon_{0x},\varepsilon_{0y})$ \\
+$\lat(x)$ & latent GP function (the tuning latent) \textbf{[clash: not $\latz$]} \\
+$\latz$ & firing-rate offset \\
+$\rate(x)=e^{\gain\lat+\latz}$ & firing rate \textbf{[clash: $\rate$ is the rate, never the latent]} \\
+$\lgr=\gain\lat+\latz$ & log-firing rate (so $\rate=e^{\lgr}$) \\
+$\gain$ & Poisson gain \textbf{[clash: not the projection $\amat$]} \\
+$\spk$ ($\equiv r$) & spike count (synonyms $r,n$, \texttt{target}) \\
+$\Kf(x,x')$ & arc-cosine prior kernel function \\
+$\Ktil=\Kf(\Ipt,\Ipt)$ & inducing gram \textbf{[clash: never a bare $K$ for this]} \\
+$\Kmag=\sqrt{\vmag_x\vmag_{x'}}$ & kernel magnitude \textbf{[clash: not $\Mind$]} \\
+$\kang$, $\Jang(\kang)$ & kernel angle; angular term \textbf{[$\Jang$ is never a Jacobian]} \\
+$\vmag_x=x\transpose\Cmat x+\sigz^{2}$ & kernel self-magnitude \\
+$\Cmat$, $\Csm$ & structured spatial prior; RBF smoothing factor \\
+$\loc_i$ & locality mask / RF envelope \textbf{[clash: not diffusion $\aret$]} \\
+$\bwid$ & RF half-width \textbf{[clash: not diffusion $\bsched$]} \\
+$\smoo$ & smoothness SD \textbf{[clash: not correlation $\corr$]} \\
+$\sigz$ & bias std, $\sigz=e^{\mathrm{raw\_sigma\_0}}$ \\
+$\Amp$ & amplitude --- kernel hyperparameter, $\Amp=\mathrm{softplus}(\text{raw\_Amp})$, bounds $(0,1000]$, optimized by default \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Variational inference and eigenspace}}\\
+\midrule
+$\ipt$, $\Ipt$ & inducing point; inducing-point matrix \\
+$\latt$ ($\equiv u$) & inducing latent values, $q(\latt)=\Gauss(\vm,\vV)$ \\
+$\Mind$, $\Ntr$ & number of inducing points; number of training images ($\Mind{=}\Ntr$ in the loop) \\
+$\kvec(x)$, $\pv(x)=\Ktil^{-1}\kvec(x)$ & cross-covariance vector; projection vector \\
+$\vm$, $\vV$ & variational mean and covariance (inducing space) \\
+$\pmean(x)$, $\pvar(x)$ & posterior mean and variance of the latent \\
+$\Lchol$ & Cholesky factor of $\Ktil$ \textbf{[clash: $\ELBO$ is the ELBO]} \\
+$\eb$, $\evals$, $\nb$ & eigenbasis of $\Ktil$; eigenvalues (diagonal); kept dimension \textbf{[$\evals$ not $\lat$]} \\
+$\mb$, $\Vb$, $\Ktilb$ & eigenspace mean, dense covariance, diagonal inducing gram \\
+$\amat=\Kf\Ktil^{-1}$ & projection matrix (\texttt{KKtilde\_inv\_b}) \\
+$\fbar=e^{\gain\pmean+\frac12\gain^{2}\pvar+\latz}$ & expected firing rate (\texttt{f\_mean}) \\
+$\ELBO$ & evidence lower bound \textbf{[clash: script $\mathcal L$, not the Cholesky factor]} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Training-step helpers}}\\
+\midrule
+$\gE=\gain\sum_i\kvec_i(\spk_i-\fbar_i)$ & E-step gradient helper \textbf{[clash: not the log-rate $\lgr$]} \\
+$\GE=\gain^{2}\sum_i\fbar_i\kvec_i\kvec_i\transpose$ & E-step Fisher curvature (PSD) \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Utility and information}}\\
+\midrule
+$\Ustd$, $\Uda$ & standard (production) and distribution-aware (research) utility \\
+$\Hmarg$, $\Hnoise$, $\Hcond$ & marginal, aleatoric-noise, and conditional entropy \textbf{[clash: never a bare $H$]} \\
+$\px$ & natural-image distribution \\
+$\mug=\gain\pmean+\latz$, $\varg=\gain^{2}\pvar$ & log-rate mean and variance \\
+$\corr(x,x^{*})$ & posterior latent correlation \textbf{[clash: not smoothness $\smoo$; $\corr^{2}$ = fractional variance reduction]} \\
+$\ccond$ & prior conditional covariance (the ``correction'' term) \\
+$\scal$ & input scaling factor, $x^{*}=\scal\,x_t$ \textbf{[clash: not $\ccond$]} \\
+$\varr$, $\subc$ & residual/aleatoric variance; subspace coordinate \textbf{[$\subc$ not an inducing point]} \\
+$\LW$, $\gmode$, $\rmax$ & Lambert-$W$ (principal); Laplace mode; count truncation \\
+$\satf$ & saturation-kernel amplitude \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Diffusion (Part~IV only)}}\\
+\midrule
+$\dt$ & diffusion timestep \textbf{[there is no temporal RF: spatial GP only]} \\
+$\xz$, $\xt$, $\xhat$ & clean, noisy, and Tweedie-estimated image \\
+$\bsched$ & noise-schedule variance \textbf{[clash: not GP $\bwid$]} \\
+$\aret$, $\abar$ & signal retention; cumulative retention \textbf{[clash: not GP mask $\loc$]} \\
+$\epsth$, $\score$ & U-Net noise predictor; score function \\
+$\gw$, $\ggrad$ & guidance scale; guidance gradient ($=$ the GP utility gradient) \\
+$\greg$ & approach-A regularization weight \textbf{[clash: not the GP latent $\lat$]} \\
+\bottomrule
+\end{longtable}
+
+\clearpage
+\section{Reconciled discrepancies and open caveats}\label{app:discrepancies}
+
+The document is anchored to the current code. The following notes-vs-code and
+notes-vs-notes discrepancies were reconciled during consolidation (code wins),
+and the honest open caveats are collected for the reader.
+
+\subsection{Reconciled (code is authoritative)}
+\begin{description}[leftmargin=0pt,itemsep=3pt]
+  \item[E-step mean update.] The ``corrected'' derivation gives
+    $\vm\leftarrow\vm+\Ktil(\Ktil+\GE)^{-1}(\gE-\vm)$; the code uses the older
+    $\vm\leftarrow\Ktil(\Ktil+\GE)^{-1}(\GE\Ktil^{-1}\vm+\gE)$
+    (\eqref{eq:estep-m}). Both maps share the fixed point $\vm^{*}=\gE$, so the
+    \emph{converged} posterior is identical; only the transient differs
+    (\S\ref{subsec:estep}).
+  \item[Constraint transforms.] $\sigz=\exp(\text{raw})$ and
+    $\Amp=\mathrm{softplus}(\text{raw})$; the handoff note claiming ``softplus for
+    sigma\_0'' is wrong (\S\ref{subsec:mstep}).
+  \item[Two gradient systems.] The ``compute $\mathrm dK$ once, single
+    contraction'' form is the kernel-level autograd backward, \emph{not} the
+    M-step, which recomputes $\Cmat,\mathrm dC,\Kf,\mathrm dK$ inside the LBFGS
+    closure and runs the full moment/loss chain (\S\ref{subsec:mstep}).
+  \item[Production utility.] The shipped acquisition is $\Ustd$
+    (\texttt{standard\_utility}); the distribution-aware $\Uda$ is the research
+    variant derived in the write-ups (\S\ref{sec:utility}).
+  \item[Deprecated helper.] \texttt{lambda\_moments} does not exist in the current
+    utility code; the moments come from \texttt{get\_gp\_marginal\_moments} and
+    \texttt{get\_gp\_conditional\_moments}.
+  \item[Cross-covariance.] The manual $\Sigma_{x,x^{*}}$ is unreliable outside the
+    inducing hull; the shipped predict path slices GPyTorch's joint
+    \texttt{covariance\_matrix}, which already includes $\ccond$
+    (\S\ref{sec:crosscov}, Rem.~\ref{rem:cond-correct}).
+  \item[Diffusion specs.] The adopted guided-reverse method (Approach~D) uses the
+    large linear-schedule model, not the small cosine model; Approach~A optimizes
+    by LBFGS, not SGD; some prose describing sizes/status is stale
+    (\S\ref{sec:diff-status}).
+\end{description}
+
+\subsection{Open caveats (carried honestly)}
+\begin{description}[leftmargin=0pt,itemsep=3pt]
+  \item[Checkpoint basis drift.] The checkpoint saves $\mb,\Vb$ but not the
+    eigenbasis $\eb$, which is recomputed on load; a different torch version can
+    yield a subtly different basis and $\sim5\%$ drift (\S\ref{sec:rank1}).
+  \item[Utility accuracy ceiling.] At high firing the standard utility can diverge
+    and the marginal entropy collapses through the $\rmax$ truncation; a firing
+    guard keeps generation in the accurate regime (\S\ref{subsec:numerics},
+    \S\ref{sec:diff-status}).
+  \item[Subspace offset.] In the C-eigenspace optimization the non-zero offset
+    equal to the mean is not mathematically motivated; it compensates a limiter
+    precision issue and remains to be investigated (\S\ref{subsec:subspace}).
+  \item[Divergence under free ascent.] Because the arc-cosine kernel is positively
+    homogeneous, unconstrained gradient ascent on the image inflates the utility
+    without bound (Thm.~\ref{thm:divergence}); this is why a subspace/norm
+    constraint or a naturalness prior (Part~IV) is required.
+\end{description}
+
+\clearpage
+\section{Glossary of experimental terms}\label{app:glossary}
+\begin{description}[leftmargin=0pt,itemsep=2pt]
+  \item[Retinal ganglion cell (RGC)] the output neuron of the retina whose spikes
+    are recorded; the GP models one RGC's tuning at a time.
+  \item[Receptive field (RF)] the region of the visual field (here, of the image)
+    to which the neuron responds; encoded by the structured prior center $\rfc$
+    and width $\bwid$.
+  \item[Multi-electrode array (MEA)] the recording device that captures spikes
+    from many RGCs simultaneously.
+  \item[Spike count] the number of spikes $\spk$ a neuron fires in the response
+    window to a displayed image; the observed data.
+  \item[Firing rate] the instantaneous rate $\rate=e^{\gain\lat+\latz}$; the
+    Poisson intensity generating the spike count.
+  \item[Tuning] how the neuron's firing rate depends on the stimulus image; the
+    latent function $\lat$ the GP infers.
+  \item[Natural image] a grayscale photograph-like stimulus (as opposed to
+    synthetic gratings); the stimulus domain the prior is designed for.
+  \item[Closed loop] the online cycle: display an image, count spikes, update the
+    GP, choose the next image.
+  \item[Active learning] choosing the next stimulus to maximize expected
+    information gain about the neuron's tuning, rather than sampling at random.
+\end{description}

@@ -1,0 +1,793 @@
+% ============================================================================
+%  sections/part3b_deep_layer.tex  --  Part III, deep layer (proofs / subspace /
+%  divergence / kernel fixes / numerics).  \input-ready fragment; no preamble.
+%  Uses ONLY the macros defined in preamble.tex.
+%  Source: notes/07_utility_subspace_proofs_numerics.md (proofs I--III, predictive
+%  conditioning, subspace theory, numerical audit).  Ground truth = current code.
+% ============================================================================
+
+\section{The deep layer: conditioning, subspace, divergence, and numerics}
+\label{sec:deeplayer}
+
+Part~III (\S7) \emph{defined} the two acquisition utilities and their entropies;
+this section proves \emph{why} those formulas behave as they do. It supplies the
+theorems that sit underneath the moment code, the exact predictive-conditioning
+derivation, the subspace-validity argument, the norm-scaling divergence theorems
+that explain the utility's blow-up under unconstrained image optimization, the
+two kernel-level fixes, and the four-failure-mode numerical audit of the standard
+utility.
+
+Two objects recur, and their ``subtracted term'' is \emph{not} the same (the
+single most load-bearing clash for a pooled reader; the top-level exposition is
+in Part~III):
+\begin{itemize}[leftmargin=1.4em]
+  \item the \textbf{standard / production} utility
+        $\Ustd(x^*)=\Hmarg(x^*)-\E_{\lgr}[\Hnoise(x^*)]$ of \eqref{eq:Ustd},
+        which the pool-selection loop maximizes (\S\ref{subsec:numerics} audits
+        it); its subtracted term is the expected Poisson \emph{noise} entropy
+        $\E_{\lgr}[\Hnoise]$, an average over the point's \emph{own} latent, no
+        second image involved;
+  \item the \textbf{distribution-aware (DA)} research utility
+        $\Uda(x^*)=\Hmarg(x^*)-\E_{x\sim\px}[\Hcond(x^*)]$ of \eqref{eq:Uda},
+        whose subtracted term is the entropy \emph{after Gaussian-conditioning}
+        the GP on a hypothetical observation of $\lat(x_t)$ at a target image
+        $x_t$.
+\end{itemize}
+The two coincide only in the $\corr^2\!=\!1$ deterministic limit, where $\Hcond$
+collapses to a single Poisson entropy (\S\ref{subsec:divergence}). The divergence
+theorems of \S\ref{subsec:divergence} and the remedies of
+\S\ref{subsec:kernelfixes} concern \emph{gradient ascent on the image $x^*$}
+(a super-stimulus / image-synthesis setting), which is distinct from the
+production loop's selection from a fixed pool.
+
+% ===========================================================================
+\subsection{GP moments and Gaussian conditioning (Proof III)}
+\label{subsec:moments}
+
+This is the moments reference grounding \texttt{get\_\allowbreak gp\_\allowbreak marginal\_\allowbreak moments} and
+\texttt{get\_\allowbreak gp\_\allowbreak conditional\_\allowbreak moments} (the current helpers; the deprecated
+\texttt{lambda\_\allowbreak moments} no longer exists).
+
+\subsubsection{The self-kernel identity}
+Recall the order-1 arc-cosine kernel of Part~I, \eqref{eq:acoskernel},
+\[
+  \Kf(x,x') \;=\; \tfrac1\pi\,\Kmag\,\Jang(\kang),\qquad
+  \Kmag=\sqrt{\vmag_{x}\,\vmag_{x'}},\quad
+  \cos\kang=\frac{x\transpose\Cmat x'+\sigz^2}{\Kmag},\quad
+  \Jang(\kang)=\sin\kang+(\pi-\kang)\cos\kang,
+\]
+with self-magnitude $\vmag_{x}=x\transpose\Cmat x+\sigz^2$.
+
+\begin{lemma}[Self-kernel / prior variance]\label{lem:selfkernel}
+For every $x$, $\Kf(x,x)=\lVert x\rVert_{\Cmat}^2+\sigz^2=\vmag_{x}$, where
+$\lVert x\rVert_{\Cmat}^2\equiv x\transpose\Cmat x$.
+\end{lemma}
+\begin{proof}
+Set $x'=x$: $\cos\kang=\vmag_x/\vmag_x=1\Rightarrow\kang=0$, and
+$\Jang(0)=\sin0+\pi\cos0=\pi$. Hence
+$\Kf(x,x)=\tfrac1\pi\,\vmag_x\,\pi=\vmag_x=x\transpose\Cmat x+\sigz^2$.
+\end{proof}
+
+This restates \eqref{eq:selfkernel}: \emph{the prior variance at any point equals
+its squared $\Cmat$-norm (plus the bias variance).} It is the single identity
+from which the entire norm-scaling divergence of \S\ref{subsec:divergence} grows.
+
+\subsubsection{Variational posterior moments}
+With $\Mind$ inducing points $\{\ipt_j\}$ and variational posterior
+$q(\latt)=\Gauss(\vm,\vV)$, write the inducing gram $\Ktil=\Kf(\Ipt,\Ipt)$, the
+cross-kernel vector $\kvec(x)=[\Kf(x,\ipt_1),\dots,\Kf(x,\ipt_\Mind)]\transpose$,
+the projection $\pv(x)=\Ktil^{-1}\kvec(x)$, and the (training-fixed) correction
+matrix
+\[
+  W \;=\; \Ktil^{-1}(\vV-\Ktil)\,\Ktil^{-1}.
+\]
+The marginal moments are
+\begin{equation}\label{eq:margmoments}
+\begin{aligned}
+  \pmean(x^*) &= \kvec(x^*)\transpose\Ktil^{-1}\vm,\\
+  \pvar(x^*)  &= \Kf(x^*,x^*)+\kvec(x^*)\transpose W\,\kvec(x^*)\\
+              &= \lVert x^*\rVert_{\Cmat}^2+\sigz^2+\kvec(x^*)\transpose W\,\kvec(x^*).
+\end{aligned}
+\end{equation}
+These ground \texttt{get\_\allowbreak gp\_\allowbreak marginal\_\allowbreak moments}, which
+returns \texttt{posterior.\allowbreak mean} and \texttt{posterior.\allowbreak variance}.
+The first term of $\pvar$ is the prior variance (Lemma~\ref{lem:selfkernel}); the
+second is the posterior correction (negative when $\vV\prec\Ktil$, i.e.\ data
+shrink variance). Between two points,
+\[
+  \Sigma_q(x^*,x_t)=\Kf(x^*,x_t)+\kvec(x^*)\transpose W\,\kvec(x_t),
+  \qquad \Sigma_q(x^*,x^*)=\pvar(x^*),\ \ \Sigma_q(x_t,x_t)=\pvar(x_t),
+\]
+and the squared posterior correlation --- the Pearson correlation of the joint
+Gaussian $[\lat(x^*),\lat(x_t)]$ under $q$ --- is
+\begin{equation}\label{eq:corrdef}
+  \corr^2(x^*,x_t)=\frac{\Sigma_q(x^*,x_t)^2}{\pvar(x^*)\,\pvar(x_t)}\in[0,1].
+\end{equation}
+
+\subsubsection{Conditioning on an observed latent}
+Observing $\lat_t$ at $x_t$ and applying the standard Gaussian conditioning
+identity to $[\lat(x^*),\lat(x_t)]$ gives the conditional moments grounding
+\texttt{get\_\allowbreak gp\_\allowbreak conditional\_\allowbreak moments}:
+\begin{equation}\label{eq:condmoments}
+  \boxed{\;
+  \begin{aligned}
+  \pmean_{\mathrm{cond}}(x^*)&=\pmean(x^*)+\frac{\Sigma_q(x^*,x_t)}{\pvar(x_t)}\bigl(\lat_t-\pmean(x_t)\bigr),\\[2pt]
+  \pvar_{\mathrm{cond}}(x^*)&=\pvar(x^*)-\frac{\Sigma_q(x^*,x_t)^2}{\pvar(x_t)}=\pvar(x^*)\bigl(1-\corr^2\bigr).
+  \end{aligned}
+  \;}
+\end{equation}
+
+\begin{proposition}[$\corr^2$ is the fractional variance reduction]\label{prop:fracvar}
+The conditional variance at $x^*$ is the marginal variance scaled by
+$(1-\corr^2)$; equivalently, conditioning on $\lat(x_t)$ removes a fraction
+$\corr^2$ of the variance at $x^*$.
+\end{proposition}
+\begin{proof}
+Substitute the correlation definition \eqref{eq:corrdef} into the variance line
+of \eqref{eq:condmoments}:
+\[
+  \pvar(x^*)-\frac{\Sigma_q(x^*,x_t)^2}{\pvar(x_t)}
+  =\pvar(x^*)\Bigl[1-\frac{\Sigma_q(x^*,x_t)^2}{\pvar(x^*)\,\pvar(x_t)}\Bigr]
+  =\pvar(x^*)(1-\corr^2).
+\]
+\end{proof}
+
+The code (\texttt{get\_\allowbreak gp\_\allowbreak conditional\_\allowbreak moments}) reads the \emph{full joint}
+\texttt{covariance\_\allowbreak matrix} of $[x_{\text{sample}};x^*]$ from the model and applies
+exactly \eqref{eq:condmoments} (with a floor $\pvar_{\mathrm{cond}}\ge10^{-8}$).
+By the theorem of \S\ref{subsec:predictive} this joint route is the \emph{exact}
+augmented predictive, not the sparse approximation.
+
+\subsubsection{Log-firing transform and the DA utility in three scalars}
+Under $\lgr=\gain\lat+\latz$ and $R\sim\Poi(e^{\lgr})$, the GP moments push to
+$\lgr$-space as $\mug=\gain\pmean+\latz$, $\varg=\gain^2\pvar$ (marginal) and
+$\mu_{g,\mathrm{cond}}=\gain\,\pmean_{\mathrm{cond}}+\latz$,
+$\sigma^{2}_{g,\mathrm{cond}}=\gain^2\pvar_{\mathrm{cond}}=\varg(1-\corr^2)$
+(the variance reduction carries through). Hence, writing
+$\Hmarg(\mug,\varg)$ for the marginal Poisson--log-normal entropy \eqref{eq:Hmarg},
+\[
+  \Uda(x^*)=\Hmarg(\mug,\varg)-\Hmarg\!\left(\mu_{g,\mathrm{cond}},\,\sigma^{2}_{g,\mathrm{cond}}\right).
+\]
+In deterministic mode ($\lat_t=\pmean(x_t)$, \texttt{sample\_\allowbreak lambda=False}) the
+conditional mean is unchanged, $\mu_{g,\mathrm{cond}}=\mug$, and \eqref{eq:Uda}
+reduces to the deterministic distribution-aware utility \eqref{eq:da-deterministic}
+of \S\ref{subsubsec:det}, a function of exactly three scalars:
+\begin{equation}\label{eq:daboxed}
+  \boxed{\;\Uda(x^*)=\Hmarg(\mug,\varg)-\Hmarg\!\left(\mug,\ \varg(1-\corr^2)\right)\;}
+\end{equation}
+the operating point $\mug=\gain\pmean(x^*)+\latz$, the marginal variance
+$\varg=\gain^2\pvar(x^*)$, and the fractional reduction $\corr^2$. Conditioning
+slides $(\mug,\varg)\!\to\!(\mug,\varg(1-\corr^2))$: same mean, reduced variance;
+the utility is the entropy gap. This is the object whose divergence
+\S\ref{subsec:divergence} analyses.
+
+% ===========================================================================
+\subsection{The predictive distribution conditioned on a new observation}
+\label{subsec:predictive}
+
+The DA utility integrates the entropy of $p(\lat(x^*)\mid\lat(x),\mathcal{D})$:
+the predictive over the latent at a query $x^*$ after a \emph{hypothetical} new
+latent observation at $x$. We derive it two ways --- sparse-approximated and
+exact/augmented --- and prove the two agree in mean.
+
+Define the \emph{prior conditional covariance} (the residual not captured by the
+inducing points)
+\[
+  \ccond(x,x') \;\equiv\; \Kf(x,x')-\pv(x)\transpose\Ktil\,\pv(x')
+                        \;=\; \Kf(x,x')-\kvec(x)\transpose\Ktil^{-1}\kvec(x'),
+\]
+whose diagonal is the residual / aleatoric variance
+$\varr(x)\equiv\ccond(x,x)=\Kf(x,x)-\kvec(x)\transpose\Ktil^{-1}\kvec(x)\ge0$.
+
+\subsubsection{The rank-1 posterior update}
+\begin{lemma}[Rank-1 update]\label{lem:rank1}
+Let the new point $x$ have projection $\pv=\pv(x)$ and residual variance
+$\varr=\varr(x)$, so the conditional likelihood is
+$p(\lat(x)\mid\latt)=\Gauss(\pv\transpose\latt,\varr)$. Conditioning the
+variational posterior $\Gauss(\vm,\vV)$ on the observed $\lat(x)$ yields
+$\Gauss(\vm',\vV')$ with
+\begin{equation}\label{eq:rank1}
+  \vm' \;=\; \vm+\frac{\vV\pv}{\varr+\pv\transpose\vV\pv}\bigl(\lat(x)-\pv\transpose\vm\bigr),
+  \qquad
+  \vV' \;=\; \vV-\frac{\vV\pv\,\pv\transpose\vV}{\varr+\pv\transpose\vV\pv}.
+\end{equation}
+\end{lemma}
+\begin{proof}
+Under the variational approximation the joint of $(\lat(x),\latt)$ is Gaussian:
+\[
+  \begin{bmatrix}\lat(x)\\ \latt\end{bmatrix}
+  \sim\Gauss\!\left(
+  \begin{bmatrix}\pv\transpose\vm\\ \vm\end{bmatrix},\
+  \begin{bmatrix}\varr+\pv\transpose\vV\pv & \pv\transpose\vV\\[2pt]
+                 \vV\pv & \vV\end{bmatrix}\right).
+\]
+The Gaussian conditioning identity on $\latt$ given $\lat(x)$, with scalar
+lower-right-to-upper-left Schur term $\Sigma_{11}=\varr+\pv\transpose\vV\pv$ and
+cross-block $\vV\pv$, gives \eqref{eq:rank1} directly.
+\end{proof}
+
+\subsubsection{Sparse vs.\ augmented predictive}
+Let $\pv^*=\Ktil^{-1}\kvec(x^*)$ and $\varr(x^*)=\Kf(x^*,x^*)-\kvec(x^*)\transpose\Ktil^{-1}\kvec(x^*)$.
+
+\emph{Sparse route.} Assuming conditional independence $p(\lat(x^*)\mid\lat(x),\latt)\approx p(\lat(x^*)\mid\latt)$ and integrating the conditional prior against the updated posterior of Lemma~\ref{lem:rank1},
+\[
+  \pmean_{\mathrm{pred}}={\pv^*}\transpose\vm',\qquad
+  \pvar_{\mathrm{pred}}=\varr(x^*)+{\pv^*}\transpose\vV'\pv^*
+                       =\Kf(x^*,x^*)-{\pv^*}\transpose(\Ktil-\vV')\pv^*.
+\]
+
+\emph{Augmented (exact) route.} Keep the direct $\lat(x)$--$\lat(x^*)$
+correlation. With augmented latent $\latt_{\mathrm{aug}}=[\lat(x);\latt]$ and
+augmented gram / cross-kernel
+\[
+  \widetilde{K}_{x}=\begin{bmatrix}\Kf(x,x) & \kvec(x)\transpose\\ \kvec(x) & \Ktil\end{bmatrix},
+  \qquad
+  \kvec_{\mathrm{aug}}(x^*)=\begin{bmatrix}\Kf(x,x^*)\\ \kvec(x^*)\end{bmatrix},
+\]
+the non-approximated conditional prior is
+$p(\lat(x^*)\mid\latt_{\mathrm{aug}})=\Gauss(\pv_{\mathrm{aug}}\transpose\latt_{\mathrm{aug}},S^*)$,
+$\pv_{\mathrm{aug}}=\widetilde{K}_x^{-1}\kvec_{\mathrm{aug}}(x^*)$,
+$S^*=\Kf(x^*,x^*)-\pv_{\mathrm{aug}}\transpose\widetilde{K}_x\,\pv_{\mathrm{aug}}$.
+Since $\lat(x)$ is \emph{observed} (variance $0$) while $\latt$ follows the
+updated posterior $\Gauss(\vm',\vV')$, the augmented posterior covariance is
+$V''=\bigl[\begin{smallmatrix}0&0\transpose\\0&\vV'\end{smallmatrix}\bigr]$, and
+\[
+  \pmean_{\mathrm{pred}}=\pv_{\mathrm{aug}}\transpose[\lat(x);\vm'],\qquad
+  \pvar_{\mathrm{pred}}=S^*+\pv_{\mathrm{aug}}\transpose V''\pv_{\mathrm{aug}}
+                       =\Kf(x^*,x^*)-\pv_{\mathrm{aug}}\transpose(\widetilde{K}_x-V'')\,\pv_{\mathrm{aug}}.
+\]
+
+\begin{remark}[Augmented route fixes the sparse self-variance artifact]
+When $x=x^*$, $\pv_{\mathrm{aug}}$ aligns with the first column of
+$\widetilde{K}_x$ and, because the $(1,1)$ block of $V''$ is $0$, the predictive
+variance is forced to $0$. A self-consistent predictive \emph{must} have zero
+variance at an already-observed point; the sparse route leaves a spurious nonzero
+self-variance there. This is the same pathology as the hand-assembled
+cross-covariance that can violate Cauchy--Schwarz (Part~II \S4.7) --- the shipped
+code sidesteps both by reading the model's full joint covariance.
+\end{remark}
+
+\subsubsection{Equivalence of predictive means}
+\begin{theorem}[Equivalence of predictive means]\label{thm:predmean-equiv}
+The augmented-integration predictive mean equals the mean obtained by standard
+Gaussian conditioning on the joint predictive $[\lat(x),\lat(x^*)]$ --- exactly,
+with no cross-covariance approximation.
+\end{theorem}
+\begin{proof}
+\textbf{Method 1 (joint conditioning).} The joint moments given $\mathcal{D}$ are
+$\pmean_x=\pv\transpose\vm$, $\pmean_{x^*}={\pv^*}\transpose\vm$,
+\[
+  \Sigma_{11}=\varr+\pv\transpose\vV\pv,\qquad
+  \Sigma_{12}=\underbrace{\bigl(\Kf(x,x^*)-\pv\transpose\Ktil\,\pv^*\bigr)}_{=\ \ccond}+{\pv^*}\transpose\vV\pv,
+\]
+where the residual cross term is exactly $\ccond=\ccond(x,x^*)$. The Gaussian
+conditioning identity gives the target
+\begin{equation}\label{eq:method1}
+  \E[\lat(x^*)\mid\lat(x),\mathcal{D}]
+  =\pmean_{x^*}+\frac{\Sigma_{12}}{\Sigma_{11}}\bigl(\lat(x)-\pmean_x\bigr)
+  ={\pv^*}\transpose\vm+\frac{\Sigma_{12}}{\Sigma_{11}}\bigl(\lat(x)-\pv\transpose\vm\bigr).
+\end{equation}
+
+\textbf{Method 2 (augmented integration).} Block-invert $\widetilde{K}_x$. Writing
+the residual-correlation coefficient $\vartheta\equiv\ccond/\varr$ (the source's
+predictive $\alpha$, renamed here to avoid the RF locality mask $\loc_i$),
+\[
+  \pv_{\mathrm{aug}}=\begin{bmatrix}\vartheta\\ \pv^*-\vartheta\,\pv\end{bmatrix},
+  \qquad \vartheta=\frac{\Kf(x,x^*)-\pv\transpose\Ktil\,\pv^*}{\varr}=\frac{\ccond}{\varr}.
+\]
+Then, with $\vm'$ from \eqref{eq:rank1},
+\[
+  \pmean_{\mathrm{aug}}=\pv_{\mathrm{aug}}\transpose[\lat(x);\vm']
+  =\vartheta\,\lat(x)+({\pv^*}\transpose-\vartheta\,\pv\transpose)\vm'
+  =\vartheta\,\lat(x)+({\pv^*}\transpose-\vartheta\,\pv\transpose)\!\left[\vm+\frac{\vV\pv}{\Sigma_{11}}\bigl(\lat(x)-\pv\transpose\vm\bigr)\right].
+\]
+Group by the prior mean ${\pv^*}\transpose\vm$ and the innovation
+$(\lat(x)-\pv\transpose\vm)$, adding and subtracting $\vartheta\,\pv\transpose\vm$:
+\[
+  \pmean_{\mathrm{aug}}={\pv^*}\transpose\vm
+   +\underbrace{\left[\vartheta+\frac{{\pv^*}\transpose\vV\pv-\vartheta\,\pv\transpose\vV\pv}{\Sigma_{11}}\right]}_{\displaystyle \mathcal{C}}
+   \bigl(\lat(x)-\pv\transpose\vm\bigr).
+\]
+Put $\mathcal{C}$ over the common denominator $\Sigma_{11}=\varr+\pv\transpose\vV\pv$
+and use $\vartheta\,\varr=\ccond$:
+\[
+  \mathcal{C}=\frac{\vartheta\,\varr+\vartheta\,\pv\transpose\vV\pv+{\pv^*}\transpose\vV\pv-\vartheta\,\pv\transpose\vV\pv}{\Sigma_{11}}
+   =\frac{\vartheta\,\varr+{\pv^*}\transpose\vV\pv}{\Sigma_{11}}
+   =\frac{\ccond+{\pv^*}\transpose\vV\pv}{\Sigma_{11}}
+   =\frac{\Sigma_{12}}{\Sigma_{11}}.
+\]
+Hence $\pmean_{\mathrm{aug}}={\pv^*}\transpose\vm+(\Sigma_{12}/\Sigma_{11})(\lat(x)-\pv\transpose\vm)$,
+identical to \eqref{eq:method1}.
+\end{proof}
+
+\begin{remark}
+Theorem~\ref{thm:predmean-equiv} certifies that the production conditional-moment
+code (\S\ref{subsec:moments}, \texttt{get\_\allowbreak gp\_\allowbreak conditional\_\allowbreak moments}), which
+conditions on the full joint covariance, computes the \emph{exact} augmented
+predictive mean --- it does not incur the sparse cross-covariance error.
+Setting the residual cross term $\ccond=0$ would enforce the sparse factorization
+\[
+  p(\lat^*,\lat\mid\latt)\approx p(\lat^*\mid\latt)\,p(\lat\mid\latt);
+\]
+the inducing (epistemic) cross-covariance ${\pv^*}\transpose\vV\pv$ can still be
+nonzero, because changing belief about an inducing point moves both $\lat(x^*)$
+and $\lat(x)$.
+\end{remark}
+
+% ===========================================================================
+\subsection{Subspace theory}
+\label{subsec:subspace}
+
+\emph{Why} the utility may be optimized in a low-dimensional subspace of image
+space (11664 pixels full; $\sim$900--2356 in the RF-masked region) instead of
+full pixel space. Setting: optimize $x^*$ to maximize $\Uda(x^*)$ by gradient
+ascent, constrained to $x_{\mathrm{rf}}=\bar{x}+\text{(basis)}\cdot\subc$ over the
+subspace coordinate $\subc$; the offset $\bar{x}$ is the RF-pixel dataset mean, so
+$\subc=0$ maps to the mean image.
+
+\subsubsection{The kernel touches $x$ only through the $\Cmat$-eigenspace}
+Let $\Cmat=\sum_i\gamma_i\,e_i e_i\transpose$ be the eigendecomposition of the
+structured PSD matrix of Part~I (\S3.3), with $\gamma_1\ge\dots\ge\gamma_d\ge0$
+and orthonormal $\Cmat$-eigenvectors $e_i$.
+
+\begin{proposition}[$\Cmat$-eigenspace validity]\label{prop:subspace}
+Every kernel evaluation depends on $x$ only through the quadratic forms
+$x\transpose\Cmat x=\sum_i\gamma_i(e_i\transpose x)^2$ and $x\transpose\Cmat x'$;
+and $\nabla_x\Kf$ lies in the column space of $\Cmat$, with its component along
+$e_i$ scaled by $\gamma_i$. Consequently, gradient ascent already concentrates
+movement along the top $\Cmat$-eigenvectors, and truncating to the leading
+$\Cmat$-eigen-subspace is (at full rank) an \emph{exact reparameterization} and
+(at reduced rank) drops only near-zero-gradient directions.
+\end{proposition}
+\begin{proof}
+The kernel enters $x$ solely via $x\transpose\Cmat x+\sigz^2=\vmag_x$ and
+$x\transpose\Cmat x'+\sigz^2$ (through $\Kmag$ and $\cos\kang$); in the
+$\Cmat$-eigenbasis $x\transpose\Cmat x=\sum_i\gamma_i(e_i\transpose x)^2$, so a
+direction $e_i$ with $\gamma_i\approx0$ contributes $\approx0$ to \emph{every}
+kernel value. The input gradient of the arc-cosine kernel (Part~I \S3.5,
+\eqref{eq:gradxK}) is
+\[
+  \nabla_x\Kf(x,x')=\tfrac1\pi\Bigl[(\pi-\kang)\,\Cmat x'+\sin\kang\,\sqrt{\vmag_{x'}/\vmag_x}\;\Cmat x\Bigr],
+\]
+every term of which is $\Cmat\cdot(\text{vector})$; projecting onto $e_i$ multiplies
+by $\gamma_i$. Thus movement along small-$\gamma_i$ directions is intrinsically
+suppressed. Removing those directions (a) does not change the optimum (they carried
+near-zero gradient) and (b) removes flat directions, giving a better-conditioned,
+lower-effective-dimension problem.
+\end{proof}
+
+So the $\Cmat$-eigenspace projection is a \emph{convergence aid / exact
+reparameterization}, not a naturalness constraint (analogous to the eigenvalue
+threshold on $\Ktil$ in the direct-VGP path of Part~II \S5.1).
+
+\subsubsection{Three bases and the Szeg\H{o}/Fourier equivalence}
+All three write $x_{\mathrm{rf}}=\bar{x}+\text{(basis)}\cdot\subc$ and share one
+optimizer/diagnostics; they differ only in the basis.
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{PCA.} Columns $\Phi_K=[\phi_1,\dots,\phi_K]$ = top-$K$ eigenvectors
+        of the data covariance $\Sigma_{\mathrm{data}}=\tfrac1N X_c\transpose X_c$
+        (eigenvalues $\nu_1\ge\nu_2\ge\dots$). The offset $\bar{x}$ is
+        \emph{mathematically intrinsic} (centering before SVD); truncation is a
+        \emph{genuine data-driven constraint} (excludes low-data-variance,
+        ``unnatural'' directions). At variance threshold $0.80$: $K=197$ of
+        $2356$ RF pixels. Gradient projects as $\nabla_\subc\Uda=\Phi_K\transpose\nabla_x\Uda$.
+        PCA captures \emph{second-order statistics only} (mean $+$ covariance);
+        it is blind to phase structure (edges/contours), sparsity, and
+        non-Gaussian marginals.
+  \item \textbf{$\Cmat$-eigenspace.} Columns $E_K=[e_1,\dots,e_K]$ = top-$K$
+        $\Cmat$-eigenvectors. The offset is \emph{not} intrinsic (the
+        eigendecomposition passes through the origin) --- see the caveat below.
+        Truncation is the reparameterization of Proposition~\ref{prop:subspace}.
+        The spectrum is extremely skewed (top eigenvalue $\sim44\%$ of the total):
+        at relative threshold $10^{-3}$, $K=28$ of $2356$ captures $99.7\%$ of the
+        eigenvalue mass. (Float32 noise floor: eigenvalues below $\sim10^{-7}\gamma_1$
+        are numerical noise; thresholds below $\sim10^{-6}$ pull in garbage
+        eigenvectors.)
+  \item \textbf{Combined.} Project $\Cmat$ into the PCA subspace and re-diagonalize:
+        $\Cmat_{\mathrm{pca}}=\Phi_K\transpose\Cmat\,\Phi_K=Q\,\Gamma_Q Q\transpose$,
+        keep the columns $Q$ above the eigen-threshold, basis $=\Phi_K Q$.
+        Directions that are \emph{both} natural (PCA) and kernel-visible
+        ($\Cmat$-eigen). At $(0.80,10^{-3})$: $2356\to K_{\mathrm{pca}}=197\to
+        K_{\mathrm{comb}}=28$, achieving near-identical utility to PCA with
+        $\sim7\times$ fewer dimensions.
+\end{itemize}
+
+\begin{proposition}[PCA $\approx$ Fourier under stationarity (Szeg\H{o})]
+\label{prop:szego}
+If the image process is second-order stationary on a regular grid, its covariance
+is (block-)Toeplitz, $\Sigma[i,j]=f(|i-j|)$. By Szeg\H{o}'s theorem, as $d\to\infty$
+the eigenvectors converge to Fourier modes and the eigenvalues to the power
+spectral density $S(\omega)=\sum_k f(k)e^{-i\omega k}$. Natural images have
+$S(\omega)\sim1/|\omega|^2$, so $\Sigma_{\mathrm{data}}$'s eigenvectors approach
+the Fourier basis and PCA-truncation approximates keeping the $K$
+lowest-frequency Fourier modes.
+\end{proposition}
+The equivalence is weakened by the irregular masked region, the non-stationarity
+the $\loc$ mask injects (RF-center pixels have higher variance, breaking Toeplitz
+structure), finite $N\approx10^4$ in $d\approx900$, and residual
+non-stationarity of natural images; at $\sim30\times30$ patches it is reasonable.
+
+\subsubsection{Subspace $\ne$ naturalness constraint}
+All three are \emph{subspace} constraints, not \emph{distributional} ones. None
+guarantees $x^*$ is a plausible sample of $\px$: an image with the right power
+spectrum but wrong phase (correlated noise) satisfies all three. A true
+distributional constraint needs higher-order structure (phases, edges, sparsity)
+--- i.e.\ a generative model, which is the motivation for the guided-diffusion
+synthesis of Part~IV. The subspace approach is a useful \emph{diagnostic} (does
+restricting to the right power spectrum change utility? does the GP utility
+operate primarily at second order?), not a full fix.
+
+\caveat{The $\Cmat$-eigenspace offset is not mathematically motivated. Unlike PCA,
+where the mean offset is intrinsic to centering, the $\Cmat$-eigendecomposition
+passes through the origin, so setting $\bar{x}=\text{mean}$ has no principled
+basis --- it is forced by \emph{limiter precision}: the non-capturable
+eigenvectors collapse to $0$ instead of to the mean, and the code compensates by
+setting offset $=$ mean. This changes the utility landscape (the kernel sees
+$\Cmat(\bar{x}+E_K\subc)$, not $\Cmat(E_K\subc)$) and should be investigated. It
+is an acknowledged modeling wrinkle, not a resolved result.}
+
+% ===========================================================================
+\subsection{Divergence theorems (Proof I): norm scaling and the utility blow-up}
+\label{subsec:divergence}
+
+The arc-cosine kernel is positively homogeneous; scaling an image along a fixed
+direction inflates the posterior variance as the square of the scale while
+preserving the conditioning benefit, so unconstrained gradient ascent on the DA
+utility diverges. The three source proof documents each state this phenomenon
+independently; it is proved once here and reused by \S\ref{subsec:kernelfixes}.
+Throughout, $x^*=\scal\,x_t$ with scale $\scal>0$, and $q\equiv x_t\transpose\Cmat x_t$.
+
+\begin{theorem}[Cross-kernel proportionality, $\sigz^2=0$]\label{thm:divergence}
+Let $\sigz^2=0$ and $x^*=\scal\,x_t$, $\scal>0$. Then $\Kf(x^*,z)=\scal\,\Kf(x_t,z)$
+for every $z$, and hence $\kvec(x^*)=\scal\,\kvec(x_t)$.
+\end{theorem}
+\begin{proof}
+With $\sigz^2=0$, $\vmag_{x^*}=\scal^2 q$ and $\vmag_{x_t}=q$. For any $z$ with
+$\vmag_z=z\transpose\Cmat z$,
+\[
+  \cos\kang(x^*,z)=\frac{(\scal x_t)\transpose\Cmat z}{\sqrt{\scal^2 q\cdot\vmag_z}}
+   =\frac{\scal\,x_t\transpose\Cmat z}{\scal\sqrt{q\,\vmag_z}}
+   =\frac{x_t\transpose\Cmat z}{\sqrt{q\,\vmag_z}}=\cos\kang(x_t,z),
+\]
+so $\kang(x^*,z)=\kang(x_t,z)$ and $\Jang(\kang(x^*,z))=\Jang(\kang(x_t,z))$. Then
+$\Kf(x^*,z)=\tfrac1\pi\sqrt{\scal^2 q\,\vmag_z}\,\Jang(\kang)=\scal\cdot\tfrac1\pi\sqrt{q\,\vmag_z}\,\Jang(\kang)=\scal\,\Kf(x_t,z)$.
+Applying this to each inducing point $z=\ipt_j$ gives $\kvec(x^*)=\scal\,\kvec(x_t)$.
+\end{proof}
+
+\begin{corollary}[Perfect posterior correlation]\label{cor:rho1}
+Under Theorem~\ref{thm:divergence}, $\corr^2(x^*,x_t)=1$.
+\end{corollary}
+\begin{proof}
+From $\kvec(x^*)=\scal\,\kvec(x_t)$ and (with $x^*\parallel x_t$, $\kang=0$,
+$\Jang(0)=\pi$) $\Kf(x^*,x_t)=\scal\,\Kf(x_t,x_t)=\scal\,\vmag_{x_t}$, substitute
+into $\Sigma_q$ with $W=\Ktil^{-1}(\vV-\Ktil)\Ktil^{-1}$:
+\[
+  \Sigma_q(x^*,x_t)=\scal\,\vmag_{x_t}+\scal\,\kvec(x_t)\transpose W\kvec(x_t)=\scal\,\Sigma_q(x_t,x_t),
+  \quad
+  \Sigma_q(x^*,x^*)=\scal^2\,\Sigma_q(x_t,x_t),
+\]
+so $\corr^2=[\scal\,\Sigma_q(x_t,x_t)]^2/[\scal^2\Sigma_q(x_t,x_t)\cdot\Sigma_q(x_t,x_t)]=1$.
+\end{proof}
+
+\begin{corollary}[Moment scaling]\label{cor:momentscale}
+Under Theorem~\ref{thm:divergence}, $\pmean(\scal x_t)=\scal\,\pmean(x_t)$ and
+$\pvar(\scal x_t)=\scal^2\,\pvar(x_t)$.
+\end{corollary}
+\begin{proof}
+Substitute $\kvec(x^*)=\scal\,\kvec(x_t)$ into $\pmean=\kvec\transpose\Ktil^{-1}\vm$
+(linear in $\kvec$) and $\pvar=\Kf(x^*,x^*)+\kvec\transpose W\kvec$ (quadratic in
+$\kvec$, with $\Kf(x^*,x^*)=\scal^2\vmag_{x_t}$).
+\end{proof}
+
+By Corollary~\ref{cor:rho1}, $\corr^2=1\Rightarrow\pvar_{\mathrm{cond}}(x^*)=0$:
+conditioning removes \emph{all} the variance. Yet by
+Corollary~\ref{cor:momentscale} the marginal moments still grow
+($\mug\propto\scal$, $\varg\propto\scal^2\Rightarrow\Hmarg\to\infty$), so $\Uda$
+still diverges. In the exact parallel case ($\kang=0,\sigz^2=0$),
+$\pmean_{\mathrm{cond}}=\pmean$, $\pvar_{\mathrm{cond}}=0$, and $\Hcond$ collapses
+to a single Poisson entropy $H_{\Poi}(e^{\mug})$, $\mug=\gain\,\pmean(x^*)+\latz$;
+then \eqref{eq:daboxed} becomes
+$\Uda(\scal x_t)=\Hmarg(\mug,\varg)-H_{\Poi}(e^{\mug})$ with
+$\mug=\gain\scal\,\pmean(x_t)+\latz$, $\varg=\gain^2\scal^2\,\pvar(x_t)$.
+
+\subsubsection{Growth rate of the diverging utility}
+\begin{proposition}[Gaussian observation model: $\log\scal$ growth]\label{prop:gauss-logc}
+If observations were Gaussian, $r(x)\sim\Gauss(\lat(x),\tau^2)$ with fixed $\tau^2$,
+then for $\corr^2=1$, $\pvar=\scal^2\pvar(x_t)$, the DA utility grows as $\log\scal$.
+\end{proposition}
+\begin{proof}
+$\Hmarg=\tfrac12\log(2\pi e(\pvar+\tau^2))$ and, since $\pvar_{\mathrm{cond}}=0$,
+$\Hcond=\tfrac12\log(2\pi e\,\tau^2)$, so
+$\Uda=\tfrac12\log(1+\pvar/\tau^2)$. With $\pvar=\scal^2\pvar(x_t)$ and large
+$\scal$, $\Uda\approx\tfrac12\log(\scal^2\pvar(x_t)/\tau^2)=\log\scal+\text{const}$.
+\end{proof}
+Unbounded but slow: $d\Uda/d\scal\sim1/\scal$, so ascent slows but never stops.
+Norm scaling is \emph{not} unique to Poisson --- the distinction is the \emph{rate}.
+
+\begin{proposition}[Poisson-GP: $\scal^2$ heuristic bound]\label{prop:poisson-c2}
+For the Poisson-GP case, under the heuristic $\Hmarg\ge H_{\Poi}(\E[f])$ with
+$\E[f]=e^{\mug+\varg/2}$ and the large-rate Poisson entropy
+$H_{\Poi}(\lambda)\approx\tfrac12\log(2\pi e\lambda)$,
+\[
+  \Hmarg\ge\tfrac12\log(2\pi e)+\tfrac12(\mug+\varg/2),
+  \qquad\text{dominant term }\tfrac14\varg=\tfrac14\gain^2\scal^2\,\pvar(x_t).
+\]
+Since $\Hcond=H_{\Poi}(e^{\mug})$ depends only on $\mug$ (grows as $\scal$, not
+$\scal^2$),
+\[
+  \Uda=\Hmarg-\Hcond\ \gtrsim\ \tfrac14\varg\ \propto\ \scal^2
+\]
+(faster than the Gaussian $\log\scal$).
+\end{proposition}
+\caveat{The bound $\Hmarg\ge H_{\Poi}(\E[f])$ is \emph{plausible but not proved}.
+A Poisson mixture over log-normal rates is overdispersed (``more spread''), but
+the Poisson is \emph{not} the max-entropy law on $\mathbb{N}_0$ under a mean
+constraint alone (the geometric is); it is max-entropy only under $\mathrm{Var}=\text{mean}$,
+so the naive argument does not directly apply. Numerically (\texttt{verify\_\allowbreak conclusions.py},
+test C4), fitting $\Uda\sim\scal^\alpha$ over the Laplace-valid range
+$\scal\in\{2,5,10\}$ (all $\sum p(r)>0.95$) gives $\alpha\approx1.9$, consistent
+with $\scal^2$. The Laplace approximation truncates at $\rmax$ and breaks once
+$\varg$ puts mass above $\rmax$; the safety score
+$z_{\mathrm{safe}}=(\log\rmax-\mug)/\sqrt{\varg}$ falls below $2$ (unreliable) at
+$\scal\approx10$ in-model, limiting the verifiable range.}
+
+\subsubsection{The $\sigz^2>0$ damping and the alignment peak at $\scal=1$}
+With $\sigz^2>0$ the results hold only approximately:
+\[
+  \vmag_{\scal x_t}=\scal^2 q+\sigz^2\neq\scal^2\vmag_{x_t},\qquad
+  \cos\kang(\scal x_t,z)=\frac{\scal\,x_t\transpose\Cmat z+\sigz^2}{\sqrt{(\scal^2 q+\sigz^2)\,\vmag_z}}\neq\cos\kang(x_t,z).
+\]
+The fractional error $|\Kf(\scal x,z)-\scal\Kf(x,z)|/|\scal\Kf(x,z)|$ converges to a
+\emph{constant} $O(\sigz^2/\vmag_{x_t})$ as $\scal\to\infty$ (not to zero: $\sigz^2$
+shifts the angle by an amount $\propto\sigz^2/\vmag_{x_t}$, independent of $\scal$).
+In a trained model ($\vmag_{x_t}=q+\sigz^2\approx669$, $\sigz^2\approx0.98$, so
+$\sigz^2/\vmag_{x_t}\approx0.0015$): the measured fractional error in
+$\Kf(\scal x_t,\ipt_j)\to\approx0.6\%$ for large $\scal$, $\corr^2\to\approx0.987$,
+and the residual variance ratio $\approx1.3\%$ (conditioning stays very effective,
+not perfect). Crucially, the cosine similarity
+\[
+  \cos\kang(\scal)=\frac{\scal q+\sigz^2}{\sqrt{(\scal^2 q+\sigz^2)(q+\sigz^2)}}
+\]
+is \emph{strictly maximized at $\scal=1$} when $\sigz^2>0$ (and $\equiv1$ for all
+$\scal$ when $\sigz^2=0$). So $\sigz^2$ breaks scale invariance: the kernel
+\emph{wants} to match the target in pattern \emph{and} intensity --- but the
+magnitude still scales as $\Kf(x^*,x^*)=\scal^2 q+\sigz^2=O(\scal^2)$, so the
+bounded correlation reward cannot compete with the unbounded variance reward, and
+ascent still runs $\scal\to\infty$.
+
+\begin{remark}[Root cause and remedy]
+The mechanism is a decoupling of norm from direction: $\Kf(\scal x,y)=\scal\Kf(x,y)$
+at $\sigz^2=0$ lets ascent raise variance (hence entropy and utility) via the norm
+degree of freedom without sacrificing directional alignment. Any practical
+gradient-based image optimization with this kernel needs a norm constraint or a
+normalized kernel (\S\ref{subsec:kernelfixes}). The blow-up is strongly
+angle-dependent (test C8): effective at small angles ($\kang<0.2$, strong
+conditioning), negligible at large angles ($\kang>0.6$).
+\end{remark}
+
+Table~\ref{tab:divevidence} shows the trained-model evidence: the DA-optimized
+image finds a \emph{genuine} loophole ($\Uda=0.800$ at a small angle
+$\kang=0.114$, variance ratio $0.060\Rightarrow\corr^2\approx0.94$), while the
+standard-optimized image diverges to $\Ustd=\infty$ by numerical
+overflow at $\mug=1816$ --- two different phenomena
+(\S\ref{subsec:numerics} separates them).
+
+\begin{table}[t]\centering\small
+\caption{Trained model (seed $42$, cell $8$, $\Mind=50$, $\Ntr=50$; $\gain=0.0265$,
+$\latz=-1.686$). The small gain $\gain$ compresses the raw GP mean into the useful
+band, so the DA loophole ($\Uda=0.800$) is real, not a numerical artifact; the
+standard-optimized point overflows float32.}
+\label{tab:divevidence}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Image & $\pmean$ & $\pvar$ & $\mug$ & $\varg$ & $\kang$(rad) & $\Hmarg$ & $\Uda$\\
+\midrule
+$x_t$ (natural target) & $7.86$ & $70.9$ & $-1.48$ & $0.050$ & $0$ & $0.593$ & $0.010$\\
+$x^*_{\mathrm{DA}}$ & $101$ & $3240$ & $0.99$ & $2.28$ & $0.114$ & $2.836$ & $0.800$\\
+$x^*_{\mathrm{Std}}$ & $68497$ & $2.85\!\times\!10^{8}$ & $1816$ & $2.0\!\times\!10^{5}$ & $0.866$ & $\sim0$ & $\infty$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ===========================================================================
+\subsection{Kernel solutions (Proof II)}
+\label{subsec:kernelfixes}
+
+Two kernel-level remedies bound the variance term that
+\S\ref{subsec:divergence} showed to be the culprit. Decompose the utility (Poisson
+link, $\rate=e^{\lat}$) schematically as
+\[
+  \Ustd(x^*)\ \approx\ \underbrace{\tfrac12\pvar(x^*)}_{\text{variance term, }O(\scal^2)}\ +\ \underbrace{I(\corr^2)}_{\text{correlation term, }\le\text{const}} ,
+\]
+where the correlation term is bounded (maximized at $\scal=1$ once $\sigz^2>0$) but
+the variance term is unbounded; to fix the divergence, bound the variance term.
+
+\subsubsection{Normalized arc-cosine kernel (project onto the unit sphere)}
+\begin{proposition}[Scale-invariant normalized kernel]\label{prop:normkernel}
+Define $\bar{\Kf}(x,x')=\Kf(x,x')/\sqrt{\Kf(x,x)\,\Kf(x',x')}$. For the order-1
+arc-cosine kernel, $\bar{\Kf}(x,x')=\Jang(\kang)/\pi$, and for any $\scal>0$,
+$\bar{\Kf}(\scal x,\scal x)=1=\bar{\Kf}(x,x)$ --- the prior variance is strictly
+constant, independent of $\lVert x\rVert$.
+\end{proposition}
+\begin{proof}
+By Lemma~\ref{lem:selfkernel} $\Kf(x,x)=\vmag_x$, so
+$\bar{\Kf}(x,x')=[\tfrac1\pi\sqrt{\vmag_x\vmag_{x'}}\,\Jang(\kang)]/\sqrt{\vmag_x\vmag_{x'}}=\Jang(\kang)/\pi$,
+which depends only on $\kang$. In particular $\bar{\Kf}(x,x)=\Jang(0)/\pi=1$; and
+$\bar{\Kf}(\scal x,\scal x)=\Kf(\scal x,\scal x)/\sqrt{\Kf(\scal x,\scal x)^2}=1$.
+\end{proof}
+With $\bar{\Kf}(x,x)=1$ and cross terms $\bar{\Kf}(x,\ipt_j)=\Jang(\kang_j)/\pi\in[0,1]$
+bounded, the whole posterior-correction term is bounded, so $\bar{\pvar}(x)$ is
+bounded regardless of $\lVert x\rVert_{\Cmat}$ and $\Uda$ cannot diverge by
+scaling: the only way up is to improve $\corr^2$ (small angle to $x_t$; with
+$\sigz^2>0$ retained inside $\kang$, minimized only when $x\to x_t$ in both
+direction and magnitude).
+\caveat{The normalized kernel discards all norm information, but image norm carries
+genuine neural-encoding signal (neurons respond differently to high/low contrast).
+Empirically, training with $\bar{\Kf}$ drops test correlation by $\sim25\%$ --- the
+norm encodes real structure the GP needs. A fix for the image-synthesis divergence
+is not a free improvement to the production model.}
+
+\subsubsection{Biologically plausible saturation kernel (arc-sin)}
+The arc-cosine kernel is the covariance of infinite ReLU networks, which do
+\emph{not} saturate; real neurons have refractory periods and maximum firing
+rates. The arc-sin (probit-activation) kernel models saturation:
+\[
+  \Kf_{\mathrm{sat}}(x,x')=\satf\cdot\tfrac2\pi\,\arcsin\!\left(\frac{x\transpose\Cmat x'+\sigz^2}{\sqrt{(1+x\transpose\Cmat x+\sigz^2)(1+{x'}\transpose\Cmat x'+\sigz^2)}}\right).
+\]
+\begin{proposition}[Bounded self-variance]\label{prop:satkernel}
+$\displaystyle\lim_{\lVert x\rVert\to\infty}\Kf_{\mathrm{sat}}(x,x)=\satf\cdot\tfrac2\pi\arcsin(1)=\satf$.
+\end{proposition}
+\begin{proof}
+As $\lVert x\rVert\to\infty$ the ratio inside $\arcsin$ tends to
+$(x\transpose\Cmat x)/(1+x\transpose\Cmat x)\to1$, and $\arcsin(1)=\pi/2$, so
+$\Kf_{\mathrm{sat}}(x,x)\to\satf\cdot(2/\pi)(\pi/2)=\satf$.
+\end{proof}
+Unlike $\Kf(x,x)\propto\lVert x\rVert^2$, the variance saturates to the constant
+$\satf$. This fixes the divergence \emph{without} normalizing the kernel: $\Hmarg$
+cannot grow indefinitely with norm, so to raise utility the optimizer must lower
+$\Hcond$ by finding $x^*$ highly correlated with $x_t$; ``super-stimuli'' of
+infinite norm yield diminishing returns, embedding the physical constraint that
+contrast beyond a point yields no more signal variance.
+
+% ===========================================================================
+\subsection{Numerical analysis of the standard utility}
+\label{subsec:numerics}
+
+This subsection is entirely about the standard/production utility \eqref{eq:Ustd},
+$\Ustd=\Hmarg-\E_{\lgr}[\Hnoise]=I(R;\lgr\mid x^*,\mathcal{D})$, computed by
+\texttt{nd\_\allowbreak utility\_\allowbreak new}. (Formulas verified against the live engine; the
+\texttt{utility\_\allowbreak numerical\_\allowbreak analysis.tex} line citations from the 2026-05-22 audit
+have since drifted, but every formula matches the code.) The spike-count index $r$
+below is the model's spike count (Part~I's $\spk$); the count random variable is
+$R\sim\Poi(e^{\lgr})$.
+
+\subsubsection{The closed-form decomposition}
+With $\lat(x^*)\mid\mathcal{D}\sim\Gauss(\pmean,\pvar)$, $\lgr=\gain\lat+\latz$, so
+$\lgr\mid\mathcal{D}\sim\Gauss(\mug,\varg)$, and $R\mid\lgr\sim\Poi(e^{\lgr})$:
+\[
+  \Hmarg=-\sum_{r=0}^{\infty}p(r)\log p(r),\qquad p(r)=\int\Poi(r;e^{\lgr})\,\Gauss(\lgr;\mug,\varg)\,d\lgr,
+\]
+the marginal (Poisson--log-normal) entropy of \eqref{eq:Hmarg} (no closed form;
+Laplace-approximated below). The subtracted expected-noise entropy \emph{is}
+closed-form via the log-normal MGF ($\E[e^{\lgr}]=e^{\mug+\varg/2}$,
+$\E[\lgr e^{\lgr}]=e^{\mug+\varg/2}(\mug+\varg)$):
+\begin{equation}\label{eq:Ehnoise}
+  \E_{\lgr}[\Hnoise]=\underbrace{-e^{\mug+\varg/2}(\mug+\varg-1)}_{\text{exact (MGF), closed form}}\ +\ \underbrace{\sum_{r=0}^{\infty}p(r)\log r!}_{\text{needs }p(r)\text{, Laplace}} ,
+\end{equation}
+so $\Ustd\approx-\sum_{r=0}^{\rmax}p(r)\log p(r)-\bigl(-e^{\mug+\varg/2}(\mug+\varg-1)+\sum_{r=0}^{\rmax}p(r)\log r!\bigr)$;
+both sums truncate at the same $\rmax$. Ground truth: \texttt{nd\_\allowbreak utility\_\allowbreak new}
+computes
+\begin{lstlisting}
+E_H_noise = -torch.exp(mu_g + 0.5*sigma2_g)*(mu_g + sigma2_g - 1) + p_times_logr_sum
+\end{lstlisting}
+
+\subsubsection{Laplace approximation and the log-space Lambert-W fix}
+The saddle point of $p(r)$ is at the mode $\gmode$ of
+$\Poi(r;e^{\lgr})\,\Gauss(\lgr;\mug,\varg)$, solving $r=e^{\gmode}+(\gmode-\mug)/\varg$:
+\begin{equation}\label{eq:lambertmode}
+  \gmode(r)=r\varg+\mug-\LW\!\bigl(\varg\,e^{\,r\varg+\mug}\bigr),
+\end{equation}
+$\LW$ the principal Lambert branch. \textbf{The historic bug} (legacy
+\texttt{argmax\_\allowbreak g\_\allowbreak old}) formed $\varg e^{\,r\varg+\mug}$ literally and, in float32,
+\emph{overflowed} whenever $r\varg+\mug\gtrsim88$ ($e^{88}\sim10^{38}$); masking the
+overflowing $r$ let the truncated $\sum p(r)$ exceed $1$ by large factors. This is
+the historic ``$\exp(\mu)$ diverges.'' \textbf{The fix} (current
+\texttt{\_\allowbreak LambertWLogFunction} $+$ \texttt{\_\allowbreak diff\_\allowbreak argmax\_\allowbreak g}) never forms $e^y$:
+set $y=\log\varg+r\varg+\mug$ (finite for finite inputs) and solve
+\[
+  w+\log w=y\quad\Longleftrightarrow\quad w=\LW(e^y)
+\]
+by a fixed $10$ Newton iterations directly on the log-form (custom autograd;
+backward uses $dW/dy=W/(1+W)$, in which $e^y$ cancels), then
+$\gmode(r)=r\varg+\mug-w$. Since $w\approx y-\log y$ for large $y$,
+$\gmode(r)\approx-\log\varg+\log y\sim\log r$, so $e^{\gmode(r)}\approx r$ (exactly
+right: the Poisson likelihood is maximized when rate $=$ count) and stays in
+float32 range for any $r$ --- so $\exp(\gmode)$ is no longer an overflow risk
+post-fix.
+
+\subsubsection{Four independent residual failure modes}
+Distinct thresholds and remedies (they coincide only because all worsen at large
+$\mug/\varg$); (a) and (b) are the pair older docs conflate.
+
+\paragraph{(a) Laplace approximation error in $\log p(r)$.} A local quadratic
+model of the integrand; inaccurate when it departs from a quadratic-log shape.
+Two regimes: $\varg\to0$ (prior degenerates, saddle singular --- the code falls
+back to \emph{exact} Poisson $\log p=\mug r-e^{\mug}-\log r!$ at $\varg<10^{-6}$);
+$\varg$ large (flat prior; the asymmetric Poisson factor skews the integrand).
+\emph{Independent of $\rmax$} --- each $p(r)$ has its own bias, observable as
+$\sum p(r)\neq1$ even with no missing mass (up to $1.015$; that is Laplace error,
+not truncation). Measured (vs \texttt{scipy.quad}): error $<1\%$ for $\varg\lesssim1$
+at every $\mug$, growing to $5$--$20\%$ at the peak by $\varg\sim50$ (worst where
+the predictive peak slides onto $r=0$). The driver is $\varg$, not $\mug$; float32
+vs float64 shifts $\log p(r)$ by $\le3.7\times10^{-4}$ nats. \emph{Physical gate:}
+an RGC cannot fire more than $\sim100$ spikes in the window, so the sensible regime
+is $\varg\lesssim6$, within which (a) is a few-percent effect.
+
+\paragraph{(b) Truncation at $\rmax$.} If the predictive puts non-negligible mass
+above $\rmax$, both $-p(r)\log p(r)$ and $p(r)\log r!$ are clipped, biasing
+\emph{both} $\Hmarg$ and the closed-sum term low. The moments are
+\[
+  \E[R]=e^{\mug+\varg/2},\qquad
+  \mathrm{Var}(R)=e^{\mug+\varg/2}+e^{2\mug+\varg}(e^{\varg}-1),
+\]
+the second (log-normal-of-rate) term dominating once $\varg\gtrsim1$. As $\varg$
+grows the predictive is strongly right-skewed and its centres separate: the mean
+$e^{\mug+\varg/2}$ climbs, the median stays $\approx e^{\mug}$, the mode drifts
+\emph{down} toward $0$ ($\approx e^{\mug-\varg}$) --- so ``$p(r)$ peaks at
+$e^{\mug}$'' is only the small-$\varg$ limit. A sufficient benign-truncation
+condition is $\rmax\gtrsim\E[R]+k\sqrt{\mathrm{Var}(R)}$. The code
+\texttt{compute\_\allowbreak adaptive\_\allowbreak rmax} is stricter (a $k$-$\sigma$ upper tail in
+$\lgr$-space, exponentiated to a rate, plus a Poisson std, plus a margin):
+\[
+  \rmax^{\mathrm{adapt}}=e^{\mug+k\sigma_g}+5\sqrt{e^{\mug+k\sigma_g}}+10,\quad k=3,
+\]
+clamped to $[200,10000]$ with a \texttt{ValueError} if the needed $\rmax$ exceeds
+the ceiling (never silently over-truncates; a further guard raises if
+$\text{max\_\allowbreak rmax}>e^{80}$ so the overflow clamp cannot hide failures). The fixed
+default $\rmax=100$ is benign for confident predictions but \emph{not safe in
+general}: it fails whenever $\mug\gtrsim\log100\approx4.6$ \emph{or} $\varg$ grows
+large --- exactly the high-uncertainty regime active learning explores.
+
+\paragraph{(c) Float32 overflow of the exact closed-form term.} The exact term
+$-e^{\mug+\varg/2}(\mug+\varg-1)$ overflows float32 when
+$\mug+\tfrac12\varg\gtrsim88$, sending $\E_{\lgr}[\Hnoise]\to-\infty$ and
+$\Ustd\to+\infty$. This is the \emph{only} residual ``$\exp$ can diverge'' issue,
+and it lives in an \emph{exact analytical} term, not the Laplace approximation ---
+distinct from the historic bug. In practice truncation (b) bites long first
+($\sigma_g\sim1\Rightarrow$ truncation near $\mug\sim1$ at $\rmax=100$, vs
+$\mug\sim88$ here).
+
+\paragraph{(d) Catastrophic cancellation.} Inherent to the decomposition (survives
+even with exact Laplace and no truncation). \emph{Inside} $\E_{\lgr}[\Hnoise]$
+(large, earliest): both $-e^{\mug+\varg/2}(\mug+\varg-1)$ and $\sum p(r)\log r!$
+grow $\sim e^{\mug}$, while the true $\E_{\lgr}[\Hnoise]$ grows only \emph{linearly}
+($\sim\tfrac12\mug$); at $\mug=10$ each term $\sim2\times10^5$ vs a true value
+$\sim6$ ($\sim4.5$ digits cancel), at $\mug=15$ $\sim6.7$ digits cancel ---
+essentially noise in float32's $\sim7$-digit mantissa (and truncating the second
+sum makes this \emph{worse}). \emph{Between} $\Hmarg$ and $\E_{\lgr}[\Hnoise]$
+(smaller, second-level): by Jensen $\Hmarg\ge\E_{\lgr}[\Hnoise]$ while both grow
+linearly in $\mug$, a second cancellation costing fewer digits. Unfixable without
+rewriting the decomposition so cancelling pieces are computed together (e.g.\
+summing $-p(r)\log p(r)-p(r)\log r!$ as a single term before any large analytical
+exponential). Flagged, out of scope.
+
+\subsubsection{``Utility diverges under gradient ascent,'' re-examined}
+The claim is \emph{two} distinct things. (i) \textbf{Kernel-driven input blow-up:}
+$\Kf(\scal x,\scal x)=\scal^2\Kf(x,x)\Rightarrow$ ascending $\Ustd$ with no norm
+constraint sends $\pvar\propto\lVert x\rVert^2\to\infty$, hence $\varg\to\infty$
+(the mechanism of \S\ref{subsec:divergence}--\ref{subsec:kernelfixes}). (ii) The
+\textbf{computed} utility then misbehaves via the four numerical modes, typically
+in order: truncation collapse of $\Hmarg$ (b), then Laplace error at large $\varg$
+(a), then cancellation inside $\E_{\lgr}[\Hnoise]$ (d) as $\mug$ grows, finally
+float32 overflow (c) at extreme scales. The kernel makes the inputs unbounded;
+then numerics make the computed utility ill-behaved --- not the same thing, and
+the four numerical effects are not the same thing either. Numerical fixes alone
+will not cure it: either constrain the optimizer (norm projection, or the
+normalized kernel of Proposition~\ref{prop:normkernel}) or rewrite the closed-form
+term in an asymptotically stable form.
+
+\caveat{Utility-accuracy ceiling (known limitation). The standard utility can run
+to $+\infty$ and the DA utility can silently collapse, both via the $\rmax=100$
+truncation, at high firing; the production loop's $f_{\max}$ guard keeps generation
+in the accurate regime, and a DA-path lookup-table was deliberately not built.
+This is a documented limitation, not a resolved result.}

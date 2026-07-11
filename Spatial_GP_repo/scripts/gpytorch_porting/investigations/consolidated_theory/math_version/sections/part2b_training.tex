@@ -1,0 +1,307 @@
+% ============================================================================
+%  Part II (training) -- Section 6: The training algorithm
+%  \input-ready fragment. Uses only macros from preamble.tex.
+%  Cross-part refs (defined elsewhere): eq:elbo, eq:predmoments, eq:fbar
+%  (Part II inference).
+% ============================================================================
+
+\section{The training algorithm: EM-style coordinate ascent}\label{sec:training}
+
+The model assembled in Parts~I--II has three groups of free parameters, and all
+three sit on the \emph{single} evidence lower bound $\ELBO$ of
+\eqref{eq:elbo}:
+
+\begin{enumerate}[label=(\alph*),leftmargin=2.2em,itemsep=1pt]
+  \item the \textbf{variational moments} $\mb,\Vb$ of the eigenspace posterior
+        $q(\latt)=\Gauss(\vm,\vV)$;
+  \item the \textbf{rate parameters} of the Poisson likelihood, the gain
+        $\gain$ and the offset $\latz$, defining
+        $\rate=\exp(\gain\lat+\latz)$;
+  \item the \textbf{kernel hyperparameters}
+        $\{\sigz,\Amp,\bwid,\smoo,\varepsilon_{0x},\varepsilon_{0y}\}$ of the
+        structured arc-cosine prior (Part~I).
+\end{enumerate}
+
+Training maximises the one bound $\ELBO$ by \textbf{block coordinate ascent}:
+each step improves one block while holding the other two fixed. The three steps
+are the E-step (variational moments), the F-step (rate parameters), and the
+M-step (kernel hyperparameters), run once per outer iteration in a fixed order
+(\S\ref{subsec:training-overview}).
+
+% ---------------------------------------------------------------------------
+\subsection{Overview: three coordinate blocks, one ELBO, one loop}
+\label{subsec:training-overview}
+
+Each step optimises one block and freezes the rest:
+
+\begin{center}\small
+\begin{tabular}{@{}l l l >{\raggedright\arraybackslash}p{2.35in}@{}}
+\toprule
+Step & Free block & Held fixed & Method \\
+\midrule
+E & $\mb,\Vb$ & kernel; $\gain,\latz$; $\eb$ &
+    closed-form Newton (no automatic differentiation) \\
+F & $\gain$ ($\latz$ closed-form) & $\mb,\Vb$ (via $\pmean,\pvar$); kernel &
+    LBFGS on $\log\gain$, or damped Newton \\
+M & $\{\sigz,\Amp,\bwid,\smoo,\rfc\}$ & $\mb,\Vb$; $\gain,\latz$; $\eb$ &
+    LBFGS $+$ gradients (analytical or automatic) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent(In the M-row, the centre $\rfc=(\varepsilon_{0x},\varepsilon_{0y})$ of
+the localized region counts as the two coordinate hyperparameters, so the free
+block has six scalars.)
+
+\paragraph{Loop order (one outer iteration).}
+Per outer iteration:
+
+\begin{enumerate}[leftmargin=2.4em,itemsep=1pt]
+  \item \textbf{Re-sync the eigenbasis.} Rebuild the eigenbasis $\eb$ from the
+        hyperparameters the \emph{previous} M-step moved, then refresh
+        $\pmean,\pvar,\fbar$ --- this is where the M-step's deferred $\eb$ update
+        lands.
+  \item \textbf{E-step} --- one or more closed-form Newton steps on
+        $\mb,\Vb$ (\S\ref{subsec:estep}).
+  \item \textbf{F-step} --- fit $\gain$ (and closed-form $\latz$), unless the
+        F-step is interleaved into the E-loop (\S\ref{subsec:fstep}).
+  \item \textbf{Metrics $+$ ELBO $+$ early stopping} --- computed
+        \emph{deliberately before} the M-step.
+  \item \textbf{M-step} --- update the kernel hyperparameters
+        (\S\ref{subsec:mstep}); the $\eb$ update is \emph{deferred} to step~1 of
+        the next iteration.
+\end{enumerate}
+
+\begin{remark}[Why metrics precede the M-step]
+The M-step changes the kernel parameters \emph{without} recomputing the
+eigenbasis $\eb$ (that is deferred, for cost and stability). Every logged
+quantity --- the ELBO, the early-stopping metric --- must therefore be read while
+the model state is still internally consistent, i.e.\ \emph{before} the M-step
+perturbs the kernel. Early stopping is on the ELBO, with patience and
+best-restore.
+\end{remark}
+
+% ---------------------------------------------------------------------------
+\subsection{The E-step: a Newton update of the variational posterior}
+\label{subsec:estep}
+
+At \emph{fixed} kernel and fixed $\gain,\latz$, the E-step maximises the ELBO
+\eqref{eq:elbo} over the variational moments. Writing the inducing-space
+posterior $q(\latt)=\Gauss(\vm,\vV)$ against the prior $p(\latt)=\Gauss(0,\Ktil)$,
+
+\begin{equation}
+\ELBO(\vm,\vV)
+  = \underbrace{\sum_i \E_{q(\lat_i)}\!\big[\log\Poi(\spk_i\mid\lat_i)\big]}_{\ELBO_{\mathrm{data}}}
+    \;-\; \KLdiv\!\big(q(\latt)\,\|\,p(\latt)\big),
+\label{eq:estep-obj}
+\end{equation}
+with the projected posterior moments $\pmean_i,\pvar_i$ of \eqref{eq:predmoments}
+and the KL contributing, through the E-step variables,
+$-\tfrac12\vm\transpose\Ktil^{-1}\vm$ (couples to $\vm$) and
+$\tfrac12\log|\vV|-\tfrac12\Tr(\Ktil^{-1}\vV)$ (couples to $\vV$).
+
+\paragraph{Poisson expected log-likelihood and its moment derivatives.}
+The data term is closed-form via the Gaussian moment-generating function, with
+the expected rate $\fbar_i$ of \eqref{eq:fbar}:
+\begin{equation}
+\ELBO_{\mathrm{data}}
+  = \sum_i\big[\,\spk_i(\gain\pmean_i+\latz)-\fbar_i\,\big],
+\qquad
+\fbar_i=\exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big),
+\end{equation}
+(the $-\log\spk_i!$ constant is dropped). The three point-derivatives that
+assemble the Newton step follow by the chain rule on $\fbar_i$:
+\begin{equation}
+\frac{\partial\fbar_i}{\partial\pmean_i}=\gain\,\fbar_i,\qquad
+\frac{\partial\fbar_i}{\partial\pvar_i}=\tfrac12\gain^2\,\fbar_i,\qquad
+\frac{\partial}{\partial\pmean_i}\,\E_{q}[\log\Poi]=\gain(\spk_i-\fbar_i).
+\end{equation}
+
+\paragraph{The two Newton helpers.}
+Accumulating those derivatives through the projection $\pmean_i=\kvec_i\transpose\Ktil^{-1}\vm$
+defines the gradient helper $\gE$ and the (Poisson-Fisher) curvature $\GE$:
+\begin{equation}
+\gE \;=\; \gain\sum_i \kvec_i(\spk_i-\fbar_i)\ \in\Reals^{\Mind},
+\qquad
+\GE \;=\; \gain^2\sum_i \fbar_i\,\kvec_i\kvec_i\transpose\ \in\Reals^{\Mind\times\Mind}.
+\label{eq:estep-gG}
+\end{equation}
+$\gE$ is the kernel-projected mismatch between observed and expected counts;
+$\GE$ is the Poisson Fisher information and is PSD because every $\fbar_i>0$.
+(Note $\gE$ carries the subscript $\mathrm{E}$ specifically to keep it distinct
+from the log-rate $\lgr=\gain\lat+\latz$ of the utility part.)
+
+\paragraph{The $\vV$-update (closed form).}
+With $\pmean_i$ independent of $\vV$, setting $\nabla_{\vV}\ELBO=0$ gives
+$\vV^{-1}=\Ktil^{-1}(\Ktil+\GE)\Ktil^{-1}$, hence
+\begin{equation}
+\boxed{\;\vV \;=\; \Ktil\,(\Ktil+\GE)^{-1}\,\Ktil\;}
+\label{eq:estep-V}
+\end{equation}
+--- a \emph{symmetric} sandwich of two symmetric-PD factors, so $\vV$ is a valid
+covariance. This symmetry is the substance of the ``corrected'' E-step: the
+superseded form $\vV=(\Ktil+\GE)^{-1}\Ktil$ is a product of two non-commuting
+symmetric matrices and is therefore \emph{not} symmetric (Cholesky/PSD failures).
+
+\paragraph{The $\vm$-update.}
+The exact Newton step $\vm\leftarrow\vm-H_{\vm}^{-1}\nabla_{\vm}\ELBO$, with
+$\nabla_{\vm}\ELBO=\Ktil^{-1}(\gE-\vm)$ and Hessian
+$H_{\vm}=-\Ktil^{-1}(\Ktil+\GE)\Ktil^{-1}$, gives the corrected form
+$\vm\leftarrow\vm+\Ktil(\Ktil+\GE)^{-1}(\gE-\vm)$. The map actually used is
+\emph{not} this; it is the algebraically older
+\begin{equation}
+\boxed{\;\vm \;\leftarrow\; \Ktil\,(\Ktil+\GE)^{-1}\big(\GE\,\Ktil^{-1}\vm+\gE\big)\;}
+\label{eq:estep-m}
+\end{equation}
+(equal to $\vV_{\mathrm{new}}(\GE\Ktil^{-1}\vm+\gE)$ with $\vV_{\mathrm{new}}$ from
+\eqref{eq:estep-V}). The two maps differ only in the first term
+($\Ktil(\Ktil+\GE)^{-1}\GE\Ktil^{-1}\vm$ vs.\ $\GE(\Ktil+\GE)^{-1}\vm$); they
+coincide iff $\Ktil$ and $\GE$ commute.
+
+\caveat{The $\vm$-update map \eqref{eq:estep-m} differs \emph{per iteration} from
+the corrected Newton step whenever $\Ktil$ and $\GE$ do not commute, but both
+maps share the same fixed point $\vm^\star=\gE$, so the \emph{converged}
+posterior is identical --- the discrepancy is a transient path difference, not a
+different solution. It is left as-is (it converges in practice). The $\vV$-update
+\eqref{eq:estep-V} is unambiguously correct, and it is $\vV$ that the
+active-learning variance estimates depend on.}
+
+\begin{remark}[Fixed-point equivalence]
+Let $T_{\mathrm N}(\vm)=\vm+\Ktil(\Ktil+\GE)^{-1}(\gE-\vm)$ (corrected) and
+$T_{\mathrm C}(\vm)=\Ktil(\Ktil+\GE)^{-1}(\GE\Ktil^{-1}\vm+\gE)$ (older map). At
+$\vm=\gE$:
+$T_{\mathrm N}(\gE)=\gE$, and
+$T_{\mathrm C}(\gE)=\Ktil(\Ktil+\GE)^{-1}(\GE\Ktil^{-1}+I)\gE
+   =\Ktil(\Ktil+\GE)^{-1}(\GE+\Ktil)\Ktil^{-1}\gE=\Ktil\Ktil^{-1}\gE=\gE$.
+Both are valid fixed-point iterations onto the same stationary condition
+$\vm^\star=\gE=\gain\sum_i\kvec_i(\spk_i-\fbar_i)$.
+\end{remark}
+
+\subsubsection{Why the update is cheap: the eigenspace realisation}
+\label{subsubsec:estep-eigen}
+
+The E-step never touches the $\Mind$-dimensional inducing space directly. It works
+in the eigenbasis $\eb$ of $\Ktil$, keeping only the $\nb$ leading directions
+(eigenvalues above $\max(\lambda_{\max}\!\cdot\!\mathrm{tol},\,\mathrm{tol})$,
+$\mathrm{tol}=10^{-4}$; in practice $\nb\approx10\text{--}11$ while $\Mind$ may be
+large). With $\Ktil=\eb\evals\eb\transpose$ the projected gram
+$\Ktilb=\eb\transpose\Ktil\eb=\diago(\evals)$ is \emph{diagonal}, so $\Ktil^{-1}$
+is trivial. Using the eigenspace projection $\amat=K\Ktil^{-1}$
+(shape $\Ntr\times\nb$), one forms the \emph{transformed} helpers:
+\begin{align}
+g_{\mathrm E,b} &= \gain\,\amat\transpose(\spk-\fbar)\;=\;\Ktil^{-1}\gE
+   &&(\text{eigenbasis coords}),\\
+G_{\mathrm E,b} &= \gain^2\,\amat\transpose\big(\fbar\odot\amat\big)\;=\;\Ktil^{-1}\GE\Ktil^{-1},
+\end{align}
+and applies \eqref{eq:estep-V}--\eqref{eq:estep-m} entirely in the tiny
+$\nb$-space:
+\begin{equation}
+\Vb \leftarrow \big(I+\Ktilb\,G_{\mathrm E,b}\big)^{-1}\Ktilb,\qquad
+\mb \leftarrow \Vb\big(G_{\mathrm E,b}\,\mb+g_{\mathrm E,b}\big),\qquad
+\Vb \leftarrow \tfrac12(\Vb+\Vb\transpose).
+\end{equation}
+The first line equals \eqref{eq:estep-V} exactly, via the identity
+$(I+PQ^{-1})^{-1}=Q(Q+P)^{-1}$ with $P=\GE,Q=\Ktil$:
+$(I+\Ktilb G_{\mathrm E,b})^{-1}\Ktilb=(I+\GE\Ktil^{-1})^{-1}\Ktil
+=\Ktil(\Ktil+\GE)^{-1}\Ktil$. Prior initialisation is $\mb=0$,
+$\Vb=\Ktilb=\evals$. The dimensional collapse $\Mind\!\to\!\nb\approx10$ ---
+not any special-casing --- is what makes the Newton step cheap.
+
+\subsubsection{Iteration, damping, and the divergence guard}
+
+The E-step performs a \emph{single, undamped, closed-form} Newton step; iteration
+and stabilisation are handled around it:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt]
+  \item \textbf{Coupling variable $\fbar$.} After each step the posterior is
+        recomputed and $\fbar=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$
+        refreshed, then fed into the next step's $g_{\mathrm E,b},G_{\mathrm E,b}$.
+        $\gain,\latz$ are held fixed during the E-step.
+  \item \textbf{Revert-on-divergence guard (the effective damping).} Each iteration
+        snapshots $(\mb,\Vb)$; if the post-step $\fbar$ mean or max exceeds a
+        threshold, or $\fbar$ has NaNs, it \emph{reverts} $(\mb,\Vb)$ (and
+        $\gain,\latz$ if interleaved), recomputes $\fbar$, and breaks the loop.
+  \item \textbf{Optional interleaved F-step.} With interleaving enabled, a
+        \emph{damped} Newton update of $(\gain,\latz)$ (\S\ref{subsec:fstep},
+        $\alpha=0.25$) runs after every E-iteration, so the rate parameters
+        track $(\mb,\Vb)$ as they move.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\subsection{The F-step: fitting the rate function}
+\label{subsec:fstep}
+
+Here ``F'' denotes the \textbf{rate function} $\rate$: the F-step fits the
+Poisson-rate parameters $\gain,\latz$ that define
+$\fbar=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$, holding the variational
+moments (through frozen $\pmean,\pvar$) and the kernel fixed. Here $\gain$ is the
+only searched variable; $\latz$ is solved in closed form for the current $\gain$.
+
+\paragraph{Closed-form $\latz$ given $\gain$.}
+From $\partial\ELBO/\partial\latz=0$ on
+$\sum_i[\spk_i\latz-\exp(\latz)\exp(\gain\pmean_i+\tfrac12\gain^2\pvar_i)]$:
+\begin{equation}
+\boxed{\;
+\latz \;=\; \log\!\Big(\textstyle\sum_i\spk_i\Big)
+       \;-\; \log\!\Big(\textstyle\sum_i\exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i\big)\Big)
+\;}
+\label{eq:fstep}
+\end{equation}
+(requires $\sum_i\spk_i>0$; a zero-count target is a data problem). It is
+re-evaluated whenever $\gain$ changes.
+
+\paragraph{LBFGS on $\gain$ with an analytic gradient.}
+The F-step runs LBFGS over $\log\gain$, re-solving $\latz$ at each evaluation and
+using the closed-form derivative, with $\pmean,\pvar$ the frozen inputs:
+\begin{equation}
+\frac{\partial\ELBO}{\partial\gain}
+  = \sum_i\big[\spk_i\pmean_i-(\pmean_i+\gain\pvar_i)\,\fbar_i\big],
+\qquad
+\frac{\partial\ELBO}{\partial(\log\gain)}=\gain\frac{\partial\ELBO}{\partial\gain}.
+\end{equation}
+Since LBFGS minimises $-\ELBO$, the gradient it consumes with respect to
+$\log\gain$ is $-\gain\,\partial\ELBO/\partial\gain$. Guards reject a trial step
+whose $\latz$ over/underflows or whose $\fbar$ exceeds the mean/max thresholds,
+and revert $(\gain,\latz)$ if the final $\latz$ overflows.
+
+\paragraph{Interleaved joint damped Newton on $(\gain,\latz)$.}
+With interleaving enabled, a joint damped Newton step on $\psi=[\gain,\latz]$ runs
+\emph{inside} the E-loop. With per-input
+$\rate_i=\exp(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz)$ and
+$d_i=\pmean_i+\gain\pvar_i$:
+\begin{equation}
+R=\begin{bmatrix}\sum_i(\spk_i\pmean_i-d_i\rate_i)\\[2pt]\sum_i(\spk_i-\rate_i)\end{bmatrix},
+\quad
+H=-\begin{bmatrix}\sum_i(\pvar_i\rate_i+d_i^2\rate_i)&\sum_i d_i\rate_i\\[2pt]
+                  \sum_i d_i\rate_i&\sum_i\rate_i\end{bmatrix},
+\quad
+\psi\leftarrow\psi-\alpha\,H^{-1}R,\ \ \alpha=0.25.
+\end{equation}
+$H$ is negative-definite (the log-likelihood is concave in $\psi$); the damping
+$\alpha=0.25$ and the same $\fbar$-threshold rejections stabilise the step.
+
+% ---------------------------------------------------------------------------
+\subsection{The M-step: updating the kernel hyperparameters}
+\label{subsec:mstep}
+
+The M-step maximises the ELBO \eqref{eq:elbo} over the kernel/prior
+hyperparameters while $\mb,\Vb$, the rate parameters $\gain,\latz$, and
+\emph{the eigenbasis $\eb$} are held fixed. The free hyperparameters (all owned
+by the arc-cosine prior) are the six
+\begin{equation}
+\theta\in\{\ \sigz,\ \Amp,\ \bwid,\ \smoo,\ \varepsilon_{0x},\ \varepsilon_{0y}\ \}.
+\end{equation}
+The eigenbasis $\eb$ is held fixed as an approximation (for cost and stability)
+and re-synced at the start of the next outer iteration. This block is solved by
+gradient-based optimisation (e.g.\ LBFGS on the raw, unconstrained parameters);
+the hyperparameter gradients $\partial_\theta\ELBO$ are obtained by automatic or
+analytical differentiation of the eigenspace ELBO.
+
+\begin{remark}[The amplitude $\Amp$ is optimized by default]
+The amplitude prefactor $\Amp$ of the structured prior
+$\Cmat=\Amp\,\loc\,\Csm\,\loc\transpose$ (Part~I) is a genuine sixth kernel
+hyperparameter, not a fixed constant, and is optimized alongside the other five
+by default. The optional flag \texttt{fix\_Amp} (default off) instead pins
+$\Amp=1$, recovering the amplitude-free model; left at its default, $\Amp$ trains
+with the rest.
+\end{remark}

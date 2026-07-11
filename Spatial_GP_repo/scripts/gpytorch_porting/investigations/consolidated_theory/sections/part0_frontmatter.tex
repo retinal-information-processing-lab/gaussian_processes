@@ -1,0 +1,57 @@
+% ==== front matter: scope, conventions, reading guide (unnumbered) ====
+\section*{Scope, conventions, and reading guide}
+\addcontentsline{toc}{section}{Scope, conventions, and reading guide}
+
+This document is a single self-contained reference for the theory and mathematics
+behind a closed-loop, actively-learning electrophysiology experiment on retinal
+ganglion cells (RGCs). A multi-electrode array records spikes while natural
+grayscale images are displayed; a Gaussian-process (GP) model learns each
+neuron's receptive field (RF) and tuning from spike counts, and \emph{active
+learning} chooses the next image so as to maximize information gain about that
+tuning. Part~\ref{sec:diffusion} extends the loop from \emph{selecting} images out
+of a fixed pool to \emph{synthesizing} them with a guided diffusion model.
+
+\paragraph{Scope.} The treatment is restricted to the \textbf{spatial} GP: the
+input is a single image and the latent is a scalar function over one image. All
+spatiotemporal machinery (a temporal covariance factor, the Kronecker product
+$C=C_{\mathrm{spatial}}\otimes C_{\mathrm{temporal}}$, and temporal warping) is
+deliberately out of scope. Two \textbf{current} implementations are described and
+treated as ground truth: the eigenspace variational GP
+(\texttt{vargp\_direct}: the \texttt{eigenspace\_*.py} modules, class
+\texttt{DirectVGPModel}) and the standard GPyTorch variational path
+(\texttt{default\_gpy}: \texttt{gpy\_*.py}, class \texttt{VariationalGPModel}). A
+deprecated legacy engine (\texttt{vargp\_old}) is not described; where the current
+code reuses a piece of its mathematics, that mathematics is presented as the
+current code runs it.
+
+\paragraph{Conventions.}
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+  \item \textbf{Ground truth is the current code.} Where an internal note or a
+        LaTeX write-up disagreed with the shipped implementation, the code wins;
+        the discrepancy is flagged in place with a \textcolor{red!60!black}{Caveat}
+        box and collected in Appendix~\ref{app:discrepancies}.
+  \item \textbf{Notation is uniform.} One symbol denotes one concept throughout;
+        the full table is Appendix~\ref{app:notation}. A handful of symbols that
+        collide across the literature are disambiguated there (e.g. the kernel
+        smoothness $\smoo$ vs.\ the posterior correlation $\corr$; the GP prior
+        width $\bwid$ vs.\ the diffusion noise schedule $\bsched$; the three
+        entropies $\Hmarg,\Hnoise,\Hcond$).
+  \item \textbf{Spike counts.} The spike count is written $\spk$ in the model and
+        inference parts; the utility part follows the entropy-literature
+        convention and writes the count realization $r$ and the count random
+        variable $R$ (with $r_{\max}$ its truncation). These denote the same
+        observed quantity, $\spk\equiv r$.
+\end{itemize}
+
+\paragraph{How to read this document.} The four parts are logically ordered.
+Part~\ref{sec:genmodel}--\ref{sec:kernel} sets up the generative model and the
+arc-cosine kernel with its structured spatial prior. Part~II
+(\ref{sec:varinf}--\ref{sec:training}) develops sparse variational inference, the
+eigenspace representation and the two implementations, and the EM-style training
+algorithm (E-, F-, and M-steps). Part~III
+(\ref{sec:utility}--\ref{sec:deeplayer}) is the active-learning core: the
+information utility and the proofs, subspace theory, and numerics beneath it.
+Part~IV (\ref{sec:diffusion}) is guided diffusion for stimulus synthesis. Forward
+and backward cross-references connect the utility gradient in Part~III and
+Part~IV back to the kernel input-gradient of Part~I, and the training gradients
+back to the ELBO of Part~II.

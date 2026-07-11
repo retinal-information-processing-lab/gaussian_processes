@@ -1,0 +1,638 @@
+% ============================================================================
+%  sections/part3a_utility_core.tex  --  Part III, Section 7
+%  "The acquisition objective" (utility core).
+%  \input-ready fragment: no preamble/documentclass. Uses the shared macros
+%  from preamble.tex. Source: notes/06_utility_core.md; ground truth = the
+%  current code (acquisition.py, utils.py). The deep proofs (conditioning,
+%  divergence, predictive-mean equivalence) live in the sibling Part III-deep
+%  section and are only cited here.
+% ============================================================================
+
+\section{The acquisition objective}\label{sec:utility}
+
+Active learning closes the loop: after each spike-count observation the model is
+refit, and the next natural image to display is the one whose observation is
+expected to teach us the most about the neuron's tuning. ``Teach us the most'' is
+made precise as an \emph{information gain} --- an expected reduction in the entropy
+of what we do not yet know about the retinal ganglion cell's firing behaviour.
+This section builds that utility on the generative model and variational posterior
+of Parts~I--II: the Poisson-lognormal predictive of the spike count, its entropy,
+and the two utilities the codebase actually computes.
+
+Throughout, the candidate (query) image is $x^{*}$; a spike count is the response
+random variable $R$ with realizations $r$ (this is the spike count written $\spk$
+elsewhere in the document --- we keep it as $r$ here to match the count-domain
+code variables $\rmax$ and the Laplace mode $\gmode$). The neuron's mean firing
+rate to image $x$ is $\rate(x)=\exp(\gain\,\lat(x)+\latz)$ with latent
+$\lat(x)$, gain $\gain$, and offset $\latz$; the spike count is
+$R\mid\rate(x)\sim\Poi(\rate(x))$. It is convenient to work with the
+\emph{log-firing rate} $\lgr(x)=\gain\,\lat(x)+\latz$, so $\rate=e^{\lgr}$, whose
+GP posterior at any image is Gaussian with the log-rate moments
+%
+\begin{equation}
+  \mug \;=\; \gain\,\pmean(x^{*})+\latz,
+  \qquad
+  \varg \;=\; \gain^{2}\,\pvar(x^{*}),
+  \label{eq:logratemoments}
+\end{equation}
+%
+the affine push-forward of the latent posterior moments $\pmean(x^{*})$,
+$\pvar(x^{*})$ read off the variational posterior~\eqref{eq:predmoments}.
+
+\begin{remark}[Two utilities, one idea --- and which one ships]\label{rem:two-utilities}
+The codebase carries \emph{two} acquisition functions. Both express the same idea
+--- \emph{utility$(x^{*})=$ information the observation $R$ at $x^{*}$ gives about
+the neuron's tuning $=$ a drop in entropy} --- and they differ only in
+\emph{which} uncertainty they score (Table~\ref{tab:two-utilities}). The
+\textbf{standard utility} $\Ustd$ scores the firing rate \emph{at $x^{*}$ itself};
+the \textbf{distribution-aware utility} $\Uda$ scores the firing rates at the
+natural images $x\sim\px$ we ultimately want to predict. The production
+closed-loop experiment selects images with $\Ustd$ (verified:
+\texttt{run\_active\_loop.py:241} calls \texttt{standard\_utility}). $\Uda$ is the
+theoretically richer object derived in the internal write-ups, but in the current
+code it is a research instrument used only under \texttt{investigations/} --- and
+it carries a norm-exploitation divergence (\S\ref{subsec:landscape},
+Thm.~\ref{thm:divergence}) that the finite image pool masks in production. We label
+$\Ustd$ = production, $\Uda$ = research, throughout.
+\end{remark}
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+      & \textbf{Standard} $\Ustd$ (production) & \textbf{Distribution-aware} $\Uda$ (research)\\
+    \midrule
+    Formula      & $\Hmarg(x^{*})-\E[\Hnoise(x^{*})]$
+                 & $\Hmarg(x^{*})-\E_{x\sim\px}[\Hcond(x^{*})]$\\
+    As MI        & $I\!\big(\rate(x^{*});R\mid x^{*},\mathcal D\big)$
+                 & $I\!\big(\rate(X);R\mid X,x^{*},\mathcal D\big),\ X\sim\px$\\
+    Scores       & rate \emph{at $x^{*}$ itself}
+                 & rates at \emph{natural images} $x\sim\px$\\
+    Needs        & marginal moments at $x^{*}$
+                 & marginal moments \emph{and} cross-cov.\ to $\px$\\
+    Code         & \texttt{standard\_utility}$\to$\texttt{nd\_utility\_new}
+                 & \texttt{distribution\_aware\_utility}\\
+    Where        & \texttt{run\_active\_loop.py:241} (real experiment)
+                 & \texttt{investigations/} only\\
+    \bottomrule
+  \end{tabular}
+  \caption{The two utilities. Both are ``information gain $=$ entropy reduction'',
+  about different targets. $\Ustd$ ships; $\Uda$ is a research variant.}
+  \label{tab:two-utilities}
+\end{table}
+
+% ---------------------------------------------------------------------------
+\subsection{Utility as expected entropy reduction and mutual information}
+\label{subsec:mi}
+
+Fix a candidate $x^{*}$ and the data $\mathcal D=\{(x_i,r_i)\}$. The utility is the
+mutual information between the response $R$ we would record at $x^{*}$ and the
+firing behaviour we want to learn. What ``firing behaviour'' means is exactly the
+difference between the two utilities.
+
+\paragraph{The distribution-aware objective.}
+Let $Z:=(X,\rate(X))$ with $X\sim\px$ a natural image and $\rate(X)$ its mean
+firing rate. Choosing $x^{*}$ to maximize the information $R$ carries about $Z$,
+%
+\begin{equation}
+  \Uda(x^{*}) \;:=\; I\!\big(Z;R\mid x^{*},\mathcal D\big)
+             \;=\; I\!\big((X,\rate(X));\,R\mid x^{*},\mathcal D\big).
+  \label{eq:da-objective}
+\end{equation}
+%
+The chain rule for mutual information splits this into a term for \emph{which}
+natural image we imagine and a term for its \emph{rate}:
+%
+\begin{equation}
+  I\!\big((X,\rate(X));R\mid x^{*},\mathcal D\big)
+  \;=\;
+  \underbrace{I(X;R\mid x^{*},\mathcal D)}_{=\,0}
+  \;+\;
+  I\!\big(\rate(X);R\mid X,x^{*},\mathcal D\big).
+  \label{eq:mi-chain}
+\end{equation}
+%
+The first term vanishes: \emph{which} natural image $X$ we intend to ask about is
+independent of the response $R$ recorded at $x^{*}$, given $x^{*}$ and
+$\mathcal D$. Hence
+%
+\begin{equation}
+  \Uda(x^{*})
+  \;=\; I\!\big(\rate(X);R\mid X,x^{*},\mathcal D\big)
+  \;=\; \E_{x\sim\px}\!\big[\,I\!\big(\rate(x);R\mid x,x^{*},\mathcal D\big)\big].
+  \label{eq:da-expectation}
+\end{equation}
+
+\paragraph{Entropy decomposition.}
+For a fixed natural image $x$, the per-image mutual information decomposes into a
+marginal-entropy term minus an expected conditional-entropy term,
+%
+\begin{equation}
+  I\!\big(\rate(x);R\mid x,x^{*},\mathcal D\big)
+  \;=\;
+  H(R\mid x^{*},\mathcal D)
+  \;-\;
+  \E_{\rate(x)}\!\big[\,H(R\mid x^{*},\rate(x),\mathcal D)\big],
+  \label{eq:mi-entropy-split}
+\end{equation}
+%
+using (i) $H(R\mid x,x^{*},\mathcal D)=H(R\mid x^{*},\mathcal D)$ --- the marginal
+of $R$ at $x^{*}$ does not depend on which natural image we intend to predict ---
+and (ii) that conditioning on the latent value $\rate(x)$ leaves the expected
+entropy $\E_{\rate(x)}[H(R\mid x^{*},\rate(x),\mathcal D)]$. Averaging
+\eqref{eq:mi-entropy-split} over $x\sim\px$ and naming the two pieces gives the
+distribution-aware utility as a difference of entropies,
+%
+\begin{equation}
+  \Uda(x^{*}) \;=\; \Hmarg(x^{*}) \;-\; \E_{x\sim\px}\!\big[\Hcond(x^{*})\big],
+  \label{eq:Uda}
+\end{equation}
+%
+with
+%
+\begin{align}
+  \Hmarg(x^{*}) &:= H(R\mid x^{*},\mathcal D), \label{eq:def-Hmarg-cond}\\
+  \Hcond(x^{*}) &:= \E_{x\sim\px,\ \lat(x)\sim q}\!\big[\,H(R\mid x^{*},\lat(x),\mathcal D)\big].
+  \label{eq:def-Hcond}
+\end{align}
+%
+By the symmetry of mutual information, $\Uda(x^{*})$ equals the reduction in
+uncertainty about the firing rates $\{\rate(x):x\sim\px\}$ produced by observing
+$R$ at $x^{*}$ --- the precise sense of ``how much does showing $x^{*}$ teach us
+about the cell's tuning on natural images.''
+
+\begin{remark}[Two expectations inside $\Hcond$]\label{rem:double-exp}
+$\Hcond$ in~\eqref{eq:def-Hcond} carries \emph{two} expectations: over natural
+images $x\sim\px$ and over the posterior latent $\lat(x)\sim q$. The latent is
+integrated because $\rate(x)=\exp(\gain\lat(x)+\latz)$ is itself uncertain --- only
+the posterior of $\lat(x)$ is known, not its value. Replacing the inner
+expectation by an evaluation at the mean $\lat(x)=\pmean(x)$ is \emph{biased}; the
+necessity of the inner sampling is the subject of \S\ref{subsec:why-sample}.
+\end{remark}
+
+The \emph{standard} utility instead scores the rate at the query point itself. It
+is the special case in which the ``natural image we predict'' is $x^{*}$, so
+$\Uda$'s outer expectation collapses and $\Hcond$ becomes the aleatoric Poisson
+noise entropy at $x^{*}$; we develop it in \S\ref{subsec:standard} once $\Hmarg$
+is in hand.
+
+% ---------------------------------------------------------------------------
+\subsection{The marginal spike-count entropy \texorpdfstring{$\Hmarg$}{H\_marg}}
+\label{subsec:hmarg}
+
+Both utilities share the marginal predictive entropy of the spike count at
+$x^{*}$,
+%
+\begin{equation}
+  \Hmarg(x^{*})
+  \;=\; -\sum_{r=0}^{\infty} p(r\mid x^{*},\mathcal D)\,\log p(r\mid x^{*},\mathcal D),
+  \label{eq:Hmarg}
+\end{equation}
+%
+where the marginal predictive integrates the Poisson likelihood against the
+Gaussian posterior of the log-rate $\lgr(x^{*})\sim\Gauss(\mug,\varg)$
+(cf.~\eqref{eq:logratemoments}):
+%
+\begin{equation}
+  p(r\mid x^{*},\mathcal D)
+  \;=\; \int \Poi(r\mid e^{\lgr})\,\Gauss(\lgr\mid\mug,\varg)\,d\lgr
+  \;=\; \frac{1}{r!}\int \exp\!\big(r\lgr - e^{\lgr}\big)\,\Gauss(\lgr\mid\mug,\varg)\,d\lgr .
+  \label{eq:marg-predictive}
+\end{equation}
+%
+This integral has no closed form. The code evaluates it by a \textbf{Laplace
+expansion} of the integrand about its mode $\gmode$ (the mode of the
+log-integrand $r\lgr - e^{\lgr} - (\lgr-\mug)^{2}/2\varg$):
+%
+\begin{equation}
+  \log p(r\mid x^{*},\mathcal D)
+  \;\approx\;
+  \gmode\,r - e^{\gmode}
+  - \frac{(\gmode-\mug)^{2}}{2\varg}
+  - \tfrac12\log\!\big(1+\varg\,e^{\gmode}\big)
+  - \log r! .
+  \label{eq:laplace-logp}
+\end{equation}
+
+\begin{lemma}[Closed-form Laplace mode via Lambert~$W$]\label{lem:mode}
+The stationarity condition $r-e^{\lgr}-(\lgr-\mug)/\varg=0$ rearranges to
+$\lgr=r\varg+\mug-\varg e^{\lgr}$. Substituting $w=\varg e^{\lgr}$ gives
+$w+\log w=\log\varg+r\varg+\mug$, i.e.\ $w=\LW\!\big(\varg\,e^{\,r\varg+\mug}\big)$
+with $\LW$ the principal branch of the Lambert~$W$ function. Hence the mode is
+closed-form,
+%
+\begin{equation}
+  \gmode \;=\; r\varg+\mug-\LW\!\big(\varg\,e^{\,r\varg+\mug}\big).
+  \label{eq:laplace-mode}
+\end{equation}
+\end{lemma}
+
+The infinite sum in~\eqref{eq:Hmarg} decays fast (retinal firing rates are low)
+and is truncated at $\rmax$ (\S\ref{subsec:landscape} handles the truncation
+artifact). At very small variance the Laplace form is unstable, and the code falls
+back to the exact Poisson log-pmf $\log p(r)=r\mug-e^{\mug}-\log r!$ via a
+differentiable branch (threshold $\varg<10^{-6}$). The mode is computed in
+log-space --- $\LW(e^{y})$ with $y=\log\varg+r\varg+\mug$, Newton-iterated with a
+custom backward $dW/dy=W/(1+W)$ --- so no $e^{r\varg+\mug}$ is ever formed
+(overflow-safe, gradient-safe).
+
+% ---------------------------------------------------------------------------
+\subsection{The standard (production) utility}
+\label{subsec:standard}
+
+The production acquisition is the mutual information between the response and the
+latent firing rate \emph{at the query point itself},
+%
+\begin{equation}
+  \Ustd(x^{*})
+  \;=\; \Hmarg(x^{*}) - \E[\Hnoise(x^{*})]
+  \;=\; H(R\mid x^{*},\mathcal D) - \E_{\rate\sim\text{post.}}\!\big[H(R\mid\rate)\big]
+  \;=\; I\!\big(\rate(x^{*});R\mid x^{*},\mathcal D\big).
+  \label{eq:Ustd}
+\end{equation}
+%
+It scores ``how much would a spike count at $x^{*}$ pin down the firing rate at
+$x^{*}$'' --- it depends on the marginal GP moments at $x^{*}$ only, with no $\px$
+and no cross-covariance. It is exactly $\Uda$ with the predicted image taken to be
+the query point, so the second term is the \emph{aleatoric} Poisson noise entropy
+rather than an epistemic conditional entropy.
+
+\subsubsection{The aleatoric noise entropy \texorpdfstring{$\E[\Hnoise]$}{E[H\_noise]} in closed form}
+\label{subsubsec:hnoise}
+
+Given a rate $\rate$, the entropy of $\Poi(\rate)$ is
+$\Hnoise(\rate)=\rate\,(1-\log\rate)+\E_{r\sim\Poi(\rate)}[\log r!]$. Writing
+$\lgr=\log\rate\sim\Gauss(\mug,\varg)$ and using the lognormal moment identities
+%
+\begin{equation}
+  \E[e^{\lgr}] = \exp\!\big(\mug+\tfrac12\varg\big) = \fbar(x^{*}),
+  \qquad
+  \E[\lgr\,e^{\lgr}] = \exp\!\big(\mug+\tfrac12\varg\big)\,(\mug+\varg),
+  \label{eq:lognormal-identities}
+\end{equation}
+%
+(the first is the expected firing rate $\fbar$ of~\eqref{eq:fbar}), the first
+piece integrates in closed form:
+%
+\begin{equation}
+  \E_{\lgr}\!\big[\rate(1-\log\rate)\big]
+  = \E_{\lgr}\!\big[e^{\lgr}(1-\lgr)\big]
+  = \exp\!\big(\mug+\tfrac12\varg\big)\big(1-(\mug+\varg)\big)
+  = -\exp\!\big(\mug+\tfrac12\varg\big)(\mug+\varg-1).
+  \label{eq:hnoise-firstpiece}
+\end{equation}
+%
+The remaining $\E[\log r!]$ is taken under the marginal predictive
+$p(r\mid x^{*},\mathcal D)$ of~\eqref{eq:marg-predictive}. Hence
+%
+\begin{equation}
+  \E[\Hnoise(x^{*})]
+  \;=\; -\exp\!\big(\mug+\tfrac12\varg\big)(\mug+\varg-1)
+        \;+\; \sum_{r} p(r\mid x^{*},\mathcal D)\,\log r! .
+  \label{eq:Hnoise}
+\end{equation}
+%
+This is the closed form used by \texttt{nd\_utility\_new} (its code comment cites
+Eq.~33 of Goldin et al.\ 2023, PNAS). The production path
+\texttt{standard\_utility} (i)~reads the marginal latent moments
+$\pmean(x^{*}),\pvar(x^{*})$ via \texttt{get\_gp\_marginal\_moments},
+(ii)~transforms them to $\mug,\varg$ by~\eqref{eq:logratemoments},
+(iii)~optionally sets $\rmax$ adaptively, and (iv)~returns
+$\Ustd=\Hmarg-\E[\Hnoise]$ from \texttt{nd\_utility\_new}.
+
+% ---------------------------------------------------------------------------
+\subsection{The distribution-aware (research) utility}
+\label{subsec:da}
+
+The distribution-aware utility~\eqref{eq:Uda} reduces uncertainty about firing
+rates at the natural images we actually want to predict. It weights a candidate
+$x^{*}$ by how informative its observation is about responses to typical natural
+images --- i.e.\ by the cross-covariance between $x^{*}$ and images $x\sim\px$
+(``distribution-aware'' $=$ aware of the natural-image distribution $\px$).
+Evaluating $\Hcond$ needs the predictive moments of $\lat(x^{*})$ \emph{after a
+hypothetical observation} $\lat(x)=\lat_i$ at a natural image $x$.
+
+\subsubsection{Conditional GP moments via Gaussian conditioning}
+\label{subsubsec:condmoments}
+
+Let $\pv(x)=\Ktil^{-1}\kvec(x)$ be the SVGP projection and $q(\latt)=\Gauss(\vm,\vV)$
+the variational posterior on the inducing values. The marginal latent posterior
+moments at $x$ and $x^{*}$ are the projected moments of~\eqref{eq:predmoments},
+$\pmean(x)=\pv(x)\transpose\vm$, $\pvar(x)=s(x)+\pv(x)\transpose\vV\pv(x)$
+(and likewise at $x^{*}$), where $s(x)=\kvec(x,x)-\pv(x)\transpose\kvec(x)$ is
+the prior Schur complement. The object that couples the two points is the
+\textbf{prior conditional covariance} of $\lat(x),\lat(x^{*})$ given the inducing
+values --- the term an earlier hand-assembled formulation omitted:
+%
+\begin{equation}
+  \ccond \;=\; \kvec(x,x^{*}) - \pv(x)\transpose\Ktil\,\pv(x^{*}) .
+  \label{eq:util-ccond}
+\end{equation}
+%
+By the law of total covariance the full posterior cross-covariance is
+%
+\begin{equation}
+  \Sigma_{x^{*}} \;=\; \ccond + \pv(x)\transpose\vV\,\pv(x^{*})
+             \;=\; \kvec(x,x^{*}) + \pv(x)\transpose(\vV-\Ktil)\,\pv(x^{*}) ,
+  \label{eq:util-crosscov}
+\end{equation}
+%
+and standard Gaussian conditioning on the joint of
+$(\lat(x),\lat(x^{*}))$ gives the conditional latent moments at $x^{*}$ after
+observing $\lat(x)=\lat_i$,
+%
+\begin{align}
+  \mu_{\mathrm{cond}}(x^{*})     &= \pmean(x^{*}) + \frac{\Sigma_{x^{*}}}{\pvar(x)}\,\big(\lat_i-\pmean(x)\big),
+    \label{eq:util-mucond}\\[2pt]
+  \sigma^{2}_{\mathrm{cond}}(x^{*}) &= \pvar(x^{*}) - \frac{\Sigma_{x^{*}}^{2}}{\pvar(x)} .
+    \label{eq:util-sigcond}
+\end{align}
+%
+These are transformed to log-rate space, $\gain\,\mu_{\mathrm{cond}}+\latz$ and
+$\gain^{2}\sigma^{2}_{\mathrm{cond}}$, and fed to the same entropy
+functional~\eqref{eq:Hmarg} to give the per-image conditional entropy
+$H(R\mid x^{*},\lat(x),\mathcal D)$. The full Gaussian-conditioning derivation
+(augmented inducing matrix, block inverse, and the equivalence to the rank-1
+posterior update) is the deep-layer result~\eqref{eq:condmoments}; and the
+conditional mean~\eqref{eq:util-mucond} obtained by conditioning on the joint
+posterior coincides with the mean obtained by augmenting the inducing set with the
+hypothetical observation and re-integrating (Thm.~\ref{thm:predmean-equiv}). Neither
+is re-derived here.
+
+\begin{remark}[The code is correct-by-construction]\label{rem:cond-correct}
+\texttt{get\_gp\_conditional\_moments} builds the joint $[x;x^{*}]$, reads the
+\emph{full} \texttt{covariance\_matrix} from the GPyTorch posterior, and takes
+$\mu_{\mathrm{cond}},\sigma^{2}_{\mathrm{cond}}$ from its blocks
+(with a clamp $\sigma^{2}_{\mathrm{cond}}\ge10^{-8}$). Because the variational
+posterior covariance between any two points already equals
+$\ccond+\pv\transpose\vV\pv^{*}=\Sigma_{x^{*}}$ --- the $\ccond$ term
+included --- the code never forms the buggy $\pv\transpose\vV\pv^{*}$-only
+cross-covariance. The ``missing-$\ccond$'' correction in the write-ups is a
+warning about \emph{hand-assembled} cross-covariances (and about the deferred
+\texttt{vargp\_direct} augmented-matrix path), not a defect in the shipped
+predict path.
+\end{remark}
+
+\paragraph{Monte-Carlo estimator (one $\lat$ per image).}
+Given pre-drawn samples $\{x_i\}_{i=1}^{N_{\mathrm{mc}}}\sim\px$:
+%
+\begin{enumerate}\itemsep2pt
+  \item $\Hmarg(x^{*})=$ entropy~\eqref{eq:Hmarg} at the marginal moments
+        $\mug,\varg$ of $x^{*}$.
+  \item For $i=1,\dots,N_{\mathrm{mc}}$: read $(\pmean(x_i),\pvar(x_i))$; draw
+        $\lat_i=\pmean(x_i)+\sqrt{\pvar(x_i)}\,\varepsilon,\ \varepsilon\sim\Gauss(0,1)$
+        (if \texttt{sample\_lambda}; else $\lat_i=\pmean(x_i)$); form the
+        conditional moments \eqref{eq:util-mucond}--\eqref{eq:util-sigcond} at
+        $x^{*}$; set $\Hcond^{(i)}=$ entropy at $(\gain\mu_{\mathrm{cond}}+\latz,\ \gain^{2}\sigma^{2}_{\mathrm{cond}})$.
+  \item $\Hcond=\tfrac{1}{N_{\mathrm{mc}}}\sum_i\Hcond^{(i)}$;\quad
+        $\Uda=\Hmarg-\Hcond$.
+\end{enumerate}
+%
+The $x_i$-posterior and the reparameterized draw $\lat_i$ are computed under
+\texttt{torch.no\_grad()} (they do not depend on $x^{*}$, so excluding them avoids
+$O(N_{\mathrm{mc}})$ graph accumulation); the conditional moments at $x^{*}$ are
+differentiable in $x^{*}$. \texttt{sample\_lambda} is \emph{not} a debug flag:
+$\texttt{False}$ uses the mean $\lat_i=\pmean(x_i)$ (a deterministic, reproducible
+sanity check --- \S\ref{subsubsec:det}); $\texttt{True}$ is the correct unbiased
+estimator (\S\ref{subsec:why-sample}).
+
+\subsubsection{The deterministic special case}
+\label{subsubsec:det}
+
+Setting $\lat_i=\pmean(x)$ (the posterior mean) makes the innovation
+$\lat_i-\pmean(x)=0$, so~\eqref{eq:util-mucond}--\eqref{eq:util-sigcond} collapse
+to $\mu_{\mathrm{cond}}=\pmean(x^{*})$ (mean unchanged) and
+%
+\begin{equation}
+  \sigma^{2}_{\mathrm{cond}}(x^{*}) \;=\; \pvar(x^{*})\,(1-\corr^{2}),
+  \qquad
+  \corr^{2} \;=\; \frac{\Sigma_{x^{*}}^{2}}{\pvar(x)\,\pvar(x^{*})},
+  \label{eq:varreduce}
+\end{equation}
+%
+where $\corr$ is the posterior latent correlation between $\lat(x)$ and
+$\lat(x^{*})$. In log-rate coordinates the conditioning map is
+$(\mug,\varg)\mapsto(\mug,\varg(1-\corr^{2}))$: same mean, variance scaled by
+$1-\corr^{2}$. Writing $\Hmarg(\cdot,\cdot)$ for the spike-count
+entropy~\eqref{eq:Hmarg} as a function of the log-rate moments, the utility is the
+entropy difference
+%
+\begin{equation}
+  \Uda(x^{*}) \;=\; \Hmarg(\mug,\varg) \;-\; \Hmarg\!\big(\mug,\ \varg(1-\corr^{2})\big).
+  \label{eq:da-deterministic}
+\end{equation}
+%
+So the deterministic $\Uda$ depends on exactly three quantities: the operating
+point $\mug$, the marginal log-rate variance $\varg$ (how much entropy to start
+with), and $\corr^{2}$ (the fraction of that variance conditioning removes).
+$\corr^{2}$ is governed by the angle between $x^{*}$ and the conditioning image in
+$\Cmat$-space: a small angle gives $\corr^{2}\!\to\!1$ (near-total variance
+removal), a large angle $\corr^{2}\!\to\!0$ (no conditioning). This same $\corr^{2}$
+sets the sampling bias of \S\ref{subsec:why-sample}.
+
+% ---------------------------------------------------------------------------
+\subsection{Why we sample the latent instead of using its mean}
+\label{subsec:why-sample}
+
+$\Hcond$ is a double expectation (Remark~\ref{rem:double-exp}), over $x\sim\px$ and
+over $\lat(x)\sim q$. The tempting shortcut replaces the inner expectation by
+evaluation at the mean,
+%
+\begin{equation}
+  \widetilde{H}_{\mathrm{cond}}(x^{*})
+  \;=\; \E_{x\sim\px}\!\big[\,H\big(R\mid x^{*},\lat(x)=\pmean(x),\mathcal D\big)\big].
+  \label{eq:mean-shortcut}
+\end{equation}
+
+\begin{proposition}[The mean shortcut is biased]\label{prop:bias}
+$\E_{\lat(x)}[H(R\mid x^{*},\lat(x),\mathcal D)]\neq H(R\mid x^{*},\lat(x)=\pmean(x),\mathcal D)$
+in general. The predictive mean of $\lat(x^{*})$ is linear in the conditioning
+value, $\E[\lat(x^{*})\mid\lat(x),\mathcal D]=\pmean(x^{*})+\alpha\,(\lat(x)-\pmean(x))$
+with regression coefficient $\alpha=\mathrm{Cov}(\lat(x^{*}),\lat(x)\mid\mathcal D)/\pvar(x)$,
+while the predictive \emph{variance} does not depend on the value of $\lat(x)$.
+Entropy is nonlinear in the predictive mean, so a second-order Taylor expansion of
+$H$ about $\lat(x)=\pmean(x)$, with $\E[\lat(x)-\pmean(x)]=0$, leaves the leading
+bias
+%
+\begin{equation}
+  \E_{\lat(x)}[H] - H\big|_{\lat(x)=\pmean(x)}
+  \;\approx\; \tfrac12\,\alpha^{2}\,\pvar(x)\;\frac{\partial^{2}\Hmarg}{\partial\pmean^{2}}\Big|_{x^{*}} .
+  \label{eq:bias-raw}
+\end{equation}
+%
+Since $\mathrm{Cov}(\lat(x^{*}),\lat(x))=\corr\,\sqrt{\pvar(x^{*})\pvar(x)}$, we
+have $\alpha^{2}\,\pvar(x)=\corr^{2}\,\pvar(x^{*})$, and the $\pvar(x)$ cancels:
+%
+\begin{equation}
+  \mathrm{Bias} \;\approx\; \frac{\corr^{2}}{2}\;\pvar(x^{*})\;\frac{\partial^{2}\Hmarg}{\partial\pmean^{2}}\Big|_{x^{*}} .
+  \label{eq:bias}
+\end{equation}
+\end{proposition}
+
+The bias vanishes \emph{only} when $\corr=0$ ($x$ uninformative about $x^{*}$ ---
+but then the utility contribution is $\approx0$ anyway), or $\pvar(x^{*})=0$
+(nothing left to learn), or $\partial^{2}\Hmarg/\partial\pmean^{2}=0$ (entropy
+linear in the mean --- false for the Poisson-lognormal). Notably $\pvar(x)=0$ is
+\emph{not} a zero-bias condition: it cancels in~\eqref{eq:bias}.
+
+\begin{remark}[The bias is largest exactly where it matters]\label{rem:bias-matters}
+Bias $\propto\corr^{2}\,\pvar(x^{*})$ is maximal when the sampled image $x$ is most
+correlated with $x^{*}$ (most relevant to the utility) \emph{and} when $x^{*}$ is
+most uncertain (where the acquisition should be steering us) --- i.e.\ largest as
+$\corr\to1$. A systematic bias does not shrink with more Monte-Carlo samples: it
+converges to the \emph{wrong} value and corrupts the optimizer's direction.
+Sampling $\lat$ is unbiased and its variance falls as $O(1/N)$. Hence: sample
+$\lat$.
+\end{remark}
+
+\paragraph{One $\lat$ per image is optimal (nested MC).}
+With $g(x,\lat)=H(R\mid x^{*},\lat,\mathcal D)$, let $\tau^{2}=\mathrm{Var}_x[\E_{\lat}g]$
+(between-image) and $\E_x[\sigma^{2}_x]$ (within-image). For a fixed budget of $M$
+entropy evaluations, using $N_{\lat}$ latent samples per image gives variance
+$(N_{\lat}\tau^{2}+\E_x[\sigma^{2}_x])/M$, strictly worse for $N_{\lat}>1$.
+Spending the budget on \emph{more images}, one $\lat$ each, is optimal --- which is
+what the implementation does.
+
+\caveat{The ``practical magnitude'' analysis in the source
+(\texttt{why\_sample\_lambda.tex}) is self-flagged ``review carefully.'' Pushed to
+log-rate space the curvature carries a gain factor,
+$\partial^{2}\Hmarg/\partial\pmean^{2}=\gain^{2}\,\partial^{2}\Hmarg/\partial\lgr^{2}$,
+so $\mathrm{Bias}\propto\gain^{2}$; for a small gain (this codebase typically has
+$\gain\approx0.03$) the bias is far below the MC standard error, and the
+deterministic and sampled $\Uda$ nearly coincide. The regime guide $\gain\ll1$
+negligible / $\gain\sim1$ moderate / $\gain\gg1$ essential, and the specific
+numbers, are plausibility arguments, not settled results. The core claim ---
+bias~\eqref{eq:bias} does not vanish with $N$ --- is solid; the magnitude estimate
+is provisional. The \emph{correct} estimator remains the sampled one regardless.}
+
+% ---------------------------------------------------------------------------
+\subsection{The entropy landscape over image space}
+\label{subsec:landscape}
+
+\paragraph{Monotone shape --- utility is not pure epistemic uncertainty.}
+The spike-count entropy $\Hmarg(\mug,\varg)$ increases monotonically in
+\emph{both} arguments: with $\mug$ (more predicted firing) and with $\varg$ (more
+GP/epistemic uncertainty). A candidate therefore scores high for a \emph{mixture}
+of reasons --- it is predicted to fire a lot \emph{and} it is epistemically
+uncertain. The utility is thus not a pure epistemic-uncertainty acquisition;
+predicted firing rate is baked in. This is a deliberate modelling choice: a
+normalized arc-cosine kernel would force $\Kf(x,x)=1$, killing the norm channel so
+that utility tracked only angular/RF alignment (pure epistemic), but held-out
+$\text{test\_r}$ then drops by $\sim$25\% (a fitted PNAS cell, $\Mind=100$: $0.79\!\to\!0.59$)
+--- image norm is genuinely informative for neural encoding, so the production
+kernel keeps the norm dependence.
+
+\paragraph{The $\rmax$ truncation artifact.}
+With a fixed $\rmax=100$ the Laplace sum~\eqref{eq:Hmarg} misses the probability
+mass above $\rmax$ once the Poisson peak climbs past it, and $\Hmarg$
+\emph{collapses to $\approx0$} for $\mug\gtrsim\log100\approx4.6$ (and at lower
+$\mug$ for large $\varg$). This is a numerical artifact, not real entropy: the
+computable region is roughly triangular in $(\mug,\varg)$. A cheap pre-check
+without running the Laplace sum is $z_{\mathrm{safe}}=(\log\rmax-\mug)/\sqrt{\varg}$
+--- $z_{\mathrm{safe}}>2$ safe, $<1.5$ unreliable, $<0.5$ broken. Natural images
+from the pool sit at $z_{\mathrm{safe}}\gg10$, always safe; trouble arises only for
+artificially amplified images. The \textbf{adaptive-$\rmax$ guard}
+(\S\ref{subsec:code}) removes the collapse.
+
+\paragraph{Norm-exploitation divergence (research path).}
+Because the arc-cosine kernel is positively $1$-homogeneous
+($\Kf(\scal x,y)=\scal\,\Kf(x,y)$ when the bias $\sigz=0$), scaling
+$x^{*}\to\scal x^{*}$ scales $\pmean(x^{*})\sim\scal$ and $\pvar(x^{*})\sim\scal^{2}$,
+so $\Hmarg$ grows while a directionally aligned conditioning image keeps
+$\corr\approx1$ and $\sigma^{2}_{\mathrm{cond}}\approx0$. Under free-space gradient
+ascent $\Uda$ then grows $\sim\scal^{1.9}$ (numerically) --- the optimizer
+``diverges'' by amplifying image norm rather than finding angularly informative
+images. This is intrinsic to the homogeneous kernel, \emph{not} a bug; the full
+statement and the $\sigz^{2}>0$ damping (alignment peak strictly at $\scal=1$) are
+Thm.~\ref{thm:divergence} in the deep layer. Over the finite natural-image
+\emph{pool} (production selection over discrete candidates) norms are bounded and
+this never fires.
+
+\caveat{\textbf{Utility accuracy ceiling (known limitation).} At high firing the
+two utilities fail in opposite directions through the same $\rmax=100$ truncation:
+$\Ustd$ can run to $+\infty$ while $\Uda$ silently collapses toward $0$. The firing
+-rate guard ($f_{\max}$, default $100$) keeps generation in the accurate regime; a
+dedicated DA-path look-up table was deliberately not built. Present as a limitation
+of the fixed-$\rmax$ path, cured on the standard path by the adaptive guard.}
+
+% ---------------------------------------------------------------------------
+\subsection{Code realization and conventions}
+\label{subsec:code}
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Function & Input moment convention & Sum index\\
+    \midrule
+    \texttt{compute\_H}$(\mu,\sigma^{2},\rmax,\gain,\latz)$ & \emph{raw} $\lat$ moments (transformed inside) & $r=0,\dots,\rmax-1$\\
+    \texttt{nd\_utility\_new}$(\mug,\varg,\rmax)$ & \emph{log-rate} $\lgr$ moments (pre-transformed) & $r=0,\dots,\rmax$\\
+    \bottomrule
+  \end{tabular}
+  \caption{The two entropy entry points differ in \emph{both} the moment
+  convention and the truncation range. $\Ustd$ transforms manually then calls
+  \texttt{nd\_utility\_new}; $\Uda$ passes raw moments $+(\gain,\latz)$ to
+  \texttt{compute\_H}.}
+  \label{tab:code-conventions}
+\end{table}
+
+\paragraph{Entry points.} $\Ustd$ runs \texttt{standard\_utility}, which calls
+\texttt{nd\_utility\_new}. The research routine
+\texttt{distribution\_\allowbreak aware\_\allowbreak utility} computes $\Hmarg$
+with \texttt{compute\_H}, and per MC sample forms the conditional moments
+(\S\ref{subsubsec:condmoments}) and calls \texttt{compute\_H} again for
+$\Hcond^{(i)}$. Its marginal and conditional latent moments come from the two
+\texttt{get\_gp} moment helpers of \S\ref{subsubsec:condmoments}.
+
+\paragraph{The adaptive-$\rmax$ guard.} \texttt{compute\_adaptive\_rmax} sizes the
+truncation from the moments: with an upper log-rate
+$\log\rate_{\uparrow}=\mug+k\sqrt{\varg}$ ($k=3$ by default),
+$\rmax=\lceil\rate_{\uparrow}+5\sqrt{\rate_{\uparrow}}+10\rceil$ (a $5$-SD Poisson
+margin), floored at $\text{min\_rmax}$ (default $200$). It \emph{raises} rather
+than silently truncating when the needed $\rmax$ would exceed
+$\text{max\_rmax}$ (default $10000$) --- an aggressive-truncation guard, since a
+wrong entropy would otherwise pass unnoticed. This is what keeps $\Hmarg$ from
+collapsing when $\mug$ is high; non-adaptive callers pass a fixed $\rmax$
+(production default $100$).
+
+\paragraph{Gradient compatibility.} Every production entropy/utility function is
+differentiable in $x^{*}$: the Laplace path uses \texttt{torch.where} (not indexed
+assignment, which breaks autograd), and the Lambert~$W$ has a proper custom
+backward $dW/dy=W/(1+W)$. The caller chooses to track gradients (pass
+\texttt{requires\_grad} tensors, enabling gradient-ascent $x^{*}$ optimization ---
+and exposing the divergence above) or to suppress them (\texttt{torch.no\_grad()}).
+
+\caveat{\textbf{A/$\latz$ convention split.} \texttt{compute\_H} takes \emph{raw}
+$\lat$ moments and applies $\mug=\gain\pmean+\latz,\ \varg=\gain^{2}\pvar$
+internally, whereas \texttt{nd\_utility\_new} and the low-level
+\texttt{\_diff\_laplace\_log\_probs} take \emph{already-transformed} $\lgr$ moments
+(Table~\ref{tab:code-conventions}). Both deliver the same math to the Laplace
+pipeline, but silently passing raw moments where $\lgr$ moments are expected (or
+vice versa) is a genuine bug source --- keep the mapping explicit at every call.}
+
+\caveat{\textbf{$\rmax$ off-by-one.} \texttt{compute\_H} sums $r=0,\dots,\rmax-1$
+while \texttt{nd\_utility\_new} sums $r=0,\dots,\rmax$. Both are finite truncations
+of~\eqref{eq:Hmarg}; the one-bin difference is immaterial at low firing but is a
+real inconsistency between the two entry points --- do not treat $\rmax$ as
+bit-identical across them.}
+
+\caveat{\textbf{Deprecated helper.} The current local \texttt{utils.py} has
+\emph{no} \texttt{lambda\_moments}: that name is a legacy varGP routine, living in
+the deprecated repo-root \texttt{utils.py}. Its role is now filled by
+\texttt{get\_gp\_marginal\_moments} (the marginal moments $\pmean,\pvar$) and
+\texttt{get\_gp\_conditional\_moments} (the conditional pair
+$\mu_{\mathrm{cond}},\sigma^{2}_{\mathrm{cond}}$). Do not resurrect it.}
+
+\begin{remark}[Mode restriction and an analysis-only routine]\label{rem:mode-restriction}
+$\Uda$ currently requires a model exposing \texttt{model(X).\allowbreak covariance\_matrix}
+(the \texttt{default\_gpy} GPyTorch VariationalGP); the eigenspace
+\texttt{vargp\_direct} path is deferred (it would need the augmented-matrix conditioning
+of~\eqref{eq:condmoments}). Separately, \texttt{compute\_H\_MC} (sample
+$\lgr\sim\Gauss$, $r\sim\Poi(e^{\lgr})$, average the clipped Laplace $\log p(r)$)
+exists \emph{only} for pedagogy/analysis: it is non-differentiable (discrete
+Poisson sampling) and biased (clipping), and carries an in-code
+``\textsc{raise to user}'' warning about hard-coded values --- it is never a
+production acquisition.
+\end{remark}

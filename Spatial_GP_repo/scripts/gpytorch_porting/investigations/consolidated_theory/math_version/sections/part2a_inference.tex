@@ -1,0 +1,390 @@
+% ============================================================================
+%  part2a_inference.tex  --  Part II, sections 4-5.
+%  Sparse variational Gaussian-process inference + the eigenspace representation.
+%  Self-contained \input-ready fragment; uses ONLY the shared preamble macros.
+% ============================================================================
+
+\section{Sparse variational Gaussian-process inference}\label{sec:varinf}
+
+Part~I fixed the generative model: a zero-mean latent Gaussian process
+$\lat \sim \GProc(0,\Kf)$ over input space, an exponential link to the rate
+$\rate(x)=\exp\!\big(\gain\,\lat(x)+\latz\big)$, and Poisson counts
+$\spk_i \sim \Poi\!\big(\rate(x_i)\big)$, where $\Kf$ is the first-order
+arc-cosine kernel of \eqref{eq:acoskernel} built on the structured spatial
+prior covariance $\Cmat$ of \eqref{eq:Cprior}. Here we turn that model into a
+trainable posterior. The variational posterior developed below can be
+represented equivalently in the full inducing space or in the eigenbasis of
+\S\ref{sec:eigenspace}.
+
+\subsection{Poisson breaks conjugacy}\label{sec:conjugacy}
+
+Given a batch of inputs $X=(x_1,\dots,x_{\Ntr})$ and counts
+$\spk=(\spk_1,\dots,\spk_{\Ntr})$, the exact posterior over the latent and the
+marginal likelihood,
+\begin{align}
+  p(\lat\mid\spk,X,\theta)&\;\propto\;
+    \Big[\textstyle\prod_i \Poi\!\big(\spk_i\mid e^{\gain\lat_i+\latz}\big)\Big]\,
+    \Gauss(\lat\mid 0,\Kf_\theta), \notag\\
+  p(\spk\mid X,\theta)&=\!\int\! \prod_i \Poi\!\big(\spk_i\mid e^{\gain\lat_i+\latz}\big)\,
+    \Gauss(\lat\mid 0,\Kf_\theta)\,d\lat ,
+\end{align}
+have no closed form: the exponential-Poisson likelihood is not conjugate to the
+Gaussian prior, so the integral over $\lat$ is intractable. We therefore
+approximate the posterior by a tractable Gaussian and maximise a variational
+lower bound (\S\ref{sec:elbo}).
+
+\begin{remark}[The conjugate contrast]
+For a \emph{Gaussian} observation $\spk=\lat+\varepsilon$,
+$\varepsilon\sim\Gauss(0,\pvar_r I)$, everything would be closed-form: the
+marginal is $\spk\mid X\sim\Gauss(0,\Kf+\pvar_r I)$, the predictive at a test
+input $x_\ast$ is Gaussian with mean $\kvec_\ast\transpose(\Kf+\pvar_r I)^{-1}\spk$
+and variance $\Kf(x_\ast,x_\ast)-\kvec_\ast\transpose(\Kf+\pvar_r I)^{-1}\kvec_\ast$,
+and the log-evidence is
+$-\tfrac12\spk\transpose(\Kf+\pvar_r I)^{-1}\spk-\tfrac12\log\lvert\Kf+\pvar_r I\rvert-\tfrac{\Ntr}{2}\log 2\pi$.
+None of these survive the Poisson link; the variational route below recovers a
+usable posterior in its place.
+\end{remark}
+
+\subsection{Inducing points and the variational posterior}\label{sec:inducing}
+
+\begin{definition}[Sparse variational posterior]
+Introduce $\Mind$ \emph{inducing points} $\Ipt=\{\ipt_1,\dots,\ipt_{\Mind}\}$
+with latent values $\latt=\lat(\Ipt)$, and place a
+Gaussian variational posterior on them,
+\begin{equation}
+  q(\latt)=\Gauss(\latt\mid\vm,\vV),\qquad
+  \vm\in\Reals^{\Mind},\quad \vV\in\mathbb{S}_{++}^{\Mind}.
+  \label{eq:qdef}
+\end{equation}
+The posterior at \emph{any} input $x$ is recovered by marginalising the
+conditional prior $p(\lat(x)\mid\latt)$ against $q(\latt)$.
+\end{definition}
+
+Exact inference would need the $\Ntr\!\times\!\Ntr$ kernel over all training
+inputs, an $O(\Ntr^3)$ cost; the inducing construction reduces it to
+$O(\Ntr\Mind^2)$.
+
+\begin{remark}[Active-learning invariant $\Mind=\Ntr$]\label{rem:MeqN}
+In the active-learning setting the inducing set is taken equal to the training
+set, $X=\Ipt$, so $\Mind=\Ntr$ and $\Kf=\Ktil$. The ``sparse'' posterior is then
+\emph{exact}. The SVGP formalism is retained not for sparsity but for two other
+reasons: (i)~it supplies the closed-form variational machinery of
+\S\ref{sec:predmoments}--\S\ref{sec:fbar}, and (ii)~its inducing structure admits
+an $O(\Mind)$ rank-one online growth that appends one input per active-learning
+step.
+\end{remark}
+
+\subsection{Projected posterior moments}\label{sec:predmoments}
+
+Marginalising $p(\lat(x)\mid\latt)\,q(\latt)$ yields a Gaussian
+$q(\lat(x))=\Gauss\!\big(\pmean(x),\pvar(x)\big)$ whose moments are the
+inducing-point moments projected through the kernel:
+\begin{align}
+  \pmean(x)  &= \kvec(x)\transpose\,\Ktil^{-1}\,\vm , \notag\\
+  \pvar(x)   &= \Kf(x,x) + \kvec(x)\transpose\,\Ktil^{-1}\big(\vV-\Ktil\big)\Ktil^{-1}\,\kvec(x),
+  \label{eq:predmoments}
+\end{align}
+with the cross-covariance vector $\kvec(x)=\Kf(\Ipt,x)\in\Reals^{\Mind}$, the
+inducing gram $\Ktil=\Kf(\Ipt,\Ipt)\in\Reals^{\Mind\times\Mind}$, and the prior
+self-variance $\Kf(x,x)$ given by the self-kernel identity \eqref{eq:selfkernel}.
+Introducing the \emph{projection vector} $\pv(x)=\Ktil^{-1}\kvec(x)$ and the
+Schur complement $s(x)=\Kf(x,x)-\kvec(x)\transpose\Ktil^{-1}\kvec(x)$, the
+variance splits into a data-independent residual and an epistemic term,
+\begin{equation}
+  \pvar(x)=\underbrace{\big[\Kf(x,x)-\kvec(x)\transpose\Ktil^{-1}\kvec(x)\big]}_{\text{residual (Nystr\"om/Schur) }s(x)}
+    \;+\;\underbrace{\kvec(x)\transpose\Ktil^{-1}\vV\Ktil^{-1}\kvec(x)}_{\text{epistemic}}
+    \;=\; s(x)+\pv(x)\transpose\vV\,\pv(x),
+  \label{eq:varsplit}
+\end{equation}
+and the mean reads $\pmean(x)=\pv(x)\transpose\vm$. The two forms of $\pvar$ are
+algebraically identical since
+$\kvec\transpose\Ktil^{-1}(\vV-\Ktil)\Ktil^{-1}\kvec=\kvec\transpose\Ktil^{-1}\vV\Ktil^{-1}\kvec-\kvec\transpose\Ktil^{-1}\kvec$.
+
+\begin{remark}[Prior sanity check]
+At the prior $\vV=\Ktil$ the correction in \eqref{eq:predmoments} vanishes and
+$\pvar(x)=\Kf(x,x)$ (the prior variance); as data drive $\vV$ below $\Ktil$,
+$\pvar(x)<\Kf(x,x)$.
+\end{remark}
+
+These moments can be evaluated directly in the $\Mind$-dimensional inducing
+space or, equivalently, in the eigenbasis of $\Ktil$ (\S\ref{sec:eig-moments}).
+
+\subsection{The ELBO}\label{sec:elbo}
+
+All parameters are learned by maximising the evidence lower bound on
+$\log p(\spk)$,
+\begin{equation}
+  \ELBO \;=\; \sum_i \E_{q(\lat_i)}\!\big[\log \Poi(\spk_i\mid\lat_i)\big]
+    \;-\; \KLdiv\!\big(q(\latt)\,\big\|\,p(\latt)\big),
+  \label{eq:elbo}
+\end{equation}
+which is tight when $q$ equals the true posterior. Because the likelihood
+factorises over inputs and $q(\lat_i)=\Gauss(\pmean_i,\pvar_i)$ is Gaussian, each
+expected log-likelihood term is closed-form:
+\begin{equation}
+  \E_{q(\lat_i)}\!\big[\log \Poi(\spk_i\mid\lat_i)\big]
+    \;=\; \spk_i\big(\gain\pmean_i+\latz\big)
+      \;-\; \exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big)
+      \;+\; \text{const},
+  \label{eq:ell}
+\end{equation}
+with $\text{const}=-\log(\spk_i!)$ independent of all parameters. The KL term is
+the standard Gaussian--Gaussian divergence between $q(\latt)=\Gauss(\vm,\vV)$ and
+the prior $p(\latt)=\Gauss(0,\Ktil)$,
+\begin{equation}
+  \KLdiv(q\,\|\,p) \;=\; \tfrac12\Big[\,
+    \log\frac{\lvert\Ktil\rvert}{\lvert\vV\rvert}
+    \;+\; \Tr\!\big(\Ktil^{-1}\vV\big)
+    \;+\; \vm\transpose\Ktil^{-1}\vm
+    \;-\; \Mind \,\Big].
+  \label{eq:kl}
+\end{equation}
+
+\begin{remark}[The $-\Mind$ constant]
+The $-\Mind$ in \eqref{eq:kl} is parameter-independent (it is the dimension of
+the inducing Gaussian) and carries zero gradient, so it affects only the reported
+loss magnitude, never the optimum or the predictions. The eigenspace evaluation
+of \S\ref{sec:eig-kl} carries the analogous $-\nb$ for the same reason.
+\end{remark}
+
+The full objective is maximised by EM-style coordinate ascent
+(E-step on $(\vm,\vV)$, F-step on $(\gain,\latz)$, M-step on the kernel
+hyperparameters); the update equations are derived in the training-algorithm
+section. Equation~\eqref{eq:elbo} is the single objective all three blocks share.
+
+\subsection{Expected rate via the Gaussian MGF}\label{sec:fbar}
+
+The exponential term in \eqref{eq:ell} is the \emph{expected rate} under $q$,
+\begin{equation}
+  \fbar_i \;=\; \E_{q(\lat_i)}\!\big[\exp(\gain\lat_i+\latz)\big]
+    \;=\; \exp\!\big(\gain\pmean_i+\tfrac12\gain^2\pvar_i+\latz\big).
+  \label{eq:fbar}
+\end{equation}
+This is the Gaussian moment-generating function
+$\E[e^{tZ}]=\exp(t\mu+\tfrac12 t^2\sigma^2)$ applied to $Z=\gain\lat_i+\latz$ at
+$t=1$.
+
+\begin{remark}[Jensen inflation]
+The term $\tfrac12\gain^2\pvar_i$ is strictly positive whenever $\pvar_i>0$, so
+posterior \emph{uncertainty raises} the predicted rate above the point estimate
+$\exp(\gain\pmean_i+\latz)$ --- a direct consequence of Jensen's inequality for
+the convex map $\exp$. Confidence and rate are thus coupled: a poorly-constrained
+input is predicted to have a \emph{higher} rate, not lower.
+\end{remark}
+
+\subsection{Prediction: expected count}\label{sec:prediction}
+
+The moments \eqref{eq:predmoments} do not depend on the observed $\spk$, so the
+same formulas serve as the predictive distribution at any novel input $x_\ast$.
+The expected count is the expected rate \eqref{eq:fbar} evaluated there,
+\begin{equation}
+  \langle \spk_\ast\rangle=\langle\rate(x_\ast)\rangle
+    =\exp\!\big(\gain\pmean(x_\ast)+\tfrac12\gain^2\pvar(x_\ast)+\latz\big),
+\end{equation}
+with $\pmean(x_\ast),\pvar(x_\ast)$ from \eqref{eq:predmoments} using freshly
+evaluated $\kvec(x_\ast)$ and $\Kf(x_\ast,x_\ast)$. The rate is
+log-normal, so its variance is
+\begin{equation}
+  \operatorname{Var}\!\big(\rate(x)\big)
+    =\langle\rate(x)\rangle^2\big(e^{\gain^2\pvar(x)}-1\big).
+  \label{eq:fvar}
+\end{equation}
+
+\subsection{The posterior cross-covariance pitfall}\label{sec:crosscov}
+
+The self-variance of \eqref{eq:predmoments} extends formally to the
+\emph{cross-covariance} between two distinct inputs $x$ (a candidate sample
+location) and $x_\ast$ (a query location):
+\begin{equation}
+  \Sigma_{x,x_\ast}=\operatorname{Cov}\!\big[\lat(x),\lat(x_\ast)\mid \mathcal D\big]
+    =\Kf(x,x_\ast)+\pv(x)\transpose\big(\vV-\Ktil\big)\pv(x_\ast),
+  \qquad \pv(\cdot)=\Ktil^{-1}\kvec(\cdot),
+  \label{eq:crosscov}
+\end{equation}
+which reduces to $\pvar(x)$ at $x=x_\ast$.
+
+\begin{remark}[Failure outside the inducing hull]
+For a query $x_\ast$ \emph{outside} the inducing region, \eqref{eq:crosscov}
+produces cross-covariances that violate the Cauchy--Schwarz bound
+$\lvert\Sigma_{x,x_\ast}\rvert\le\sqrt{\Sigma_{x,x}\,\Sigma_{x_\ast,x_\ast}}$.
+Measured example (RBF, $\ell=0.2$, $20$ inducing points in $[-1,1]$, sample
+$x=0$): at $x_\ast=\pm1.5$ the manual formula gives $\Sigma\approx-4$ while
+the consistent joint covariance gives $\approx 0$; with self-variances $\sim0.04$
+the valid maximum is $\sim0.04$, so $-4$ is two orders of magnitude out of range.
+Root cause: in the residual $\Kf(x,x_\ast)-\pv(x)\transpose\Ktil\,\pv(x_\ast)$ the
+direct kernel $\Kf(x,x_\ast)\!\to\!0$ (finite lengthscale) outside the hull, but
+$\pv(x_\ast)=\Ktil^{-1}\kvec(x_\ast)$ can have large entries through $\Ktil^{-1}$,
+and the two pieces fail to cancel.
+\end{remark}
+
+Left unchecked, a value like $\Sigma_{x,x_\ast}\approx-4$ feeds the conditional
+moments
+$\pmean_{\mathrm{cond}}(x_\ast)=\pmean(x_\ast)+(\Sigma_{x,x_\ast}/\Sigma_{x,x})(\lat_{\mathrm{obs}}-\pmean(x))$
+and $\pvar_{\mathrm{cond}}(x_\ast)=\Sigma_{x_\ast,x_\ast}-\Sigma_{x,x_\ast}^2/\Sigma_{x,x}$
+of the distribution-aware utility (Part~III) with a regression coefficient
+$\approx-100$, giving nonsensical conditional means and spurious utility peaks at
+the edges of the inducing region. The remedy is to never assemble the cross-block
+from the manual formula \eqref{eq:crosscov}; instead read the cross-block from the
+jointly-formed covariance of $(x,x_\ast)$, which is Nystr\"om-consistent --- it
+carries the conditional correction term that \eqref{eq:crosscov} drops outside the
+hull. The pathology is therefore confined to hand-assembled cross-covariances; any
+computation that forms a cross-covariance from \eqref{eq:crosscov} outside the
+inducing hull will reintroduce it.
+
+\subsection{Whitening}\label{sec:whitening}
+
+An alternative reparameterisation is \emph{Cholesky whitening}, which makes the
+prior a standard normal. With the Cholesky factor $\Ktil=\Lchol\Lchol\transpose$,
+define the whitened inducing values
+\begin{equation}
+  \widetilde{\latt}=\Lchol^{-1}(\latt-\mu_z)\;\sim\;\Gauss(0,I)\quad\text{under the prior},
+\end{equation}
+where $\mu_z$ is the prior mean at the inducing points. Optimisation conditions
+much better in these coordinates. In these coordinates one stores the
+\emph{whitened} variational parameters $(\widetilde{\vm},\widetilde{\vV})$,
+related to the actual ones by
+\begin{equation}
+  \vm-\mu_z=\Lchol\,\widetilde{\vm},\quad \vV=\Lchol\,\widetilde{\vV}\,\Lchol\transpose;
+  \qquad
+  \widetilde{\vm}=\Lchol^{-1}(\vm-\mu_z),\quad \widetilde{\vV}=\Lchol^{-1}\vV\,\Lchol^{-\mathsf{T}}.
+  \label{eq:whiten}
+\end{equation}
+The whitened mean thus encodes the \emph{deviation} from the prior mean function,
+not absolute function values. Recovering the moments from the whitened parameters
+therefore requires three corrections: unwhiten the covariance
+($\vV=\Lchol\widetilde{\vV}\Lchol\transpose$), unwhiten the mean
+($\vm-\mu_z=\Lchol\widetilde{\vm}$), and add the mean function back,
+$\pmean_\ast=\pmean(x_\ast)+\pv(x_\ast)\transpose\Lchol\widetilde{\vm}$ and
+$\pvar_\ast=s(x_\ast)+\pv(x_\ast)\transpose\Lchol\widetilde{\vV}\Lchol\transpose\pv(x_\ast)$.
+
+\begin{remark}[Zero prior mean]
+With a zero prior mean, $\mu_z=0$ and the ``add the mean function'' step is
+trivially zero; the whitening maps \eqref{eq:whiten} themselves apply for any
+prior mean.
+\end{remark}
+
+
+\section{The eigenspace representation}\label{sec:eigenspace}
+
+The variational posterior $q(\latt)$ of \S\ref{sec:varinf} can be represented
+equivalently in the full $\Mind$-dimensional inducing space or, more
+economically, in the eigenbasis of the inducing gram $\Ktil$. This section
+develops the eigenbasis form: the same prior $\Gauss(0,\Ktil)$, the same
+arc-cosine kernel, the same $\Poi(\gain,\latz)$ likelihood, the same expected
+rate \eqref{eq:fbar}, and the same ELBO \eqref{eq:elbo}, re-expressed in a
+low-dimensional basis in which $\Ktil$ is diagonal.
+
+\subsection{Eigendecomposition of the inducing gram}\label{sec:eigdecomp}
+
+The inducing gram $\Ktil$ ($\Mind\times\Mind$) has effective rank far below
+$\Mind$ (typically $\sim10$--$50$). We eigendecompose it and keep only the
+well-conditioned directions:
+\begin{equation}
+\begin{gathered}
+  \Ktil=\eb\,\evals\,\eb\transpose,\qquad
+  \evals=\diago(\text{eigvals}_b), \\
+  \eb\in\Reals^{\Mind\times\nb},\qquad \eb\transpose\eb=I_{\nb},
+\end{gathered}
+  \label{eq:eigdecomp}
+\end{equation}
+where the kept set is chosen by a \emph{relative} threshold with an absolute
+floor,
+\begin{equation}
+  \text{keep eigenpair }j \iff \evals_j > \max\!\big(\evals_{\max}\cdot\texttt{tol},\ \texttt{tol}\big),
+  \qquad \texttt{tol}=10^{-4}.
+  \label{eq:eigthresh}
+\end{equation}
+The eigenvalues are taken in ascending order; $\eb$ collects the kept eigenvectors
+as columns and $\evals$ the kept eigenvalues. The kept count $\nb$ is
+\emph{dynamic}: it shifts across training iterations as the kernel hyperparameters
+move, and grows by $\sim1$ when a point is appended. Typical $\nb\approx10$--$11$
+in the active-learning setting, up to $\sim50$ in larger problems.
+
+Three payoffs motivate the projection: (i)~dimensionality drops $\Mind\to\nb$, so
+per-step cost falls $O(\Mind^3)\to O(\nb^3)$; (ii)~$\Ktil$ becomes
+\emph{diagonal} in the new basis, $\Ktilb=\evals$, so $\Ktil^{-1}$ is the
+element-wise reciprocal $\diago(1/\evals)$ --- no matrix solve; (iii)~dropping the
+small eigenvalues gives implicit regularisation.
+
+\subsection{The eigenspace state}\label{sec:eigstate}
+
+The eigenspace posterior is carried together with the precomputed kernel
+projections used below:
+
+\begin{center}\small
+\begin{tabular}{@{}l l >{\raggedright\arraybackslash}p{8.6cm}@{}}
+\toprule
+symbol & shape & meaning \\
+\midrule
+$\mb$ & $(\nb)$ & variational mean in the eigenbasis, $\mb=\eb\transpose\vm$ \\
+$\Vb$ & $(\nb,\nb)$ & variational covariance in the eigenbasis, $\Vb=\eb\transpose\vV\eb$ --- \textbf{dense} \\
+$\eb$ & $(\Mind,\nb)$ & eigenvector matrix of $\Ktil$ (the basis) \\
+$\evals$ & $(\nb)$ & kept eigenvalues of $\Ktil$ (ascending) \\
+$\Ktilb$ & $(\nb,\nb)$ & inducing gram in the eigenbasis $=\diago(\evals)$ --- \textbf{diagonal} \\
+$\Kf_b$ & $(\Ntr,\nb)$ & cross-kernel projected into the eigenbasis, $\Kf_b=\Kf(X,\Ipt)\,\eb$ \\
+$\amat$ & $(\Ntr,\nb)$ & projection $\Kf\Ktil^{-1}$ in the eigenbasis, $\amat=\Kf_b/\evals$ (element-wise) \\
+$\Kvec$ & $(\Ntr)$ & diagonal self-kernel $\Kf(x_i,x_i)$, the per-point prior variance \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}[Only $\Ktilb$ is diagonal]
+$\Vb$ is a \emph{dense} $\nb\times\nb$ matrix even though $\Ktilb$ is diagonal;
+never assume a diagonal $\Vb$. The projection row $\amat_i=(\Kf_b/\evals)_i$
+is exactly $\kvec(x_i)\transpose\Ktil^{-1}$ expressed in the eigenbasis, obtained
+by element-wise division rather than a matrix solve.
+\end{remark}
+
+Initialisation sets the variational parameters to the prior:
+\begin{equation}
+  \mb=0,\qquad \Vb=\Ktilb \quad(\text{i.e.\ }\vm=0,\ \vV=\Ktil,\ \text{so } \KLdiv=0\text{ at start}).
+\end{equation}
+
+\subsection{Posterior moments in the eigenbasis}\label{sec:eig-moments}
+
+With $\amat=\Kf_b/\evals$ (element-wise), the projected moments
+\eqref{eq:predmoments} at the training points become:
+\begin{align}
+  \pmean &= \amat\,\mb, \notag\\
+  \pvar  &= \Kvec + \diago\!\big(\amat\,(\Vb-\Ktilb)\,\amat\transpose\big)
+          = \Kvec + \operatorname{rowsum}\!\big(\amat\odot(\amat\,(\Vb-\Ktilb))\big), \notag\\
+  \pvar  &\leftarrow \max\!\big(\pvar,\ 10^{-6}\big),
+  \label{eq:eigmoments}
+\end{align}
+where $\pmean,\pvar$ are the per-training-point posterior-moment vectors and
+$\odot$ is the element-wise product; the two variance expressions coincide
+because $\operatorname{rowsum}(\amat\odot(\amat M))=\diago(\amat M\amat\transpose)$
+for any $M$. Term by term this equals \eqref{eq:predmoments}: $\Kvec_i=\Kf(x_i,x_i)$
+(the self-kernel identity \eqref{eq:selfkernel}) and
+$\amat_i(\Vb-\Ktilb)\amat_i\transpose=\kvec(x_i)\transpose\Ktil^{-1}(\vV-\Ktil)\Ktil^{-1}\kvec(x_i)$.
+For \textbf{test} points the same two expressions run on a freshly projected
+$\amat=\Kf(x_\ast,\Ipt)\eb/\evals$ with $\Kvec=\Kf(x_\ast,x_\ast)$, so no
+training-point kernel is recomputed; the predicted rate there is
+$\rate_{\mathrm{pred}}=\exp(\gain\pmean+\tfrac12\gain^2\pvar+\latz)$, i.e.\
+\eqref{eq:fbar}.
+
+\subsection{ELBO and KL in the eigenbasis}\label{sec:eig-kl}
+
+The eigenspace ELBO uses the log-likelihood \eqref{eq:ell} and, because
+$\Ktilb=\diago(\evals)$, the KL \eqref{eq:kl} collapses to sums over the kept
+dimensions:
+\begin{align}
+  \KLdiv(q\,\|\,p)
+    &= \tfrac12\Big[\Tr(\Ktil^{-1}\vV)+\vm\transpose\Ktil^{-1}\vm-\nb
+        +\log\lvert\Ktil\rvert-\log\lvert\vV\rvert\Big] \notag\\
+    &= \tfrac12\Big[\ \textstyle\sum_j \dfrac{\Vb[j,j]}{\evals_j}
+        \;+\; \sum_j \dfrac{\mb[j]^2}{\evals_j}
+        \;-\; \nb
+        \;+\; \sum_j \log\evals_j
+        \;-\; \log\det\Vb\ \Big].
+  \label{eq:eigkl}
+\end{align}
+
+\begin{remark}[Diagonal-trace assumption]
+The trace term uses only $\diago(\Vb)$, which is valid \emph{only because}
+$\Ktilb$ is diagonal in the basis $\eb$ in which the ELBO is evaluated --- i.e.\
+when the kernel and the basis are mutually consistent. The $\log\lvert\vV\rvert$
+term uses the full log-determinant of the dense $\Vb$. The $-\nb$ is a
+zero-gradient constant (cf.\ the $-\Mind$ remark after \eqref{eq:kl}): it shifts
+only the reported loss magnitude.
+\end{remark}

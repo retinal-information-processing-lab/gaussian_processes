@@ -1,0 +1,79 @@
+% ============================ APPENDIX ============================
+
+\section{Notation reference}\label{app:notation}
+
+One symbol denotes one concept throughout. Entries marked \textbf{[clash]} are
+symbols that collide across the literature and are disambiguated here.
+
+\renewcommand{\arraystretch}{1.15}
+\begin{longtable}{@{}p{0.42\textwidth} p{0.52\textwidth}@{}}
+\toprule
+\textbf{Symbol} & \textbf{Concept} \\
+\midrule
+\endhead
+\multicolumn{2}{@{}l}{\textit{Model, kernel, structured prior}}\\
+\midrule
+$x$, $x^{*}$ & input (a real-valued signal on a 2-D grid); candidate input \\
+$\pixc_i$, $\rfc$ & grid coordinate; center $(\varepsilon_{0x},\varepsilon_{0y})$ of the localized region \\
+$\lat(x)$ & latent GP function \textbf{[clash: not $\latz$]} \\
+$\latz$ & rate offset \\
+$\rate(x)=e^{\gain\lat+\latz}$ & rate (Poisson intensity) \textbf{[clash: $\rate$ is the rate, never the latent]} \\
+$\lgr=\gain\lat+\latz$ & log-rate (so $\rate=e^{\lgr}$) \\
+$\gain$ & gain \textbf{[clash: not the projection $\amat$]} \\
+$\spk$ ($\equiv r$) & count observation (synonyms $r,n$) \\
+$\Kf(x,x')$ & arc-cosine prior kernel function \\
+$\Ktil=\Kf(\Ipt,\Ipt)$ & inducing gram \textbf{[clash: never a bare $K$ for this]} \\
+$\Kmag=\sqrt{\vmag_x\vmag_{x'}}$ & kernel magnitude \textbf{[clash: not $\Mind$]} \\
+$\kang$, $\Jang(\kang)$ & kernel angle; angular term \textbf{[$\Jang$ is never a Jacobian]} \\
+$\vmag_x=x\transpose\Cmat x+\sigz^{2}$ & kernel self-magnitude \\
+$\Cmat$, $\Csm$ & structured (grid) prior covariance; RBF smoothing factor \\
+$\loc_i$ & localization weight \textbf{[clash: not diffusion $\aret$]} \\
+$\bwid$ & half-width of the localized region \textbf{[clash: not diffusion $\bsched$]} \\
+$\smoo$ & smoothness SD \textbf{[clash: not correlation $\corr$]} \\
+$\sigz$ & bias std, $\sigz=e^{\mathrm{raw\_sigma\_0}}$ \\
+$\Amp$ & amplitude --- kernel hyperparameter, $\Amp=\mathrm{softplus}(\cdot)$, bounds $(0,1000]$, optimized \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Variational inference and eigenspace}}\\
+\midrule
+$\ipt$, $\Ipt$ & inducing point; inducing-point matrix \\
+$\latt$ ($\equiv u$) & inducing latent values, $q(\latt)=\Gauss(\vm,\vV)$ \\
+$\Mind$, $\Ntr$ & number of inducing points; number of training inputs ($\Mind{=}\Ntr$ in the loop) \\
+$\kvec(x)$, $\pv(x)=\Ktil^{-1}\kvec(x)$ & cross-covariance vector; projection vector \\
+$\vm$, $\vV$ & variational mean and covariance (inducing space) \\
+$\pmean(x)$, $\pvar(x)$ & posterior mean and variance of the latent \\
+$\Lchol$ & Cholesky factor of $\Ktil$ \textbf{[clash: $\ELBO$ is the ELBO]} \\
+$\eb$, $\evals$, $\nb$ & eigenbasis of $\Ktil$; eigenvalues (diagonal); kept dimension \textbf{[$\evals$ not $\lat$]} \\
+$\mb$, $\Vb$, $\Ktilb$ & eigenspace mean, dense covariance, diagonal inducing gram \\
+$\amat=\Kf\Ktil^{-1}$ & projection matrix \\
+$\fbar=e^{\gain\pmean+\frac12\gain^{2}\pvar+\latz}$ & expected rate \\
+$\ELBO$ & evidence lower bound \textbf{[clash: script $\mathcal L$, not the Cholesky factor]} \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Training-step helpers}}\\
+\midrule
+$\gE=\gain\sum_i\kvec_i(\spk_i-\fbar_i)$ & E-step gradient helper \textbf{[clash: not the log-rate $\lgr$]} \\
+$\GE=\gain^{2}\sum_i\fbar_i\kvec_i\kvec_i\transpose$ & E-step Fisher curvature (PSD) \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Utility and information}}\\
+\midrule
+$\Ustd$, $\Uda$ & standard and distribution-aware utility \\
+$\Hmarg$, $\Hnoise$, $\Hcond$ & marginal, aleatoric-noise, and conditional entropy \textbf{[clash: never a bare $H$]} \\
+$\px$ & input (data) distribution \\
+$\mug=\gain\pmean+\latz$, $\varg=\gain^{2}\pvar$ & log-rate mean and variance \\
+$\corr(x,x^{*})$ & posterior latent correlation \textbf{[clash: not smoothness $\smoo$; $\corr^{2}$ = fractional variance reduction]} \\
+$\ccond$ & prior conditional covariance (the ``correction'' term) \\
+$\scal$ & input scaling factor, $x^{*}=\scal\,x_t$ \textbf{[clash: not $\ccond$]} \\
+$\varr$, $\subc$ & residual/aleatoric variance; subspace coordinate \textbf{[$\subc$ not an inducing point]} \\
+$\LW$, $\gmode$, $\rmax$ & Lambert-$W$ (principal); Laplace mode; count truncation \\
+$\satf$ & saturation-kernel amplitude \\
+\midrule
+\multicolumn{2}{@{}l}{\textit{Diffusion}}\\
+\midrule
+$\dt$ & diffusion timestep \\
+$\xz$, $\xt$, $\xhat$ & clean, noisy, and Tweedie-estimated input \\
+$\bsched$ & noise-schedule variance \textbf{[clash: not the prior width $\bwid$]} \\
+$\aret$, $\abar$ & signal retention; cumulative retention \textbf{[clash: not the localization weight $\loc$]} \\
+$\epsth$, $\score$ & U-Net noise predictor; score function \\
+$\gw$, $\ggrad$ & guidance scale; guidance gradient ($=$ the utility gradient) \\
+$\greg$ & regularization weight (input-optimization approach) \\
+\bottomrule
+\end{longtable}

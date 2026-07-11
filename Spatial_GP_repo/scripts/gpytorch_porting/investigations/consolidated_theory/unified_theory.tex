@@ -1,0 +1,59 @@
+\documentclass[11pt]{article}
+\input{preamble.tex}
+
+\title{A Unified Theory of Closed-Loop Active Learning for\\
+Retinal Ganglion Cells:\\[2pt]
+\large Gaussian-Process Inference, Information Utility, and Guided Diffusion}
+\author{Consolidated theory reference}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This is a single, self-contained reference for the theory and mathematics of a
+closed-loop, actively-learning electrophysiology experiment on retinal ganglion
+cells. A multi-electrode array records spikes while natural grayscale images are
+displayed; a Gaussian-process (GP) model with an arc-cosine kernel over a
+structured spatial prior learns each neuron's receptive field and tuning from
+Poisson spike counts by sparse variational inference; and \emph{active learning}
+chooses the next image to maximize expected information gain about that tuning.
+The document develops, in one uniform notation: the generative model and the
+arc-cosine kernel with its structured prior $\Cmat(\bwid,\smoo,\rfc)$
+(Part~I); sparse variational inference, the eigenspace representation and the two
+current implementations, and the EM-style training algorithm with its E-, F-, and
+M-steps and analytical/VJP gradients (Part~II); the information utility for active
+learning, together with the predictive-conditioning, subspace, divergence, and
+numerical results beneath it (Part~III); and guided diffusion, which extends the
+loop from \emph{selecting} stimuli out of a pool to \emph{synthesizing} them by
+steering a denoising diffusion model with the GP utility gradient (Part~IV).
+Throughout, the current implementation is the ground truth; reconciled
+discrepancies and open caveats are collected in Appendix~\ref{app:discrepancies}.
+The treatment is restricted to the spatial GP (one image per input) and to the
+current implementations; a deprecated legacy engine is out of scope.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\input{sections/part0_frontmatter.tex}
+
+\part{Foundations: the generative model and its prior}
+\input{sections/part1_model_kernel.tex}
+
+\part{Inference: variational learning of the tuning}
+\input{sections/part2a_inference.tex}
+\input{sections/part2b_training.tex}
+
+\part{Active learning: the information utility}
+\input{sections/part3a_utility_core.tex}
+\input{sections/part3b_deep_layer.tex}
+
+\part{From selection to synthesis: guided diffusion}
+\input{sections/part4_diffusion.tex}
+
+\appendix
+\input{sections/appendix.tex}
+
+\end{document}

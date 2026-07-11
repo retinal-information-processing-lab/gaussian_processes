@@ -1,0 +1,533 @@
+% ============================================================================
+%  Part I -- The model and its prior
+%  sections/part1_model_kernel.tex   (\input-ready fragment; no preamble)
+%  Covers: (1) Introduction, (2) Generative model, (3) Arc-cosine kernel +
+%  structured spatial prior.  Ground truth = current code (kernels.py,
+%  likelihoods.py, eigenspace_gradients.py, eigenspace_mstep.py).
+% ============================================================================
+
+\section{Introduction: the closed-loop active-learning problem}
+\label{sec:intro}
+
+\subsection{The experiment: RGCs, the array, natural images, the closed loop}
+
+A multi-electrode array records the spiking activity of retinal ganglion cells
+(RGCs) while natural grayscale images are displayed as the visual stimulus. For a
+single neuron and a single image $x$ the recorded observation is a \emph{spike
+count} $\spk$ --- the number of spikes emitted in a fixed post-stimulus window.
+Each image is a vectorized $108\times108$ grayscale frame, so
+$x\in\Reals^{n_{\mathrm{px}}}$ with $n_{\mathrm{px}}=108^2=11664$; none of the
+formulas below assume this particular dimension.
+
+The neuron's \emph{receptive field} (RF) --- the region of the image and the
+spatial pattern within it that drives the cell --- is unknown a priori and must be
+inferred from the recorded counts. We place a Gaussian-process (GP) model on each
+neuron's latent tuning function and update it online as counts arrive. The loop is
+\emph{closed}: after each response the model is refit and used to choose the next
+image, so the stimuli shown depend on the responses already collected.
+
+\subsection{The active-learning goal}
+
+The images are not shown in a fixed order. At each step the next stimulus is chosen
+to be maximally informative about the neuron's tuning --- this is \emph{active
+learning}. Concretely, a candidate image $x^{*}$ is scored by an information
+\emph{utility} $\Ustd(x^{*})$ (Part~III) that measures the expected reduction
+in uncertainty about the neuron's latent firing behaviour if $x^{*}$ were shown
+next; the image maximizing the utility over the available pool is displayed. A
+second, research variant $\Uda$ scores information about firing rates over the
+natural-image distribution $\px$. Because scoring and selecting from a fixed pool
+is limited by the pool, a final stage (Part~IV) instead \emph{synthesizes} a
+natural-image-like stimulus that maximizes the utility, using a diffusion prior
+steered by the utility gradient. All three stages consume two derivatives of the GP
+prior kernel that are established in this part: the input gradient
+$\nabla_x\Kf$~\eqref{eq:gradxK} (utility and diffusion guidance) and the
+hyperparameter gradients $\partial\Cmat/\partial\theta$~\eqref{eq:dCtheta} (model
+fitting).
+
+\subsection{Roadmap of the document}
+
+The document proceeds in the order the pipeline runs.
+
+\begin{itemize}[leftmargin=1.4em]
+\item \textbf{Part~I (this part) --- the model and its prior.} The generative model
+  (\S\ref{sec:genmodel}): a latent GP over image space, an exponential link, and
+  Poisson spike counts. The prior kernel (\S\ref{sec:kernel}): the order-1
+  arc-cosine (ReLU) kernel built on a structured spatial prior covariance
+  $\Cmat(\Amp,\bwid,\smoo,\rfc)$ that encodes a local, smooth, RF-centred weighting,
+  together with the two kernel gradients the rest of the pipeline needs.
+\item \textbf{Part~II --- inference.} The Poisson likelihood breaks conjugacy, so
+  the posterior over the latent is approximated by a sparse variational GP on $\Mind$
+  inducing points with Gaussian posterior $q(\latt)=\Gauss(\vm,\vV)$, optimized
+  against the evidence lower bound (ELBO). Two numerically distinct realizations of
+  the \emph{same} model (an eigenspace projection and a Cholesky-whitened GPyTorch
+  path) and the EM-style coordinate-ascent training loop (E-, F-, M-steps).
+\item \textbf{Part~III --- active learning.} The information utility: the marginal
+  spike-count entropy $\Hmarg$, the production utility
+  $\Ustd=\Hmarg-\E[\Hnoise]$, and the distribution-aware research variant
+  $\Uda=\Hmarg-\E_{x\sim\px}[\Hcond]$; a deep layer of conditioning, subspace, and
+  divergence results grounded in the kernel of this part.
+\item \textbf{Part~IV --- synthesis.} Guided diffusion: a denoising diffusion prior
+  whose reverse process is steered by $\nabla_x\Ustd$ (which flows through
+  $\nabla_x\Kf$) to synthesize high-utility natural-image-like stimuli.
+\end{itemize}
+
+A single thread runs from the prior of this part to the proofs of Part~III: the
+arc-cosine kernel is positively homogeneous in the input norm
+($\Kf(x,x)=x\transpose\Cmat x+\sigz^2$, \S\ref{subsec:selfkernel}), which makes the
+utility's variance grow with input scale --- the object of the divergence proofs,
+the reason for a subspace constraint, and the reason diffusion guidance needs a
+naturalness prior.
+
+
+\section{The generative model}
+\label{sec:genmodel}
+
+\subsection{Latent Gaussian process, exponential link, Poisson counts}
+
+The observed spike count $\spk_i$ (also written $r_i$, or $n$ for a novel test
+image) of a neuron in response to image $x_i$ is a Poisson draw whose rate is an
+exponential link applied to a latent Gaussian-process function $\lat$.
+
+\begin{definition}[Spatial generative model]
+\label{eq:genmodel}
+With a zero-mean GP prior over image space,
+\begin{equation}
+\lat(\cdot)\ \sim\ \GProc\!\left(0,\ \Kf\right),
+\qquad
+\rate(x)\ =\ \exp\!\big(\gain\,\lat(x)+\latz\big),
+\qquad
+\spk_i\ \sim\ \Poi\!\big(\rate(x_i)\big).
+\end{equation}
+Here $\lat(x)\in\Reals$ is the \emph{latent tuning function} (what the GP learns;
+\emph{not} the firing rate); $\rate(x)>0$ is the \emph{firing rate} (the Poisson
+rate parameter); $\gain>0$ is the \emph{gain}, scaling how strongly the latent
+modulates the rate; and $\latz\in\Reals$ is the \emph{bias} / log-baseline
+firing rate, so that $\rate=e^{\latz}$ when $\lat=0$. The log-firing rate is
+$\lgr(x)=\gain\,\lat(x)+\latz$, giving $\rate=e^{\lgr}$.
+\end{definition}
+
+The GP prior is defined by the property that any finite set of latent values
+$\{\lat(x_1),\dots,\lat(x_n)\}$ is jointly Gaussian, $\lat(X)\sim\Gauss(0,\Kf)$
+with $[\Kf]_{ij}=\Kf(x_i,x_j)=\mathrm{Cov}[\lat(x_i),\lat(x_j)]$. The mean is zero
+(the eigenspace path carries no mean module; the GPyTorch path uses
+\texttt{ZeroMean}). The kernel $\Kf$ is fixed in \emph{form} before seeing data but
+its entries depend on the images through evaluation; its full definition is
+\S\ref{sec:kernel}.
+
+\emph{Code.} \texttt{PoissonLikelihood} (\texttt{likelihoods.py}) realizes the link
+and sampling in \texttt{forward} (returns
+$\Poi(\text{rate}=\exp(\gain\lat+\latz))$), with $\gain=\exp(\text{raw\_A})$ under a
+positivity constraint and $\latz$ unconstrained; bound guards keep
+$\gain\in(0,10]$ and $\latz\in[-50,50]$.
+
+\subsection{Why the GP models the latent, not the rate}
+
+Modelling $\lat$ as Gaussian and pushing it through $\rate=\exp(\gain\lat+\latz)$
+means the firing rate is \emph{log-normally} distributed: we learn a scaled,
+shifted log of the Poisson rate rather than the rate itself. Two properties make
+this the right choice for spike-count data.
+
+\begin{itemize}[leftmargin=1.4em]
+\item \emph{Positivity for free.} The exponential link guarantees $\rate>0$ for any
+  real latent value. A Gaussian prior placed \emph{directly} on the rate would
+  assign mass to negative (invalid) rates.
+\item \emph{Smoothness where it belongs.} The GP prior imposes spatial structure
+  (locality and smoothness, \S\ref{sec:kernel}) on the unconstrained latent
+  $\lat$, not on the constrained rate. The kernel's RF structure is a statement
+  about the log-rate's spatial regularity, which is where the biological prior
+  (a spatially local, smooth receptive field) is naturally expressed.
+\end{itemize}
+
+\begin{remark}[Poisson breaks conjugacy]
+For a Gaussian likelihood the posterior and predictive would be closed-form. With
+the Poisson likelihood the marginal
+$p(\spk\mid X,\theta)=\int \Poi(\spk\mid\rate(x))\,\Gauss(\lat\mid0,\Kf_\theta)\,d\lat$
+has no closed form, so neither the exact posterior $p(\lat\mid\spk,X,\theta)$ nor
+the exact predictive can be computed directly. This is what forces the variational
+treatment of Part~II; here we fix only the model and its prior.
+\end{remark}
+
+
+\section{The arc-cosine kernel and the structured spatial prior}
+\label{sec:kernel}
+
+The prior covariance $\Kf$ is a first-order arc-cosine (ReLU) kernel built on a
+structured input-covariance matrix $\Cmat$. This section owns the definitions of
+both $\Kf$ and $\Cmat$, their parameterization and constraints, and the two
+gradients ($\nabla_x\Kf$, $\partial\Cmat/\partial\theta$) that the utility, the
+diffusion guidance, and the M-step consume. Ground truth is
+\texttt{kernels.py} (\texttt{ArcCosineKernel}); where a summary disagrees with the
+code, the code wins and the discrepancy is flagged.
+
+\subsection{The order-1 arc-cosine kernel}
+\label{subsec:acos}
+
+\begin{definition}[Order-1 arc-cosine kernel]
+For two stimulus vectors $x,x'\in\Reals^{n_{\mathrm{px}}}$,
+\begin{equation}
+\Kf(x,x')\ =\ \frac{1}{\pi}\,\Kmag\,\Jang(\kang),
+\qquad
+\Kmag=\sqrt{\vmag_x\,\vmag_{x'}},
+\qquad
+\cos\kang=\frac{x\transpose\Cmat x'+\sigz^2}{\Kmag},
+\qquad
+\Jang(\kang)=\sin\kang+(\pi-\kang)\cos\kang,
+\label{eq:acoskernel}
+\end{equation}
+with self-magnitudes (prior variances) $\vmag_x=x\transpose\Cmat x+\sigz^2$ and
+$\vmag_{x'}={x'}\transpose\Cmat x'+\sigz^2$, cross-term
+$x\transpose\Cmat x'+\sigz^2$, magnitude $\Kmag$, angle $\kang$, and order-1
+angular term $\Jang$. Equivalently, expanding the angle,
+\begin{equation}
+\kang=\arccos\!\left(
+\frac{x\transpose\Cmat x'+\sigz^2}
+     {\sqrt{x\transpose\Cmat x+\sigz^2}\ \sqrt{{x'}\transpose\Cmat x'+\sigz^2}}
+\right).
+\end{equation}
+Here $\sigz^2$ is a constant \emph{bias variance} and $\Cmat\in\Reals^{n_{\mathrm{px}}\times n_{\mathrm{px}}}$
+is the structured spatial prior covariance (\S\ref{subsec:Cprior}).
+\end{definition}
+
+\emph{Proportionality constant.} The LaTeX summaries write $\Kf\propto\Kmag\,\Jang(\kang)$;
+the code fixes the constant explicitly at $1/\pi$
+(\texttt{kernels.py}: \texttt{K = M * J / torch.pi}). Throughout this document the
+constant is $1/\pi$: every $\propto$ in a summary becomes $=(1/\pi)\cdot$ in code.
+
+\begin{remark}[Order and ReLU-network interpretation]
+This is the order-$n=1$ member of the Cho--Saul (2009) arc-cosine family
+($n=0$ is Heaviside/step, $n=1$ is ReLU); the angular term
+$\Jang(\kang)=\sin\kang+(\pi-\kang)\cos\kang$ is exactly the ReLU case. The kernel
+is the covariance of the output of an infinite-width, single-hidden-layer neural
+network with ReLU hidden units whose input-to-hidden weights are drawn
+$w\sim\Gauss(0,\Cmat)$, with the bias contributing $\sigz^2$:
+\begin{equation}
+\Kf(x,x')\ =\ \E_{w\sim\Gauss(0,\Cmat)}\!\big[\,\mathrm{ReLU}(w\transpose x)\,\mathrm{ReLU}(w\transpose x')\,\big]
+\quad\text{(up to the $1/\pi$ constant, with bias $\sigz^2$).}
+\end{equation}
+Thus $\Cmat$ is literally the prior covariance of the network weights across pixel
+locations. Shaping $\Cmat$ (\S\ref{subsec:Cprior}) injects the prior belief that an
+RGC receptive field is spatially \emph{local} and \emph{smooth}.
+\end{remark}
+
+\subsection{Non-stationarity and the self-kernel identity}
+\label{subsec:selfkernel}
+
+\begin{proposition}[Self-kernel identity]
+The prior variance at any image is the $\Cmat$-quadratic form plus the bias
+variance:
+\begin{equation}
+\Kf(x,x)\ =\ \vmag_x\ =\ x\transpose\Cmat x+\sigz^2.
+\label{eq:selfkernel}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+At $x'=x$ the cross-term equals $\vmag_x=\Kmag$, so $\cos\kang=1$, $\kang=0$, and
+$\Jang(0)=\sin0+(\pi-0)\cos0=\pi$. Hence
+$\Kf(x,x)=\Kmag\,\Jang(0)/\pi=\Kmag=\sqrt{\vmag_x\,\vmag_x}=\vmag_x$. The code's
+\texttt{diag=True} branch returns $\vmag_x=x\transpose\Cmat x+\sigz^2$ directly
+(\texttt{kernels.py:614--618}).
+\end{proof}
+
+\begin{remark}[Non-stationarity and its consequence for active learning]
+Equation~\eqref{eq:selfkernel} shows $\Kf$ depends on the actual input values
+through $x\transpose\Cmat x$, not only on $x-x'$: the kernel is \emph{non-stationary}
+and the prior variance $\vmag_x$ grows with the input norm (in the $\Cmat$-metric).
+This has a direct downstream effect: the active-learning utility is driven by
+posterior variance, so utility maximization is biased toward high-norm images
+unless the kernel is normalized. For exactly this reason the code provides
+normalized and saturating siblings of the base kernel --- \texttt{ArcCosineKernelNormalized}
+($\bar{\Kf}=\Jang(\kang)/\pi$, constant $\bar{\Kf}(x,x)=1$) and \texttt{ArcSineKernel}
+(bounded diagonal) --- which are analyzed in Part~III as fixes to the norm-scaling
+divergence. This part keeps the focus on the base \texttt{ArcCosineKernel}.
+\end{remark}
+
+\subsection{The structured spatial prior covariance $\Cmat$}
+\label{subsec:Cprior}
+
+$\Cmat$ encodes that RGC receptive fields are spatially local and smooth. It is
+\emph{constant with respect to the stimulus} $x$ --- it depends only on the
+hyperparameters $(\Amp,\bwid,\smoo,\rfc)$. Pixel $i$ sits at grid coordinate
+$\pixc_i$ on a normalized $[-1,1]\times[-1,1]$ grid, and $\rfc=(\text{eps\_0x},\text{eps\_0y})$
+is the RF centre.
+
+\begin{definition}[Structured spatial prior]
+With an amplitude $\Amp$, a per-pixel locality weight $\loc_i$, and a pairwise
+smoothing factor $\Csm$,
+\begin{equation}
+\Cmat_{ij}
+\ =\ \Amp\,\loc_i\,[\Csm]_{ij}\,\loc_j
+\ =\ \Amp\,\exp\!\left(-\frac{\lVert\pixc_i-\rfc\rVert^2}{4\bwid^2}\right)\,
+      \exp\!\left(-\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}\right)\,
+      \exp\!\left(-\frac{\lVert\pixc_j-\rfc\rVert^2}{4\bwid^2}\right),
+\label{eq:Cprior}
+\end{equation}
+where
+\begin{equation}
+\begin{aligned}
+\loc_i&=\exp\!\left(-\frac{\lVert\pixc_i-\rfc\rVert^2}{4\bwid^2}\right)
+&&\text{(locality weight)},\\
+[\Csm]_{ij}&=\exp\!\left(-\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}\right)
+&&\text{(smoothness kernel)},
+\end{aligned}
+\end{equation}
+followed by a symmetrization $\Cmat\leftarrow(\Cmat+\Cmat\transpose)/2$.
+\end{definition}
+
+\emph{Physical meaning of the natural parameters} (defaults $\Amp=1.0$,
+$\bwid=\smoo=0.1$ on the $[-1,1]$ grid):
+\begin{itemize}[leftmargin=1.4em]
+\item $\Amp$ --- overall \emph{amplitude}: a positive gain (default $1.0$) on the
+  structured covariance $\Cmat$, scaling the prior variance of the latent. It
+  multiplies the $\Cmat$-quadratic part of the self-magnitude
+  $\vmag_x=x\transpose\Cmat x+\sigz^2$ (not the bias $\sigz^2$); because it enters
+  the kernel inside $\Kmag=\sqrt{\vmag_x\vmag_{x'}}$ and $\cos\kang$, it rescales
+  $\Kf$ non-linearly rather than as a plain output scale. Unlike $\bwid,\smoo,\rfc$
+  it sets the magnitude, not the spatial shape, of the RF weighting.
+\item $\bwid$ --- RF \emph{half-width}: the locality weight $\loc$ is a Gaussian of
+  standard deviation $\sqrt{2}\,\bwid$ in pixel-distance, reaching $e^{-1}$ at
+  $\text{dist}=2\bwid$; for $\bwid=0.1$ the RF spans roughly $\pm0.2$ ($\approx20\%$
+  of the axis).
+\item $\smoo$ --- smoothness \emph{standard deviation} (correlation length) of the
+  RBF-like $\Csm$ (variance $\smoo^2$): pixels closer than $\smoo$ are strongly
+  correlated, pixels beyond $3\smoo$ nearly uncorrelated.
+\item $\rfc$ --- the 2D RF centre on $[-1,1]^2$.
+\end{itemize}
+Together, $\loc$ localizes weight around $\rfc$ and $\Csm$ correlates nearby pixels
+--- an RF-shaped weight prior.
+
+\emph{Code.} $\Cmat$ is built in \texttt{ArcCosineKernel.\_compute\_C\_matrix}
+(\texttt{kernels.py:486--559}): the outer product
+\texttt{C = Amp * alpha[:,None] * C\_smooth * alpha[None,:]} (line~554) followed by
+\texttt{C = (C + C.T)/2} (line~557).
+
+\subsection{Raw parameterization and constraints}
+\label{subsec:rawparam}
+
+For optimizer stability the code stores \emph{unconstrained log-space raw
+parameters}, not $\bwid$ and $\smoo$ directly (registered in
+\texttt{kernels.py:229--242}, all \texttt{float64}):
+\begin{equation}
+\begin{aligned}
+\text{raw\_m2log2beta}&=-2\log(2\bwid)&&\Rightarrow&&\exp(\text{raw\_m2log2beta})=\frac{1}{4\bwid^2},\\
+\text{raw\_mlog2rho2}&=-\log(2\smoo^2)&&\Rightarrow&&\exp(\text{raw\_mlog2rho2})=\frac{1}{2\smoo^2},
+\end{aligned}
+\end{equation}
+and $\sigz=\exp(\text{raw\_sigma\_0})$ under a $\mathrm{Positive}(\exp/\log)$
+constraint (so the bias variance added in~\eqref{eq:acoskernel} is
+$\sigz^2=(\exp(\text{raw\_sigma\_0}))^2$). Inside
+\texttt{\_compute\_C\_matrix} the exponentials of the raw parameters are used
+\emph{directly} as the exponent coefficients, so that
+$\loc_i=\exp(-\tfrac{1}{4\bwid^2}\lVert\pixc_i-\rfc\rVert^2)$ and
+$[\Csm]_{ij}=\exp(-\tfrac{1}{2\smoo^2}\lVert\pixc_i-\pixc_j\rVert^2)$ reproduce
+exactly the natural-parameter form~\eqref{eq:Cprior} (verified numerically:
+$\bwid=\smoo=0.1\Rightarrow 1/(4\bwid^2)=25$, $1/(2\smoo^2)=50$). The
+\texttt{.beta}/\texttt{.rho} properties invert the raw parameters back to the
+natural values,
+$\bwid=\tfrac12\exp(-\text{raw\_m2log2beta}/2)$,
+$\smoo=\tfrac{1}{\sqrt2}\exp(-\text{raw\_mlog2rho2}/2)$, and round-trip cleanly.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+Param & Constraint mechanism & Bounds (natural) & Bounds (raw) \\
+\midrule
+$\sigz$ & $\sigz=\exp(\text{raw\_sigma\_0})$, $\mathrm{Positive}(\exp/\log)$ & $\sigz>0$ & --- \\
+$\bwid$ & via \texttt{raw\_m2log2beta}, clamped & $[0.01,\,0.3]$ & $[1.02,\,7.82]$ \\
+$\smoo$ & via \texttt{raw\_mlog2rho2}, clamped & $[0.01,\,0.5]$ & $[0.69,\,8.52]$ \\
+$\rfc$ & direct clamp & $[-1,1]$ per axis & --- \\
+$\Amp$ & $\Amp=\mathrm{softplus}(\text{raw\_Amp})$, clamp & $(0,\,1000]$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{sloppypar}
+Bounds are enforced two ways: \texttt{params\_in\_bounds()} (read-only rejection of
+an out-of-bounds trial step inside the LBFGS closure) and
+\texttt{clamp\_hyperparameters()} (projected clamp after \texttt{optimizer.step()}).
+\end{sloppypar}
+
+\caveat{The $\bwid$ upper bound is \textbf{0.3}, not 1.0. It was tightened
+$1.0\to0.3$ on 2026-04-10 after a $\bwid$-drift $0.12\to0.45$ made $\Cmat$ cover all
+$11664$ pixels ($\sim519$~MB) and OOM. Two stale code comments remain and should not
+be trusted: the inline comment on \texttt{kernels.py:180} reads
+\texttt{RAW\_BETA\_MIN\ \# $\approx$ 0.18}, but $-2\log(2\cdot0.3)=1.02$ (the block
+comment on line~172 and the arithmetic both give $1.02$); and the
+\texttt{clamp\_hyperparameters} docstring still says ``\texttt{beta} $\in[0.01,1.0]$''
+--- also stale, the enforced bound is $[0.01,0.3]$.}
+
+\begin{remark}[Naming hazard: two different ``\texttt{beta}''/``\texttt{rho}'']
+``beta''/``rho'' are overloaded. Use the \emph{natural} $\bwid,\smoo$ (RF half-width,
+smoothness SD --- the \texttt{.beta}/\texttt{.rho} properties) for all reasoning and
+plotting. The local variables \texttt{beta}$=1/(4\bwid^2)$ and
+\texttt{rho2}$=1/(2\smoo^2)$ inside \texttt{\_compute\_C\_matrix} are
+reciprocal-square coefficients, \emph{not} the natural parameters; do not confuse
+them.
+\end{remark}
+
+\begin{remark}[Pixel masking]
+With \texttt{MASK\_THRESHOLD}$=0.001$, pixels whose locality weight satisfies
+$\loc_i\ge0.001$ are kept and the rest dropped, shrinking $\Cmat$ from
+$(n_{\mathrm{px}},n_{\mathrm{px}})$ to $(n_{\mathrm{masked}},n_{\mathrm{masked}})$
+(typically $\sim100\times$ smaller). The mask is computed with \emph{detached}
+parameters, so its \emph{structure} is non-differentiable and stable while the
+retained $\Cmat$ entries still carry gradients; \texttt{forward()} applies the same
+mask to the inputs, so only active pixels contribute to $x\transpose\Cmat x$. The
+mask radius is $\lVert\pixc_i-\rfc\rVert\le2\bwid\sqrt{\ln1000}\approx5.25\,\bwid$.
+\end{remark}
+
+\subsection{Kernel gradient with respect to the input, $\nabla_x\Kf$}
+\label{subsec:gradxK}
+
+Choosing the next image (and steering diffusion, Part~IV) requires the derivative
+of the kernel with respect to the stimulus. Treating $\Cmat$ as symmetric and
+constant, $\sigz^2$ constant, and $x'$ (hence $\vmag_{x'}$) constant, the useful
+intermediate gradients are
+\begin{equation}
+\nabla_x\,\vmag_x=2\,\Cmat x,
+\qquad
+\nabla_x\,(x\transpose\Cmat x'+\sigz^2)=\Cmat x',
+\qquad
+\nabla_x\,\Kmag=\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\,\Cmat x,
+\end{equation}
+and the angular derivative $d\Jang/d\kang=-(\pi-\kang)\sin\kang$.
+
+\begin{proposition}[Input gradient of the arc-cosine kernel]
+\begin{equation}
+\nabla_x\Kf(x,x')
+\ =\ \frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x'
+\ +\ \sin\kang\,\sqrt{\frac{\vmag_{x'}}{\vmag_x}}\,\Cmat x\right]
+\ =\ \frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x'
+\ +\ \sin\kang\,\sqrt{\frac{{x'}\transpose\Cmat x'+\sigz^2}{x\transpose\Cmat x+\sigz^2}}\,\Cmat x\right].
+\label{eq:gradxK}
+\end{equation}
+By symmetry ($x\leftrightarrow x'$),
+\begin{equation}
+\nabla_{x'}\Kf(x,x')
+=\frac{1}{\pi}\left[(\pi-\kang)\,\Cmat x
++\sin\kang\,\sqrt{\frac{x\transpose\Cmat x+\sigz^2}{{x'}\transpose\Cmat x'+\sigz^2}}\,\Cmat x'\right].
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Write $\Kf=\tfrac1\pi\Kmag\,\Jang(\kang)$ and apply the product rule
+$\nabla_x\Kf\propto(\nabla_x\Kmag)\Jang+\Kmag(\nabla_x\Jang)$. Using
+$\nabla_x\Jang=(d\Jang/d\kang)\nabla_x\kang$ with
+$\nabla_x\kang=-(1/\sin\kang)\,\nabla_x(\cos\kang)$ and
+$d\Jang/d\kang=-(\pi-\kang)\sin\kang$, the $\sin\kang$ cancels and
+$\nabla_x\Jang=(\pi-\kang)\,\nabla_x(\cos\kang)$ with
+$\nabla_x(\cos\kang)=\tfrac1\Kmag\Cmat x'-\tfrac{\cos\kang}{\Kmag}\sqrt{\vmag_{x'}/\vmag_x}\,\Cmat x$
+(recall $\cos\kang=(x\transpose\Cmat x'+\sigz^2)/\Kmag$). Collecting terms,
+\[
+\pi\,\nabla_x\Kf
+=\underbrace{\sin\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[A]}
++\underbrace{(\pi-\kang)\cos\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[B]}
++\underbrace{(\pi-\kang)\Cmat x'}_{[C]}
+-\underbrace{(\pi-\kang)\cos\kang\sqrt{\tfrac{\vmag_{x'}}{\vmag_x}}\Cmat x}_{[D]} .
+\]
+Terms $[B]$ and $[D]$ are identical with opposite sign and cancel, leaving
+$[A]+[C]$, which is~\eqref{eq:gradxK}.
+\end{proof}
+
+Every term carries a factor $\Cmat$, so $\nabla_x\Kf$ lives in the column space of
+$\Cmat$; this is the algebraic root of the subspace analysis in Part~III (gradient
+ascent on the utility already concentrates on the top $\Cmat$-eigenvectors).
+\emph{Code.} With \texttt{gradient\_mode='autograd'} (default) this gradient is
+obtained by autodiff through \texttt{forward()}; the optional \texttt{'vjp'} mode
+(\texttt{analytical\_gradients\_vjp.py}) evaluates~\eqref{eq:gradxK} explicitly, and
+all modes return the same $\Kf$.
+
+\subsection{Kernel gradients with respect to the hyperparameters, $\partial\Cmat/\partial\theta$}
+\label{subsec:dCtheta}
+
+The M-step (Part~II training) maximizes the ELBO over the kernel hyperparameters and
+needs $\partial\Cmat/\partial\theta$, which then chains through
+$\vmag_x=x\transpose\Cmat x$ and the cross-term into $\partial\Kf/\partial\theta$
+using the same quadratic-form structure as~\S\ref{subsec:gradxK} with $\Cmat$
+replaced by $\partial\Cmat/\partial\theta$.
+
+\begin{proposition}[Structured-prior hyperparameter gradients (natural parameters)]
+Writing $\Cmat=\Amp\,\loc\,\Csm\,\loc\transpose$, the amplitude enters linearly and
+the shape parameters through their Gaussian exponents. Each shape-parameter
+derivative is $\Cmat_{ij}$ --- which already carries the $\Amp$ factor --- times the
+derivative of its log-argument, while the amplitude derivative strips one factor of
+$\Amp$:
+\begin{equation}
+\label{eq:dCtheta}
+\begin{aligned}
+\frac{\partial\Cmat_{ij}}{\partial\Amp}
+&=\loc_i\,[\Csm]_{ij}\,\loc_j=\frac{\Cmat_{ij}}{\Amp},\\[2pt]
+\frac{\partial\Cmat_{ij}}{\partial\bwid}
+&=\Cmat_{ij}\,\frac{\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2}{2\bwid^3},\\[2pt]
+\frac{\partial\Cmat_{ij}}{\partial\smoo}
+&=\Cmat_{ij}\,\frac{\lVert\pixc_i-\pixc_j\rVert^2}{\smoo^3},\\[2pt]
+\nabla_{\rfc}\Cmat_{ij}
+&=\frac{\Cmat_{ij}}{2\bwid^2}\big[(\pixc_i-\rfc)+(\pixc_j-\rfc)\big]\qquad(\text{2D vector}).
+\end{aligned}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+For $\Amp$: $\Cmat=\Amp\,(\loc\,\Csm\,\loc\transpose)$ is linear in $\Amp$, so
+$\partial\Cmat_{ij}/\partial\Amp=\loc_i[\Csm]_{ij}\loc_j=\Cmat_{ij}/\Amp$. For $\bwid$:
+$\partial_\bwid\big[-(\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2)/(4\bwid^2)\big]
+=+(\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2)/(2\bwid^3)$. For $\smoo$:
+$\partial_\smoo\big[-\lVert\pixc_i-\pixc_j\rVert^2/(2\smoo^2)\big]=+\lVert\pixc_i-\pixc_j\rVert^2/\smoo^3$.
+For $\rfc$: $\nabla_{\rfc}\lVert\pixc-\rfc\rVert^2=2(\rfc-\pixc)$, giving
+$\nabla_{\rfc}\log\Cmat_{ij}=(1/(2\bwid^2))[(\pixc_i-\rfc)+(\pixc_j-\rfc)]$.
+\end{proof}
+
+\begin{remark}[Code differentiates the raw parameters]
+Because the code optimizes the raw parameters, \texttt{eigenspace\_gradients.py}
+(lines~104--122) stores the chain-ruled \emph{raw}-parameter gradients, which the
+M-step consumes directly (\texttt{eigenspace\_mstep.py:320--330}):
+\begin{equation}
+\begin{aligned}
+\frac{\partial\Cmat_{ij}}{\partial(\text{raw\_m2log2beta})}
+&=\Cmat_{ij}\,(\log\loc_i+\log\loc_j)
+=-\Cmat_{ij}\,\frac{\lVert\pixc_i-\rfc\rVert^2+\lVert\pixc_j-\rfc\rVert^2}{4\bwid^2},\\
+\frac{\partial\Cmat_{ij}}{\partial(\text{raw\_mlog2rho2})}
+&=\Cmat_{ij}\,\log[\Csm]_{ij}
+=-\Cmat_{ij}\,\frac{\lVert\pixc_i-\pixc_j\rVert^2}{2\smoo^2}.
+\end{aligned}
+\end{equation}
+and, since $\rfc$ is a direct parameter,
+$\partial\Cmat_{ij}/\partial\rfc=(\Cmat_{ij}/(2\bwid^2))[(\pixc_i-\rfc)+(\pixc_j-\rfc)]$
+coincides with the natural form in~\eqref{eq:dCtheta}. The two are related by the
+constraint-transform Jacobian $d(\text{raw})/d\bwid=-2/\bwid$, etc.; with the
+default \texttt{gradient\_mode='autograd'} this chain rule is applied automatically.
+\end{remark}
+
+\subsection{Numerical stability}
+\label{subsec:numstab}
+
+Three stability mechanisms act at three distinct levels; they must not be conflated.
+
+\begin{enumerate}[leftmargin=1.6em]
+\item \textbf{$\Cmat$ matrix --- symmetrization only.}
+  $\Cmat\leftarrow(\Cmat+\Cmat\transpose)/2$ (\texttt{kernels.py:557}) cancels the
+  float-rounding asymmetry from the outer product. \emph{No diagonal jitter is added
+  to $\Cmat$.}
+\item \textbf{Kernel \texttt{forward()} --- domain clamps.} With
+  $\text{eps}=10^{-7}$, $\cos\kang$ is clamped into $(-1,1)$ so $\arccos$ is finite,
+  and $1-\cos^2\kang$ is clamped at $\min=\text{eps}$ so $\sin\kang=\sqrt{1-\cos^2\kang}$
+  never takes the square root of a negative rounding result (\texttt{kernels.py:634--639}).
+  These keep the transcendental operations in-domain and are unrelated to Cholesky
+  jitter.
+\item \textbf{GP covariance / Cholesky --- jitter on the gram matrices, not on
+  $\Cmat$.} Jitter is added to the \emph{output} gram matrices of the arc-cosine
+  kernel --- the inducing gram $\Ktil$ (i.e. $\Kf(\Ipt,\Ipt)$) and the predictive
+  gram $\Kf(X,X)$ --- at the GPyTorch variational-strategy level, \emph{not} to
+  $\Cmat$. A pre-Cholesky jitter (\texttt{model.jitter}, default $10^{-4}$) is added
+  to $\Ktil$/$\Kf(X,X)$; the kernel's own \texttt{forward()} adds none (that would
+  double-jitter). On a failed factorization \texttt{psd\_safe\_cholesky} promotes
+  $\Ktil$ to \texttt{float64} (sequential Cholesky subtractions cause catastrophic
+  cancellation in \texttt{float32}) and retries with escalating jitter
+  $10^{-4},10^{-3},10^{-2}$ (\texttt{cholesky\_max\_tries}, default 3).
+\end{enumerate}
+
+\caveat{Some intuition expects diagonal jitter on the prior $\Cmat$; there is none.
+$\Cmat$ receives only symmetrization. Jitter lives exclusively on the GP gram
+matrices $\Ktil$/$\Kf(X,X)$. Do not ``add jitter to $\Cmat$'' thinking it is
+missing.}
