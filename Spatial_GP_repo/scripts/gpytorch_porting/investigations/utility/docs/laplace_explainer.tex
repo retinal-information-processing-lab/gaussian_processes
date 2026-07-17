@@ -1,0 +1,114 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+
+\newcommand{\gbar}{\bar{g}}
+
+\begin{document}
+\begin{center}
+{\large\bfseries The Laplace approximation of $\log p(r)$}
+\end{center}
+\medskip
+
+\section{The quantity}
+At a query image the GP gives a Gaussian posterior on the log firing rate $g$:
+\[
+  g \sim \mathcal{N}(\mu_g,\sigma_g^2),\qquad
+  \mu_g = A\,\bar\lambda + \lambda_0,\quad \sigma_g^2 = A^2\,\mathrm{var}(\lambda).
+\]
+Given $g$ the spike count is Poisson with rate $e^{g}$. The predictive
+probability of $r$ spikes marginalises over $g$:
+\[
+  p(r) = \int_{-\infty}^{\infty}
+         \underbrace{\frac{e^{rg}\,e^{-e^{g}}}{r!}}_{\mathrm{Poisson}(r;\,e^{g})}\,
+         \underbrace{\frac{1}{\sqrt{2\pi\sigma_g^2}}\,
+           e^{-(g-\mu_g)^2/2\sigma_g^2}}_{\mathcal{N}(g;\,\mu_g,\sigma_g^2)}
+         \,dg .
+\]
+This integral has no closed form.
+
+\section{The integrand and its peak}
+Write the integrand as $e^{\psi(g)}$ up to constants, with
+\[
+  \psi(g) = r\,g - e^{g} - \frac{(g-\mu_g)^2}{2\sigma_g^2}.
+\]
+$\psi$ is strictly concave, so the integrand has a single peak at $\gbar$,
+where $\psi'(\gbar)=0$:
+\[
+  r = e^{\gbar} + \frac{\gbar-\mu_g}{\sigma_g^2}.
+\]
+This solves in closed form through the principal Lambert-$W$ function:
+\[
+  \gbar(r) = r\sigma_g^2 + \mu_g - W_0\!\big(\sigma_g^2\,e^{\,r\sigma_g^2+\mu_g}\big).
+\]
+(The code evaluates $W_0$ in log-space, so the exponential is never formed.)
+
+\section{The approximation}
+Laplace replaces $\psi$ by its second-order Taylor expansion at the peak,
+\[
+  \psi(g)\approx \psi(\gbar) + \tfrac12\,\psi''(\gbar)\,(g-\gbar)^2,
+\]
+i.e.\ a Gaussian, whose integral is analytic. Carrying the constants through:
+\[
+  \boxed{\;\log p(r) \approx
+    r\,\gbar - e^{\gbar}
+    - \frac{(\gbar-\mu_g)^2}{2\sigma_g^2}
+    - \tfrac12\log\!\big(1+\sigma_g^2 e^{\gbar}\big)
+    - \log r!\;}
+\]
+Every term is evaluated \emph{exactly} at $\gbar$. This expression is the
+output the algorithm uses, and the object whose accuracy we test.
+
+\section{Where the error comes from}
+The error is exactly what the quadratic expansion drops: the third and higher
+derivatives of $\psi$ at the peak (its asymmetry). Split $\psi$ into its two
+factors and differentiate:
+\[
+  \psi(g) = \underbrace{r g - e^{g}}_{\text{Poisson}}
+          \;\underbrace{-\,(g-\mu_g)^2/2\sigma_g^2}_{\text{Normal}},
+\qquad
+\begin{aligned}
+  \psi''(g)   &= -e^{g} - 1/\sigma_g^2,\\
+  \psi'''(g)  &= -e^{g},\\
+  \psi''''(g) &= -e^{g}.
+\end{aligned}
+\]
+The Normal factor is exactly quadratic: it adds the constant $-1/\sigma_g^2$ to
+the curvature and \emph{zero} to every higher derivative. The Gaussian fit
+reproduces it exactly, so it contributes nothing to the error. All of the error
+comes from the $-e^{g}$ (Poisson) term, the only non-quadratic part of $\psi$.
+
+\section{Why $\sigma_g^2$ controls the error}
+$\sigma_g^2$ enters only through the curvature at the peak,
+\[
+  |\psi''(\gbar)| = e^{\gbar} + \frac{1}{\sigma_g^2},
+\]
+which sets the width of the fitted Gaussian, $1/\sqrt{|\psi''(\gbar)|}$.
+
+Because the integrand's leading factor is the Gaussian
+$e^{\frac12\psi''(\gbar)(g-\gbar)^2}$, its weight lies within this width of the
+peak. The dropped cubic remainder $\tfrac16\psi'''(\gbar)(g-\gbar)^3+\dots$ --- a
+fixed coefficient $\psi'''(\gbar)=-e^{\gbar}$ times $(g-\gbar)^3$ --- therefore
+matters only at $(g-\gbar)$ of that size, where its magnitude is
+\[
+  \tfrac16\,\frac{|\psi'''(\gbar)|}{|\psi''(\gbar)|^{3/2}}
+  = \tfrac16\,\frac{e^{\gbar}}{\big(e^{\gbar}+1/\sigma_g^2\big)^{3/2}} .
+\]
+So the asymmetry is measured against the curvature, and $\sigma_g^2$ enters the
+error only through this width, leaving $\psi'''$ untouched.
+\begin{itemize}
+\item Small $\sigma_g^2$: $1/\sigma_g^2$ dominates, the peak is narrow, and over
+that width $e^{g}$ barely curves — its asymmetry is invisible and the
+approximation is near-exact.
+\item Large $\sigma_g^2$: the confinement weakens, the peak widens, and the
+asymmetry of $e^{g}$ is exposed — the error grows.
+\end{itemize}
+So $\sigma_g^2$ is the knob and the Poisson $e^{g}$ is the source: the prior
+does not cause the error, it suppresses it by pinning the peak.
+
+\medskip
+\noindent\textit{The difference $\log p_{\mathrm{true}}(r)-\log p_{\mathrm{Laplace}}(r)$
+is what \texttt{laplace\_pointwise\_error.py} measures against an
+adaptive-quadrature reference.}
+
+\end{document}

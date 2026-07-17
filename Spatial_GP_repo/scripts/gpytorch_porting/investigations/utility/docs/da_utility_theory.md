@@ -131,8 +131,13 @@ Pre-check (no Laplace needed):
 | < 1.5 | Unreliable (truncation corrupts entropy) |
 | < 0.5 | Broken (utility can be negative or NaN) |
 
-For natural images from the pool: z_safe >> 10 (always safe).
-Trouble only arises with artificially amplified images (c >> 1).
+A confident GP on a low-firing cell gives a large z_safe -- but that is NOT an
+operating-range guarantee. sigma2_g = A^2 * var(lambda) reaches ~20-50 in real
+experiments (uncertain cells, especially the first few reps); there z_safe falls
+to ~0.9-1.4 (Unreliable/Broken by the table above). Trouble arises both from
+artificially amplified images (c >> 1) AND from genuinely uncertain predictions
+(large sigma2_g). The narrow logf_var range quoted below is one cell's snapshot,
+NOT the operating range -- do not use it as a safe ceiling.
 
 See `entropy_landscape.md` for detailed empirical analysis and MC comparison.
 
@@ -178,7 +183,10 @@ See `entropy_landscape.md` for detailed empirical analysis and MC comparison.
 - lambda0 = -1.686 (firing rate offset)
 - sigma_0 = 0.989 (kernel bias)
 - K(x_target, x_target) = 669 (self-kernel of a typical natural image)
-- Natural images: logf_mean in [-1.8, -1.3], logf_var in [0.04, 0.19]
+- Natural images, THIS cell, confident predictions: logf_mean in [-1.8, -1.3],
+  logf_var in [0.04, 0.19]. NOTE: one cell's snapshot, NOT the operating range --
+  across experiments logf_var (= sigma2_g) reaches ~20-50 (uncertain cells, early
+  reps). Do not read [0.04, 0.19] as a safe sigma2_g ceiling.
 
 ---
 
