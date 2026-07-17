@@ -291,3 +291,15 @@ stable, cell 13's residual is structural (not fixed by n_mc). New additive scrip
 `compare_sl_panels.py`, `noise_probe.py`, and a `--sample-lambda` flag on `gray_panels.py`. Figures:
 `cell{N}_gray_sl`, `cell{N}_sl_compare`, `sl_divergence`, `cell{N}_sl_noise`, `sl_noise_summary`.
 See `FINDINGS_gray_start.md` "sample_lambda robustness".
+
+## 2026-07-04: Next-step design — in-silico oracle loop (planned, no code)
+**Handoff**: `investigations/lucent_useful_images/oracle_loop/HANDOFF.md`
+**Status**: Planned (design only)
+
+Captured the design for a future session: use the full-data ceiling GP as an "oracle cell" and the
+lucent generator as an acquisition strategy in a simulated closed loop. Two-part split — Part 1
+reproduce `analysis/cross_sessions/results/v0.7/pooled_explained_variance_no_greedy.svg` in silico
+(oracle as cell, active/random only) to validate the machinery, then Part 2 add the generated-image
+arm. Locked decisions + the dataset/engine bridge (ceilings=closed-loop/analysis engine vs
+generator=PNAS/default_gpy) and branch straddle (analysis/april26 vs pietro/lucent-useful-images) to
+resolve with the user first are all in the handoff.
