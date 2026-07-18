@@ -209,6 +209,12 @@ def main():
                         help='Pass-through: phase 1 inducing points')
     parser.add_argument('--data-path', type=str, default=None,
                         help='Pass-through: path to PNAS .npz dataset')
+    parser.add_argument('--interleave-fstep', action='store_true',
+                        help='Pass-through: enable interleaved F-step')
+    parser.add_argument('--fix-Amp', action='store_true',
+                        help='Pass-through: fix Amp=1')
+    parser.add_argument('--A-init', type=float, default=None,
+                        help='Pass-through: override A_init')
 
     args = parser.parse_args()
 
@@ -229,6 +235,12 @@ def main():
         passthrough_args += ['--phase1-M', str(args.phase1_M)]
     if args.data_path is not None:
         passthrough_args += ['--data-path', args.data_path]
+    if args.interleave_fstep:
+        passthrough_args.append('--interleave-fstep')
+    if args.fix_Amp:
+        passthrough_args.append('--fix-Amp')
+    if args.A_init is not None:
+        passthrough_args += ['--A-init', str(args.A_init)]
 
     run_batch(
         cells=args.cells,

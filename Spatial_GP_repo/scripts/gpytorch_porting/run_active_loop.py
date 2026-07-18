@@ -360,6 +360,8 @@ def run_active_loop(config, al_config, cli_args, output_dir):
         'verbose': al_config['phase2_verbose'],
         'f_mean_max_threshold': config['f_mean_max_threshold'],
         'f_mean_mean_threshold': config['f_mean_mean_threshold'],
+        'fix_Amp': config.get('fix_Amp', False),
+        'interleave_fstep': config.get('interleave_fstep', False),
     }
 
     # --- Output layout ---
@@ -696,6 +698,14 @@ def main():
                         help=f'Output directory (default: {al["output_dir_default"]}). '
                              f'Relative paths resolved against the script directory.')
 
+    # Training mode flags (paper-gap best config: --interleave-fstep --fix-Amp --A-init 1e-4)
+    parser.add_argument('--interleave-fstep', action='store_true',
+                        help='Enable interleaved F-step (damped Newton A/lambda0 inside E-step)')
+    parser.add_argument('--fix-Amp', action='store_true',
+                        help='Fix Amp=1 (do not optimize amplitude)')
+    parser.add_argument('--A-init', type=float, default=None,
+                        help='Override A_init (default: from default_params.json)')
+
     args = parser.parse_args()
 
     # Read mode from config and validate
@@ -714,7 +724,11 @@ def main():
         n_train=args.phase1_M,  # M == n_train enforced
         seed=args.seed,
         cell=args.cell,
+        interleave_fstep=args.interleave_fstep,
+        fix_Amp=args.fix_Amp,
     )
+    if args.A_init is not None:
+        config['A_init'] = args.A_init
 
     # Build active learning config (merge CLI overrides)
     al_config = dict(al)  # copy defaults
@@ -738,6 +752,8 @@ def main():
           f"n_estep={al_config['phase2_n_estep']}, n_fstep={al_config['phase2_n_fstep']}, "
           f"n_mstep={al_config['phase2_n_mstep']}, lr={al_config['phase2_lr']}, "
           f"early_stop={al_config['phase2_early_stop']}")
+    print(f"  Training flags: interleave_fstep={config.get('interleave_fstep', False)}, "
+          f"fix_Amp={config.get('fix_Amp', False)}, A_init={config['A_init']}")
     print(f"  r_max: {config['r_max']}, f_max: {config['f_max']}")
     print(f"  Output: {output_dir}")
 

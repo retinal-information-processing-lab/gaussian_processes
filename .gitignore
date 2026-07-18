@@ -17,6 +17,9 @@ Spatial_GP_repo/notebooks/reproducing_paper_fits/
 Spatial_GP_repo/data/raw_electrode_and_sorted_datasets/
 Spatial_GP_repo/notebooks/reproducing_paper_fits
 
+# Downloaded reference PDFs (large, not source)
+Spatial_GP_repo/scripts/gpytorch_porting/papers/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

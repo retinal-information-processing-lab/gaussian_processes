@@ -2,7 +2,7 @@
 
 **Branch**: `pietro/utility_optimization`
 **Date**: 2026-04-10
-**Status**: Continuing (handoff to agent team session)
+**Status**: Mostly resolved. Rank-1 update, autograd leak, and beta explosion all FIXED. Stuck-near-init remains OPEN.
 **Location**: `investigations/active_loop_slowness/`
 
 ---
@@ -15,7 +15,7 @@ The active learning loop (`run_active_loop.py`) grows the model from M=50 to M=5
 2. **3 of 14 runs OOM'd** during test-set prediction (22.9 GB GPU memory)
 3. **6 of 14 runs produced near-zero test_r** despite completing normally (stuck-near-init)
 4. **The eigenspace dimension n_b tracks M almost linearly** in healthy runs (n_b/M > 0.95), defeating the purpose of eigenspace compression
-5. **The current "rank-1 update" (`rank1_update.py`) recomputes K_tilde from scratch** every iteration — it is NOT an efficient rank-1 matrix update. The old implementation in `utils.py` had the efficient version.
+5. ~~**The "rank-1 update" (`rank1_update.py`) recomputed K_tilde from scratch**~~ — FIXED in `bb27094`. Now uses efficient O(M) column-append ported from `utils.py:add_one_img_to_kernel`. No wall-time speedup on 64x64 (extend step is negligible vs training). See FINDINGS.md Task 1.
 
 The investigation aims to fix the active loop so it runs cleanly, efficiently, and predictably across cells and seeds.
 
@@ -60,7 +60,7 @@ The investigation aims to fix the active loop so it runs cleanly, efficiently, a
 
 ## Key Findings
 
-1. **CONFIRMED**: The current `rank1_update.py` does NOT perform an efficient rank-1 update. It recomputes the full M x M K_tilde from scratch via `DirectVGPModel(kernel, likelihood, X_tilde_new, X_tilde_new, eigval_tol)` at line 63. The docstring acknowledges this: "TODO (future optimization): Replace full K_tilde recompute with efficient rank-1 column append." The old code in `utils.py` (functions `add_one_img_to_kernel` at line 443 and `get_new_model_kernels` at line 471) had the efficient column-append version.
+1. ~~**CONFIRMED**: `rank1_update.py` recomputed full K_tilde from scratch~~ — FIXED in `bb27094`. Now uses efficient O(M) column-append. K_tilde stored in `DirectVariationalState`, only the new column is computed each iteration. Verified bit-identical to full recompute within float32 precision. No wall-time speedup on 64x64 (extend step is negligible vs training).
 
 2. **CONFIRMED**: n_b ≈ M is caused by M == n_train under-constraining the M-step. With the same 300 inducing points, n_train=300 gives n_b=284 (rho=0.036), n_train=1500 gives n_b=152 (rho=0.064), n_train=3160 gives n_b=159 (rho=0.071). The relationship is smooth and monotonic.
 
@@ -78,7 +78,7 @@ The investigation aims to fix the active loop so it runs cleanly, efficiently, a
 
 ## Why This Was Stopped
 
-Context is running low. The investigation has characterized the problems and identified the root causes for most of them, but the FIXES require implementation work (efficient rank-1 update, memory profiling, stuck-seed diagnosis) that should be done by a fresh session with an agent-team approach.
+Context was running low in the original session (2026-04-10). A follow-up session (2026-04-12) implemented all critical fixes: efficient rank-1 column append (`bb27094`), autograd memory leak 15x speedup (`d771c90`), and beta explosion safeguard (`eaa072e`). Only stuck-near-init diagnosis remains open.
 
 ---
 
