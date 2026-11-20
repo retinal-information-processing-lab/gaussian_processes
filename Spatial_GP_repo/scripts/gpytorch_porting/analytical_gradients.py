@@ -88,7 +88,9 @@ from typing import Dict, Tuple, Optional
 # Import C_gradients_hyp from the reference implementation
 # Must use importlib to avoid name collision with local kernels.py
 import importlib.util
-_kernels_path = '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/Spatial_GP_repo/kernels/kernels.py'
+from pathlib import Path
+# Spatial_GP_repo/kernels/kernels.py of THIS repository (gpytorch_porting -> scripts -> Spatial_GP_repo)
+_kernels_path = str(Path(__file__).resolve().parents[2] / 'kernels' / 'kernels.py')
 _spec = importlib.util.spec_from_file_location("reference_kernels", _kernels_path)
 _reference_kernels = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_reference_kernels)

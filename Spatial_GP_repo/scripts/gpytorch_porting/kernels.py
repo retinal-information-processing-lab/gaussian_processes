@@ -325,12 +325,22 @@ class ArcCosineKernel(Kernel):
         READ-ONLY check. Call at the top of LBFGS closures to reject trial
         steps before expensive computation. Bounds match clamp_hyperparameters().
 
+        A parameter that is NaN or inf is out of bounds. Every comparison with
+        NaN is False, so without the explicit finiteness check below a NaN
+        parameter passes all the bounds tests. That happens when the strong-Wolfe
+        line search proposes a NaN step after a rejected trial; the M-step closure
+        then builds an all-NaN K_tilde, and torch.linalg.solve on CUDA does not
+        return on a NaN matrix of size 1537 or more (it raises below that size).
+        For finite parameters this check changes nothing.
+
         Returns
         -------
         bool
-            True if all parameters are in bounds.
+            True if all parameters are finite and in bounds.
         """
         with torch.no_grad():
+            if not all(bool(torch.isfinite(p).all()) for p in self.parameters()):
+                return False
             if hasattr(self, 'raw_sigma_0'):
                 if self.sigma_0.item() <= 0:
                     return False
@@ -1157,6 +1167,18 @@ def test_params_in_bounds():
 
     kernel.raw_m2log2beta.data.fill_(0.0)
     assert kernel.params_in_bounds(), "Reset kernel should be in bounds"
+
+    # A NaN or inf in ANY kernel parameter is out of bounds (the bounds
+    # comparisons alone let NaN through, since every comparison with NaN is False)
+    for name, param in kernel.named_parameters():
+        saved = param.detach().clone()
+        for bad in (float('nan'), float('inf'), float('-inf')):
+            with torch.no_grad():
+                param.fill_(bad)
+            assert not kernel.params_in_bounds(), f"{name}={bad} should be out of bounds"
+        with torch.no_grad():
+            param.copy_(saved)
+        assert kernel.params_in_bounds(), f"kernel should be in bounds after restoring {name}"
 
     print("PASS: params_in_bounds test passed!")
 

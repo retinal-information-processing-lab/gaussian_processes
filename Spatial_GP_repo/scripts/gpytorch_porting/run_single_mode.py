@@ -38,9 +38,16 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 
-# Add paths for imports
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject')
-sys.path.insert(0, '/home/idv-eqs8-pza/IDV_code/ClosedLoopProject/gaussian_processes/torchlambertw')
+# Add paths for imports. Only the vargp_old reference mode needs them:
+#   - the folder that CONTAINS this repository, so that
+#     `gaussian_processes.Spatial_GP_repo` resolves (the repository folder must
+#     be named `gaussian_processes`);
+#   - torchlambertw, an external repository cloned at the repository root
+#     (git-ignored there).
+# Appended, not inserted first, so they can never shadow the engine's own modules.
+_REPO_ROOT = Path(__file__).resolve().parents[3]   # gpytorch_porting -> scripts -> Spatial_GP_repo -> repo root
+sys.path.append(str(_REPO_ROOT.parent))
+sys.path.append(str(_REPO_ROOT / 'torchlambertw'))
 
 import torch
 import gpytorch
